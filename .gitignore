@@ -8,6 +8,13 @@ CORE/vivado*.log
 CORE/vivado_pid*
 CORE/*ip_user_files
 CORE/webtalk*.*
+CORE/build-r6.log
+CORE/build-r6.jou
+CORE/build-r6-*.rpt
+CORE/*.str
+CORE/.gen
+CORE/*.cor
+CORE/*.bit
 CORE/m2m-rom/*.def
 CORE/m2m-rom/*.lis
 CORE/m2m-rom/*.out
