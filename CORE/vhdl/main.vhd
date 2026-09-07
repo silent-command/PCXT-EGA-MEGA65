@@ -1,7 +1,14 @@
 ----------------------------------------------------------------------------------
--- MiSTer2MEGA65 Framework
+-- PCXT-EGA on MiSTer2MEGA65
 --
--- Wrapper for the MiSTer core that runs exclusively in the core's clock domanin
+-- Wrapper around the core (pcxt_core.sv) plus the MEGA65-side pieces that run
+-- in the core's clock domains: the block RAM memory backend behind the
+-- KFSDRAM overlay's byte bus, and (later) the keyboard, mouse and the
+-- floppy/IDE management bridge.
+--
+-- Phase 3 state: no keyboard, no mouse, no disks. PS/2 lines idle, joysticks
+-- released, OSM choices at their MiSTer defaults. Goal: splash and BIOS POST
+-- on HDMI.
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 ----------------------------------------------------------------------------------
@@ -18,16 +25,26 @@ entity main is
       G_VDNUM                 : natural                     -- amount of virtual drives
    );
    port (
-      clk_main_i              : in  std_logic;
-      reset_soft_i            : in  std_logic;
-      reset_hard_i            : in  std_logic;
+      -- Clocks from clk.vhd. clk_main_i is the 50 MHz chipset clock, the
+      -- domain of everything the framework exchanges with this entity.
+      clk_main_i              : in  std_logic;              -- 50 MHz chipset
+      clk_core_i              : in  std_logic;              -- 100 MHz MCL86
+      clk_video_base_i        : in  std_logic;              -- 28.636 MHz
+      clk_video_x2_i          : in  std_logic;              -- 57.273 MHz
+      clk_video_out_ps_i      : in  std_logic;              -- 57.273 MHz +90 deg: domain of video_*_o
+      clk_video_vga_i         : in  std_logic;              -- 25.2 MHz
+      clk_14_318_i            : in  std_logic;              -- 14.318 MHz
+      clk_locked_i            : in  std_logic;              -- both MMCMs locked
+
+      reset_soft_i            : in  std_logic;              -- warm: OSM / reset button, ROMs survive
+      reset_hard_i            : in  std_logic;              -- cold: whole machine, ROMs are re-streamed
       pause_i                 : in  std_logic;
 
       -- MiSTer core main clock speed:
       -- Make sure you pass very exact numbers here, because they are used for avoiding clock drift at derived clocks
       clk_main_speed_i        : in  natural;
 
-      -- Video output
+      -- Video output, clk_video_out_ps_i domain
       video_ce_o              : out std_logic;
       video_ce_ovl_o          : out std_logic;
       video_red_o             : out std_logic_vector(7 downto 0);
@@ -38,9 +55,26 @@ entity main is
       video_hblank_o          : out std_logic;
       video_vblank_o          : out std_logic;
 
-      -- Audio output (Signed PCM)
+      -- Audio output (Signed PCM), clk_main_i domain
       audio_left_o            : out signed(15 downto 0);
       audio_right_o           : out signed(15 downto 0);
+
+      -- BIOS ROM download stream from rom_loader.vhd (clk_main_i domain)
+      rom_download_i          : in  std_logic;
+      rom_index_i             : in  std_logic_vector(7 downto 0);
+      rom_wr_i                : in  std_logic;
+      rom_addr_i              : in  std_logic_vector(24 downto 0);
+      rom_data_i              : in  std_logic_vector(15 downto 0);
+      rom_wait_o              : out std_logic;
+
+      -- Status for the OSM / LEDs
+      bios_missing_pcxt_o     : out std_logic;
+      bios_missing_ega_o      : out std_logic;
+      splash_active_o         : out std_logic;
+      led_disk_o              : out std_logic;
+
+      -- On-Screen-Menu selections (clk_main_i domain)
+      osm_control_i           : in  std_logic_vector(255 downto 0);
 
       -- M2M Keyboard interface
       kb_key_num_i            : in  integer range 0 to 79;    -- cycles through all MEGA65 keys
@@ -68,75 +102,303 @@ end entity main;
 
 architecture synthesis of main is
 
--- @TODO: Remove these demo core signals
-signal keyboard_n          : std_logic_vector(79 downto 0);
+   -- The SystemVerilog wrapper (CORE/rtl/pcxt_core.sv), flat ports only
+   component pcxt_core is
+      port (
+         clk_core_i                : in  std_logic;
+         clk_chipset_i             : in  std_logic;
+         clk_video_base_i          : in  std_logic;
+         clk_video_x2_i            : in  std_logic;
+         clk_video_out_ps_i        : in  std_logic;
+         clk_video_vga_i           : in  std_logic;
+         clk_14_318_i              : in  std_logic;
+         pll_locked_i              : in  std_logic;
+         reset_i                   : in  std_logic;
+         reset_osd_i               : in  std_logic;
+         reset_button_i            : in  std_logic;
+         video_clk_o               : out std_logic;
+         video_ce_o                : out std_logic;
+         video_red_o               : out std_logic_vector(7 downto 0);
+         video_green_o             : out std_logic_vector(7 downto 0);
+         video_blue_o              : out std_logic_vector(7 downto 0);
+         video_hs_o                : out std_logic;
+         video_vs_o                : out std_logic;
+         video_hblank_o            : out std_logic;
+         video_vblank_o            : out std_logic;
+         video_de_o                : out std_logic;
+         video_mode13_o            : out std_logic;
+         video_mode13_native_clk_o : out std_logic;
+         video_mode350_o           : out std_logic;
+         video_active_dots_o       : out std_logic_vector(11 downto 0);
+         video_active_lines_o      : out std_logic_vector(9 downto 0);
+         video_aspect_o            : out std_logic_vector(1 downto 0);
+         video_scanlines_o         : out std_logic_vector(1 downto 0);
+         audio_left_o              : out std_logic_vector(15 downto 0);
+         audio_right_o             : out std_logic_vector(15 downto 0);
+         audio_mix_o               : out std_logic_vector(1 downto 0);
+         ps2_kbd_clk_i             : in  std_logic;
+         ps2_kbd_data_i            : in  std_logic;
+         ps2_kbd_clk_o             : out std_logic;
+         ps2_kbd_data_o            : out std_logic;
+         ps2_key_i                 : in  std_logic_vector(10 downto 0);
+         ps2_mouse_clk_i           : in  std_logic;
+         ps2_mouse_data_i          : in  std_logic;
+         ps2_mouse_clk_o           : out std_logic;
+         ps2_mouse_data_o          : out std_logic;
+         joy0_i                    : in  std_logic_vector(13 downto 0);
+         joy1_i                    : in  std_logic_vector(13 downto 0);
+         joya0_i                   : in  std_logic_vector(15 downto 0);
+         joya1_i                   : in  std_logic_vector(15 downto 0);
+         osm_cpu_speed_i           : in  std_logic_vector(1 downto 0);
+         osm_cpu_8086_i            : in  std_logic;
+         osm_fake286_i             : in  std_logic;
+         osm_splash_off_i          : in  std_logic;
+         osm_bios_writable_i       : in  std_logic_vector(1 downto 0);
+         osm_audio220_i            : in  std_logic_vector(1 downto 0);
+         osm_opl2_i                : in  std_logic_vector(1 downto 0);
+         osm_tandy_i               : in  std_logic;
+         osm_speaker_vol_i         : in  std_logic_vector(1 downto 0);
+         osm_audio_boost_i         : in  std_logic_vector(1 downto 0);
+         osm_stereo_mix_i          : in  std_logic_vector(1 downto 0);
+         osm_crt_h_i               : in  std_logic_vector(3 downto 0);
+         osm_crt_v_i               : in  std_logic_vector(2 downto 0);
+         osm_vsync_w_i             : in  std_logic_vector(2 downto 0);
+         osm_hsync_w_i             : in  std_logic_vector(2 downto 0);
+         osm_scandoubler_fx_i      : in  std_logic_vector(1 downto 0);
+         osm_aspect_i              : in  std_logic_vector(1 downto 0);
+         osm_display_i             : in  std_logic_vector(2 downto 0);
+         osm_vga13_tv_i            : in  std_logic;
+         osm_monitor_i             : in  std_logic_vector(1 downto 0);
+         osm_ems_disable_i         : in  std_logic;
+         osm_umb_disable_i         : in  std_logic;
+         osm_joy1_i                : in  std_logic_vector(1 downto 0);
+         osm_joy2_i                : in  std_logic_vector(1 downto 0);
+         osm_joy_sync_i            : in  std_logic;
+         osm_joy_swap_i            : in  std_logic;
+         osm_sb_irq7_i             : in  std_logic;
+         osm_mpu401_disable_i      : in  std_logic;
+         osm_floppy_wp_i           : in  std_logic_vector(1 downto 0);
+         bios_missing_pcxt_o       : out std_logic;
+         bios_missing_ega_o        : out std_logic;
+         reset_pending_o           : out std_logic;
+         pause_o                   : out std_logic;
+         splash_active_o           : out std_logic;
+         rom_download_i            : in  std_logic;
+         rom_index_i               : in  std_logic_vector(7 downto 0);
+         rom_wr_i                  : in  std_logic;
+         rom_addr_i                : in  std_logic_vector(24 downto 0);
+         rom_data_i                : in  std_logic_vector(15 downto 0);
+         rom_wait_o                : out std_logic;
+         sdram_a_o                 : out std_logic_vector(12 downto 0);
+         sdram_ba_o                : out std_logic_vector(1 downto 0);
+         sdram_cke_o               : out std_logic;
+         sdram_ncs_o               : out std_logic;
+         sdram_nras_o              : out std_logic;
+         sdram_ncas_o              : out std_logic;
+         sdram_nwe_o               : out std_logic;
+         sdram_dq_out_o            : out std_logic_vector(15 downto 0);
+         sdram_dq_io_o             : out std_logic;
+         sdram_dq_in_i             : in  std_logic_vector(15 downto 0);
+         sdram_dqml_o              : out std_logic;
+         sdram_dqmh_o              : out std_logic;
+         sdram_initialized_o       : out std_logic;
+         mgmt_addr_i               : in  std_logic_vector(15 downto 0);
+         mgmt_dout_i               : in  std_logic_vector(15 downto 0);
+         mgmt_din_o                : out std_logic_vector(15 downto 0);
+         mgmt_wr_i                 : in  std_logic;
+         mgmt_rd_i                 : in  std_logic;
+         mgmt_req_o                : out std_logic_vector(7 downto 0);
+         fdd_present_o             : out std_logic_vector(1 downto 0);
+         led_disk_o                : out std_logic
+      );
+   end component pcxt_core;
+
+   -- core outputs
+   signal core_video_de       : std_logic;
+   signal core_video_hblank   : std_logic;
+   signal core_video_vblank   : std_logic;
+   signal core_audio_left     : std_logic_vector(15 downto 0);
+   signal core_audio_right    : std_logic_vector(15 downto 0);
+
+   -- the byte bus that the KFSDRAM overlay carries on the SDRAM pins
+   -- (mapping documented in CORE/rtl/overlay/KFSDRAM.sv)
+   signal sdram_a             : std_logic_vector(12 downto 0);
+   signal sdram_ba            : std_logic_vector(1 downto 0);
+   signal sdram_nras          : std_logic;
+   signal sdram_nwe           : std_logic;
+   signal sdram_dq_out        : std_logic_vector(15 downto 0);
+   signal sdram_dq_in         : std_logic_vector(15 downto 0);
+
+   signal avm_address         : std_logic_vector(21 downto 0);
+   signal avm_writedata       : std_logic_vector(7 downto 0);
+   signal avm_read            : std_logic;
+   signal avm_write           : std_logic;
+   signal avm_readdata        : std_logic_vector(7 downto 0);
+   signal avm_readdatavalid   : std_logic;
+   signal avm_waitrequest     : std_logic;
+
+   signal reset_cold          : std_logic;
 
 begin
 
-   -- @TODO: Add the actual MiSTer core here
-   -- The demo core's purpose is to show a test image and to make sure, that the MiSTer2MEGA65 framework
-   -- can be synthesized and run stand-alone without an actual MiSTer core being there, yet
-   i_democore : entity work.democore
+   -- Cold reset re-streams the ROMs (see the reset tree in docs/emu-signal-map.md):
+   -- only the whole-machine reset and a lost clock lock count, never the OSM.
+   reset_cold <= reset_hard_i or not clk_locked_i;
+
+   i_pcxt_core : pcxt_core
       port map (
-         clk_main_i           => clk_main_i,
+         clk_core_i                => clk_core_i,
+         clk_chipset_i             => clk_main_i,
+         clk_video_base_i          => clk_video_base_i,
+         clk_video_x2_i            => clk_video_x2_i,
+         clk_video_out_ps_i        => clk_video_out_ps_i,
+         clk_video_vga_i           => clk_video_vga_i,
+         clk_14_318_i              => clk_14_318_i,
+         pll_locked_i              => clk_locked_i,
+         reset_i                   => reset_cold,
+         reset_osd_i               => reset_soft_i,
+         reset_button_i            => '0',
 
-         reset_i              => reset_soft_i or reset_hard_i,       -- long and short press of reset button mean the same
-         pause_i              => pause_i,
+         video_clk_o               => open,                 -- = clk_video_out_ps_i
+         video_ce_o                => video_ce_o,
+         video_red_o               => video_red_o,
+         video_green_o             => video_green_o,
+         video_blue_o              => video_blue_o,
+         video_hs_o                => video_hs_o,
+         video_vs_o                => video_vs_o,
+         video_hblank_o            => core_video_hblank,
+         video_vblank_o            => core_video_vblank,
+         video_de_o                => core_video_de,
+         video_mode13_o            => open,
+         video_mode13_native_clk_o => open,
+         video_mode350_o           => open,
+         video_active_dots_o       => open,
+         video_active_lines_o      => open,
+         video_aspect_o            => open,
+         video_scanlines_o         => open,
 
-         ball_col_rgb_i       => x"EE4020",                          -- ball color (RGB): orange
-         paddle_speed_i       => x"1",                               -- paddle speed is about 50 pixels / sec (due to 50 Hz)
+         audio_left_o              => core_audio_left,
+         audio_right_o             => core_audio_right,
+         audio_mix_o               => open,
 
-         keyboard_n_i         => keyboard_n,                         -- move the paddle with the cursor left/right keys...
-         joy_up_n_i           => joy_1_up_n_i,                       -- ... or move the paddle with a joystick in port #1
-         joy_down_n_i         => joy_1_down_n_i,
-         joy_left_n_i         => joy_1_left_n_i,
-         joy_right_n_i        => joy_1_right_n_i,
-         joy_fire_n_i         => joy_1_fire_n_i,
+         -- Phase 3: no keyboard or mouse yet, PS/2 lines idle high
+         ps2_kbd_clk_i             => '1',
+         ps2_kbd_data_i            => '1',
+         ps2_kbd_clk_o             => open,
+         ps2_kbd_data_o            => open,
+         ps2_key_i                 => (others => '0'),
+         ps2_mouse_clk_i           => '1',
+         ps2_mouse_data_i          => '1',
+         ps2_mouse_clk_o           => open,
+         ps2_mouse_data_o          => open,
+         joy0_i                    => (others => '0'),
+         joy1_i                    => (others => '0'),
+         joya0_i                   => (others => '0'),
+         joya1_i                   => (others => '0'),
 
-         vga_ce_o             => video_ce_o,
-         vga_red_o            => video_red_o,
-         vga_green_o          => video_green_o,
-         vga_blue_o           => video_blue_o,
-         vga_vs_o             => video_vs_o,
-         vga_hs_o             => video_hs_o,
-         vga_hblank_o         => video_hblank_o,
-         vga_vblank_o         => video_vblank_o,
+         -- OSM: MiSTer defaults (all status bits zero) until config.vhd grows the menu
+         osm_cpu_speed_i           => "00",
+         osm_cpu_8086_i            => '0',
+         osm_fake286_i             => '0',
+         osm_splash_off_i          => '0',
+         osm_bios_writable_i       => "00",
+         osm_audio220_i            => "00",
+         osm_opl2_i                => "00",
+         osm_tandy_i               => '0',
+         osm_speaker_vol_i         => "00",
+         osm_audio_boost_i         => "00",
+         osm_stereo_mix_i          => "00",
+         osm_crt_h_i               => "0000",
+         osm_crt_v_i               => "000",
+         osm_vsync_w_i             => "000",
+         osm_hsync_w_i             => "000",
+         osm_scandoubler_fx_i      => "00",
+         osm_aspect_i              => "00",
+         osm_display_i             => "000",
+         osm_vga13_tv_i            => '0',
+         osm_monitor_i             => "00",
+         osm_ems_disable_i         => '1',                  -- no EMS backend in the BRAM build
+         osm_umb_disable_i         => '1',                  -- no UMB backend in the BRAM build
+         osm_joy1_i                => "00",
+         osm_joy2_i                => "00",
+         osm_joy_sync_i            => '0',
+         osm_joy_swap_i            => '0',
+         osm_sb_irq7_i             => '0',
+         osm_mpu401_disable_i      => '1',                  -- nothing behind the MPU-401
+         osm_floppy_wp_i           => "00",
 
-         audio_left_o         => audio_left_o,
-         audio_right_o        => audio_right_o
-      ); -- i_democore
+         bios_missing_pcxt_o       => bios_missing_pcxt_o,
+         bios_missing_ega_o        => bios_missing_ega_o,
+         reset_pending_o           => open,
+         pause_o                   => open,
+         splash_active_o           => splash_active_o,
 
-   -- On video_ce_o and video_ce_ovl_o: You have an important @TODO when porting a core:
-   -- video_ce_o: You need to make sure that video_ce_o divides clk_main_i such that it transforms clk_main_i
-   --             into the pixelclock of the core (means: the core's native output resolution pre-scandoubler)
-   -- video_ce_ovl_o: Clock enable for the OSM overlay and for sampling the core's (retro) output in a way that
-   --             it is displayed correctly on a "modern" analog input device: Make sure that video_ce_ovl_o
-   --             transforms clk_main_o into the post-scandoubler pixelclock that is valid for the target
-   --             resolution specified by VGA_DX/VGA_DY (globals.vhd)
-   -- video_retro15kHz_o: '1', if the output from the core (post-scandoubler) in the retro 15 kHz analog RGB mode.
-   --             Hint: Scandoubler off does not automatically mean retro 15 kHz on.
+         rom_download_i            => rom_download_i,
+         rom_index_i               => rom_index_i,
+         rom_wr_i                  => rom_wr_i,
+         rom_addr_i                => rom_addr_i,
+         rom_data_i                => rom_data_i,
+         rom_wait_o                => rom_wait_o,
+
+         sdram_a_o                 => sdram_a,
+         sdram_ba_o                => sdram_ba,
+         sdram_cke_o               => open,
+         sdram_ncs_o               => open,
+         sdram_nras_o              => sdram_nras,
+         sdram_ncas_o              => open,
+         sdram_nwe_o               => sdram_nwe,
+         sdram_dq_out_o            => sdram_dq_out,
+         sdram_dq_io_o             => open,
+         sdram_dq_in_i             => sdram_dq_in,
+         sdram_dqml_o              => open,
+         sdram_dqmh_o              => open,
+         sdram_initialized_o       => open,
+
+         -- Phase 3: no floppy/IDE bridge yet
+         mgmt_addr_i               => (others => '0'),
+         mgmt_dout_i               => (others => '0'),
+         mgmt_din_o                => open,
+         mgmt_wr_i                 => '0',
+         mgmt_rd_i                 => '0',
+         mgmt_req_o                => open,
+         fdd_present_o             => open,
+         led_disk_o                => led_disk_o
+      ); -- i_pcxt_core
+
+   -- Blanking for the framework: video_de_o is aligned with the RGB output,
+   -- the core's own blank outputs lead it by a few pixels (see the wrapper
+   -- notes), so derive the horizontal blank from DE.
+   video_hblank_o <= not core_video_de;
+   video_vblank_o <= core_video_vblank;
+
+   -- The framework samples the overlay with video_ce_ovl_o; the core's pixel
+   -- clock enable is the natural choice until the analog path is tuned.
    video_ce_ovl_o <= video_ce_o;
 
-   -- @TODO: Keyboard mapping and keyboard behavior
-   -- Each core is treating the keyboard in a different way: Some need low-active "matrices", some
-   -- might need small high-active keyboard memories, etc. This is why the MiSTer2MEGA65 framework
-   -- lets you define literally everything and only provides a minimal abstraction layer to the keyboard.
-   -- You need to adjust keyboard.vhd to your needs
-   i_keyboard : entity work.keyboard
+   audio_left_o  <= signed(core_audio_left);
+   audio_right_o <= signed(core_audio_right);
+
+   ---------------------------------------------------------------------------
+   -- Memory backend behind the KFSDRAM overlay's byte bus
+   ---------------------------------------------------------------------------
+
+   avm_address    <= sdram_dq_out(15 downto 9) & sdram_ba & sdram_a;
+   avm_writedata  <= sdram_dq_out(7 downto 0);
+   avm_read       <= not sdram_nras;
+   avm_write      <= not sdram_nwe;
+   sdram_dq_in    <= "000000" & avm_readdatavalid & avm_waitrequest & avm_readdata;
+
+   i_mem : entity work.mem_bram
       port map (
-         clk_main_i           => clk_main_i,
-
-         -- Interface to the MEGA65 keyboard
-         key_num_i            => kb_key_num_i,
-         key_pressed_n_i      => kb_key_pressed_n_i,
-
-         -- @TODO: Create the kind of keyboard output that your core needs
-         -- "example_n_o" is a low active register and used by the demo core:
-         --    bit 0: Space
-         --    bit 1: Return
-         --    bit 2: Run/Stop
-         example_n_o          => keyboard_n
-      ); -- i_keyboard
+         clk_i               => clk_main_i,
+         rst_i               => reset_cold,
+         avm_address_i       => avm_address,
+         avm_writedata_i     => avm_writedata,
+         avm_write_i         => avm_write,
+         avm_read_i          => avm_read,
+         avm_readdata_o      => avm_readdata,
+         avm_readdatavalid_o => avm_readdatavalid,
+         avm_waitrequest_o   => avm_waitrequest
+      ); -- i_mem
 
 end architecture synthesis;
-

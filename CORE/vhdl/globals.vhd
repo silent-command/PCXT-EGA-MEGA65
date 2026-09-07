@@ -86,6 +86,11 @@ constant C_HMAP_DEMO          : std_logic_vector(15 downto 0) := x"0200";     --
 constant C_DEV_DEMO_VD        : std_logic_vector(15 downto 0) := x"0101";
 constant C_DEV_DEMO_NOBUFFER  : std_logic_vector(15 downto 0) := x"AAAA";
 
+-- PCXT-EGA: QNICE devices that receive the auto-loaded BIOS files (rom_loader.vhd)
+constant C_DEV_ROM_PCXT       : std_logic_vector(15 downto 0) := x"0110";
+constant C_DEV_ROM_EGA        : std_logic_vector(15 downto 0) := x"0111";
+constant C_DEV_ROM_XTIDE      : std_logic_vector(15 downto 0) := x"0112";
+
 -- Virtual drive management system (handled by vdrives.vhd and the firmware)
 -- If you are not using virtual drives, make sure that:
 --    C_VDNUM        is 0
@@ -152,9 +157,21 @@ constant C_CRTROMS_MAN           : crtrom_buf_array := ( x"EEEE", x"EEEE",
 --               c) Don't forget to finish the C_CRTROMS_AUTO array with x"EEEE"
 
 -- M2M framework constants
-constant C_CRTROMS_AUTO_NUM      : natural := 0;                                       -- Amount of automatically loadable ROMs and carts, maximum is 16
-constant C_CRTROMS_AUTO_NAMES    : string  := "" & ENDSTR;
-constant C_CRTROMS_AUTO          : crtrom_buf_array := ( x"EEEE", x"EEEE", x"EEEE", x"EEEE",
+-- PCXT-EGA: the three BIOS files, streamed into the core by rom_loader.vhd before the
+-- core starts. The PC/XT and EGA BIOS are mandatory (the core holds the CPU in reset
+-- until both are present); the XT-IDE ROM is optional.
+constant C_ROM_NAME_PCXT         : string  := "/pcxt/pcxt.rom";
+constant C_ROM_NAME_EGA          : string  := "/pcxt/ega_bios.rom";
+constant C_ROM_NAME_XTIDE        : string  := "/pcxt/xtide.rom";
+constant C_ROM_START_PCXT        : natural := 0;
+constant C_ROM_START_EGA         : natural := C_ROM_START_PCXT + C_ROM_NAME_PCXT'length + 1;
+constant C_ROM_START_XTIDE       : natural := C_ROM_START_EGA  + C_ROM_NAME_EGA'length  + 1;
+
+constant C_CRTROMS_AUTO_NUM      : natural := 3;                                       -- Amount of automatically loadable ROMs and carts, maximum is 16
+constant C_CRTROMS_AUTO_NAMES    : string  := C_ROM_NAME_PCXT & ENDSTR & C_ROM_NAME_EGA & ENDSTR & C_ROM_NAME_XTIDE & ENDSTR;
+constant C_CRTROMS_AUTO          : crtrom_buf_array := ( C_CRTROMTYPE_DEVICE, C_DEV_ROM_PCXT,  C_CRTROMTYPE_MANDATORY, std_logic_vector(to_unsigned(C_ROM_START_PCXT,  16)),
+                                                         C_CRTROMTYPE_DEVICE, C_DEV_ROM_EGA,   C_CRTROMTYPE_MANDATORY, std_logic_vector(to_unsigned(C_ROM_START_EGA,   16)),
+                                                         C_CRTROMTYPE_DEVICE, C_DEV_ROM_XTIDE, C_CRTROMTYPE_OPTIONAL,  std_logic_vector(to_unsigned(C_ROM_START_XTIDE, 16)),
                                                          x"EEEE");                     -- Always finish the array using x"EEEE"
 
 ----------------------------------------------------------------------------------------------------------
