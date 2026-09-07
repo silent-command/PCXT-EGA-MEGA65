@@ -10,6 +10,8 @@ CORE/*ip_user_files
 CORE/webtalk*.*
 CORE/build-r6.log
 CORE/build-r6.jou
+CORE/*.backup.jou
+CORE/*.backup.log
 CORE/build-r6-*.rpt
 CORE/*.str
 CORE/.gen
