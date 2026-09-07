@@ -83,6 +83,8 @@ proc apply_overlay {files overlay_dir} {
     }
     return $result
 }
+# MEGA65 wrapper sources (CORE/rtl/*.sv, not the overlay dir) are SystemVerilog too
+lappend sv_files {*}[collect [file join $core_dir rtl] {*.sv}]
 set sv_files  [apply_overlay $sv_files  $overlay]
 set v_files   [apply_overlay $v_files   $overlay]
 set vhd_files [apply_overlay $vhd_files $overlay]

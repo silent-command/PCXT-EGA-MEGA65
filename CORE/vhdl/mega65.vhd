@@ -224,8 +224,28 @@ architecture synthesis of MEGA65_Core is
 -- Clocks and active high reset signals for each clock domain
 ---------------------------------------------------------------------------------------------
 
-signal main_clk               : std_logic;               -- Core main clock
+signal main_clk               : std_logic;               -- Core main clock (50 MHz chipset)
 signal main_rst               : std_logic;
+signal clk_100                : std_logic;
+signal clk_28                 : std_logic;
+signal clk_57                 : std_logic;
+signal clk_57_ps              : std_logic;
+signal clk_25                 : std_logic;
+signal clk_14                 : std_logic;
+signal clk_locked             : std_logic;
+signal video_rst              : std_logic;
+
+-- ROM download stream (rom_loader.vhd -> main.vhd), main_clk domain
+signal main_rom_download      : std_logic;
+signal main_rom_index         : std_logic_vector(7 downto 0);
+signal main_rom_wr            : std_logic;
+signal main_rom_addr          : std_logic_vector(24 downto 0);
+signal main_rom_data          : std_logic_vector(15 downto 0);
+signal main_rom_wait          : std_logic;
+signal main_led_disk          : std_logic;
+
+-- QNICE clock domain
+signal qnice_rom_wait         : std_logic;
 
 ---------------------------------------------------------------------------------------------
 -- main_clk (MiSTer core's clock)
@@ -311,19 +331,30 @@ begin
    main_joy_2_fire_n_o  <= '1';
 
 
-   -- MMCME2_ADV clock generators:
-   --   @TODO YOURCORE:       54 MHz
+   -- MMCME2_ADV clock generators (see clk.vhd): 100/50 MHz for CPU and chipset,
+   -- the 28.636/57.273/57.273+90/25.2/14.318 MHz family for video
    clk_gen : entity work.clk
       port map (
          sys_clk_i         => clk_i,           -- expects 100 MHz
-         main_clk_o        => main_clk,        -- CORE's 54 MHz clock
-         main_rst_o        => main_rst         -- CORE's reset, synchronized
+         main_clk_o        => main_clk,        -- 50 MHz chipset clock
+         main_rst_o        => main_rst,
+         clk_50_o          => open,
+         rst_50_o          => open,
+         clk_100_o         => clk_100,
+         rst_100_o         => open,
+         clk_28_o          => clk_28,
+         clk_57_o          => clk_57,
+         clk_57_ps_o       => clk_57_ps,
+         clk_25_o          => clk_25,
+         clk_14_o          => clk_14,
+         video_rst_o       => video_rst,
+         locked_o          => clk_locked
       ); -- clk_gen
 
    main_clk_o  <= main_clk;
    main_rst_o  <= main_rst;
-   video_clk_o <= main_clk;
-   video_rst_o <= main_rst;
+   video_clk_o <= clk_57_ps;                   -- the core's output retime domain
+   video_rst_o <= video_rst;
 
    ---------------------------------------------------------------------------------------------
    -- main_clk (MiSTer core's clock)
@@ -341,6 +372,13 @@ begin
       )
       port map (
          clk_main_i           => main_clk,
+         clk_core_i           => clk_100,
+         clk_video_base_i     => clk_28,
+         clk_video_x2_i       => clk_57,
+         clk_video_out_ps_i   => clk_57_ps,
+         clk_video_vga_i      => clk_25,
+         clk_14_318_i         => clk_14,
+         clk_locked_i         => clk_locked,
          reset_soft_i         => main_reset_core_i,
          reset_hard_i         => main_reset_m2m_i,
          pause_i              => main_pause_core_i,
@@ -348,7 +386,7 @@ begin
          clk_main_speed_i     => CORE_CLK_SPEED,
 
          -- Video output
-         -- This is PAL 720x576 @ 50 Hz (pixel clock 27 MHz), but synchronized to main_clk (54 MHz).
+         -- Raw EGA/CGA/VGA rasters in the clk_57_ps domain, re-timed by the framework's scaler
          video_ce_o           => video_ce_o,
          video_ce_ovl_o       => video_ce_ovl_o,
          video_red_o          => video_red_o,
@@ -362,6 +400,21 @@ begin
          -- audio output (pcm format, signed values)
          audio_left_o         => main_audio_left_o,
          audio_right_o        => main_audio_right_o,
+
+         -- BIOS ROMs streamed by rom_loader
+         rom_download_i       => main_rom_download,
+         rom_index_i          => main_rom_index,
+         rom_wr_i             => main_rom_wr,
+         rom_addr_i           => main_rom_addr,
+         rom_data_i           => main_rom_data,
+         rom_wait_o           => main_rom_wait,
+
+         bios_missing_pcxt_o  => open,
+         bios_missing_ega_o   => open,
+         splash_active_o      => open,
+         led_disk_o           => main_led_disk,
+
+         osm_control_i        => main_osm_control_i,
 
          -- M2M Keyboard interface
          kb_key_num_i         => main_kb_key_num_i,
@@ -463,8 +516,9 @@ begin
             qnice_demo_vd_we     <= qnice_dev_we_i;
             qnice_dev_data_o     <= qnice_demo_vd_data_o;
 
-         -- @TODO YOUR RAMs or ROMs (e.g. for cartridges) or other devices here
-         -- Device numbers need to be >= 0x0100
+         -- BIOS ROM files, auto-loaded by the firmware into rom_loader (see globals.vhd)
+         when C_DEV_ROM_PCXT | C_DEV_ROM_EGA | C_DEV_ROM_XTIDE =>
+            qnice_dev_wait_o     <= qnice_rom_wait;
 
          when others => null;
       end case;
@@ -475,6 +529,32 @@ begin
    ---------------------------------------------------------------------------------------------
 
    -- Put your dual-clock devices such as RAMs and ROMs here
+
+   -- QNICE byte writes of the auto-loaded BIOS files -> the core's ioctl-style ROM port
+   i_rom_loader : entity work.rom_loader
+      generic map (
+         G_DEV_PCXT        => C_DEV_ROM_PCXT,
+         G_DEV_EGA         => C_DEV_ROM_EGA,
+         G_DEV_XTIDE       => C_DEV_ROM_XTIDE
+      )
+      port map (
+         qnice_clk_i       => qnice_clk_i,
+         qnice_rst_i       => qnice_rst_i,
+         qnice_dev_id_i    => qnice_dev_id_i,
+         qnice_dev_addr_i  => qnice_dev_addr_i,
+         qnice_dev_data_i  => qnice_dev_data_i,
+         qnice_dev_ce_i    => qnice_dev_ce_i,
+         qnice_dev_we_i    => qnice_dev_we_i,
+         qnice_dev_wait_o  => qnice_rom_wait,
+         core_clk_i        => main_clk,
+         core_rst_i        => main_reset_m2m_i,
+         rom_download_o    => main_rom_download,
+         rom_index_o       => main_rom_index,
+         rom_wr_o          => main_rom_wr,
+         rom_addr_o        => main_rom_addr,
+         rom_data_o        => main_rom_data,
+         rom_wait_i        => main_rom_wait
+      ); -- i_rom_loader
    --
    -- Use the M2M framework's official RAM/ROM: dualport_2clk_ram
    -- and make sure that the you configure the port that works with QNICE as a falling edge
@@ -494,7 +574,7 @@ begin
    -- a) In case that this is handled in main.vhd, you need to add the appropriate ports to i_main
    -- b) You might want to change the drive led's color (just like the C64 core does) as long as
    --    the cache is dirty (i.e. as long as the write process is not finished, yet)
-   main_drive_led_o     <= '0';
+   main_drive_led_o     <= main_led_disk;
    main_drive_led_col_o <= x"00FF00";  -- 24-bit RGB value for the led
 
    i_vdrives : entity work.vdrives
