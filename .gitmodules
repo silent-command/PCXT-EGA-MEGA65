@@ -1,3 +1,6 @@
 [submodule "QNICE"]
 	path = M2M/QNICE
 	url = https://github.com/sy2002/QNICE-FPGA
+[submodule "CORE/PCXT-EGA_MiSTer"]
+	path = CORE/PCXT-EGA_MiSTer
+	url = https://github.com/MiSTer-devel/PCXT-EGA_MiSTer.git

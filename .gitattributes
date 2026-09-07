@@ -1,0 +1,18 @@
+# Keep LF line endings on every platform. The M2M shell scripts, QNICE
+# assembler sources and Vivado Tcl hooks are run from WSL on Windows and
+# break with CRLF. Git detects binaries itself via text=auto.
+* text=auto eol=lf
+*.sh text eol=lf
+*.asm text eol=lf
+*.tcl text eol=lf
+*.vhd text eol=lf
+*.sv text eol=lf
+*.v text eol=lf
+*.xdc text eol=lf
+*.xpr text eol=lf
+*.rom binary
+*.bit binary
+*.cor binary
+*.pdf binary
+*.png binary
+*.jpg binary
