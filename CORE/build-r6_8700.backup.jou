@@ -1,0 +1,24 @@
+#-----------------------------------------------------------
+# Vivado v2026.1 (64-bit)
+# SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
+# IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
+# SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
+# Start of session at: Mon Sep  7 15:50:20 2026
+# Process ID         : 8700
+# Current directory  : C:/Users/justi/Desktop/MEGA65/FPGA/PCXT-EGA-MEGA65/CORE
+# Command line       : vivado.exe -mode batch -source build-r6.tcl -log build-r6.log -journal build-r6.jou
+# Log file           : C:/Users/justi/Desktop/MEGA65/FPGA/PCXT-EGA-MEGA65/CORE/build-r6.log
+# Journal file       : C:/Users/justi/Desktop/MEGA65/FPGA/PCXT-EGA-MEGA65/CORE\build-r6.jou
+# Running On         : DESKTOP-F4M56LQ
+# Platform           : Windows 11
+# Operating System   : 26200
+# Processor Detail   : 13th Gen Intel(R) Core(TM) i7-13700K
+# CPU Frequency      : 3418 MHz
+# CPU Physical cores : 16
+# CPU Logical cores  : 24
+# Host memory        : 34088 MB
+# Swap memory        : 2147 MB
+# Total Virtual      : 36235 MB
+# Available Virtual  : 8890 MB
+#-----------------------------------------------------------
+source build-r6.tcl
