@@ -112,7 +112,12 @@ foreach f $v_files  { read_verilog -sv $f }
 set_property include_dirs $incdirs [current_fileset]
 
 # ---------------------------------------------------------------- synthesis
-set defines [lrange $argv 1 end]
+# Feature macros. The shipped MiSTer build sets all of these to 1 through
+# config.tcl (VERILOG_MACRO); the in-file defaults are guarded by `ifndef.
+# Extra -tclargs after the top name override or extend this list.
+set defines {ENABLE_OPL2=1 ENABLE_CMS=1 ENABLE_EMS=1 ENABLE_UMB=1 ENABLE_TANDY_AUDIO=1 ENABLE_MIDI=1 ENABLE_SB=1}
+foreach d [lrange $argv 1 end] { lappend defines $d }
+puts "OOC: defines = $defines"
 set t0 [clock seconds]
 if {[catch {
     synth_design -top $top -part $part -mode out_of_context -flatten_hierarchy none \
