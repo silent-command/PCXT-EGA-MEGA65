@@ -25,3 +25,16 @@ Notes:
   `ram_refresh_collision_tb` (KFPC-XT) as the harness for the KFSDRAM
   compatible memory shim, and `biu_ram_prefetch_tb` (8088) for the BIU path
   through RAM.sv.
+
+## Benches written for the port
+
+All live in `CORE/rtl/tb/` (plus `CORE/vhdl/` for the VHDL ones) and are
+self-checking; each prints `RESULT: PASS`.
+
+| Bench | Runner | What it covers |
+|---|---|---|
+| `ram_lookahead_avm_tb.sv` | `run_ram_avm_tb.sh` (Icarus, WSL) | KFSDRAM overlay: the chipset's RAM handshake on the Avalon byte bus (56 checks) |
+| `rom_load_tb.sv` | `run_rom_load_tb.sh` (Verilator, WSL) | Full `pcxt_core` wrapper: ROM download stream lands in the BIOS windows |
+| `rom_loader_tb.sv` | `run_rom_loader_tb.ps1` (xsim) | QNICE side of `rom_loader.vhd`: device writes, CDC, timeouts, status |
+| `keyboard_tb.vhd` | `run_keyboard_tb.sh` (GHDL, WSL) | MEGA65 key numbers to PS/2 set-2 frames, host reset (FF) handshake |
+| `mgmt_bridge_tb.sv` | `run_mgmt_bridge_tb.sh` (Icarus, WSL) | Storage bridge against the real `ide.v`/`floppy.v`: mount, IDENTIFY, CHS/LBA reads and writes, 8272 DMA reads/writes (1266 checks) |
