@@ -364,7 +364,11 @@ begin
    -- MEGA65's power led: By default, it is on and glows green when the MEGA65 is powered on.
    -- We switch it to blue when a long reset is detected and as long as the user keeps pressing the preset button
    main_power_led_o     <= '1';
-   main_power_led_col_o <= x"0000FF" when main_reset_m2m_i else x"00FF00";
+   -- Diagnostic: red while the core's MMCMs are not locked (the core cannot
+   -- run and the ROM loader would stall), blue during a long reset, else green.
+   main_power_led_col_o <= x"FF0000" when clk_locked = '0' else
+                           x"0000FF" when main_reset_m2m_i else
+                           x"00FF00";
 
    -- main.vhd contains the actual MiSTer core
    i_main : entity work.main
