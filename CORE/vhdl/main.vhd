@@ -241,9 +241,13 @@ architecture synthesis of main is
 
 begin
 
-   -- Cold reset re-streams the ROMs (see the reset tree in docs/emu-signal-map.md):
-   -- only the whole-machine reset and a lost clock lock count, never the OSM.
-   reset_cold <= reset_hard_i or not clk_locked_i;
+   -- Cold reset re-streams the ROMs (see the reset tree in docs/emu-signal-map.md).
+   -- Only a lost clock lock counts. reset_hard_i cannot be used: the framework's
+   -- top level ORs the firmware's CSR reset into it, and the firmware holds that
+   -- reset while it streams the ROMs, which must land while the core is only
+   -- warm-reset (reset_soft_i). A whole-machine reset restarts the firmware,
+   -- which re-streams the ROMs anyway.
+   reset_cold <= not clk_locked_i;
 
    i_pcxt_core : pcxt_core
       port map (
