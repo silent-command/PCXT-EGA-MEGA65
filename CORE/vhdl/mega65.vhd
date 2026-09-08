@@ -639,31 +639,31 @@ begin
          reset_core_i      => '0',
 
          -- Core clock domain
-         img_mounted_o     => open,
-         img_readonly_o    => open,
-         img_size_o        => open,
+         img_mounted_o     => main_img_mounted,
+         img_readonly_o    => main_img_readonly,
+         img_size_o        => main_img_size,
          img_type_o        => open,
-         drive_mounted_o   => open,
+         drive_mounted_o   => main_drive_mounted,
 
          -- Cache output signals: The dirty flags can be used to enforce data consistency
          -- (for example by ignoring/delaying a reset or delaying a drive unmount/mount, etc.)
          -- The flushing flags can be used to signal the fact that the caches are currently
          -- flushing to the user, for example using a special color/signal for example
          -- at the drive led
-         cache_dirty_o     => open,
+         cache_dirty_o     => main_cache_dirty,
          cache_flushing_o  => open,
 
          -- QNICE clock domain
-         sd_lba_i          => (others => (others => '0')),
-         sd_blk_cnt_i      => (others => (others => '0')),
-         sd_rd_i           => (others => '0'),
-         sd_wr_i           => (others => '0'),
-         sd_ack_o          => open,
+         sd_lba_i          => qnice_sd_lba,
+         sd_blk_cnt_i      => qnice_sd_blk_cnt,
+         sd_rd_i           => qnice_sd_rd,
+         sd_wr_i           => qnice_sd_wr,
+         sd_ack_o          => qnice_sd_ack,
 
-         sd_buff_addr_o    => open,
-         sd_buff_dout_o    => open,
-         sd_buff_din_i     => (others => (others => '0')),
-         sd_buff_wr_o      => open,
+         sd_buff_addr_o    => qnice_sd_buff_addr,
+         sd_buff_dout_o    => qnice_sd_buff_dout,
+         sd_buff_din_i     => qnice_sd_buff_din,
+         sd_buff_wr_o      => qnice_sd_buff_wr,
 
          -- QNICE interface (MMIO, 4k-segmented)
          -- qnice_addr is 28-bit because we have a 16-bit window selector and a 4k window: 65536*4096 = 268.435.456 = 2^28
