@@ -6,9 +6,8 @@
 -- KFSDRAM overlay's byte bus, and (later) the keyboard, mouse and the
 -- floppy/IDE management bridge.
 --
--- Phase 3 state: no keyboard, no mouse, no disks. PS/2 lines idle, joysticks
--- released, OSM choices at their MiSTer defaults. Goal: splash and BIOS POST
--- on HDMI.
+-- Phase 4 state: keyboard via keyboard.vhd (MEGA65 keys -> PS/2 set 2), no
+-- mouse, no disks. Joysticks released, OSM choices at their MiSTer defaults.
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 ----------------------------------------------------------------------------------
@@ -239,6 +238,13 @@ architecture synthesis of main is
 
    signal reset_cold          : std_logic;
 
+   -- keyboard: emulated PS/2 device
+   signal ps2_kbd_clk         : std_logic;
+   signal ps2_kbd_data        : std_logic;
+   signal ps2_host_clk        : std_logic;
+   signal ps2_host_data       : std_logic;
+   signal ps2_key             : std_logic_vector(10 downto 0);
+
 begin
 
    -- Cold reset re-streams the ROMs (see the reset tree in docs/emu-signal-map.md).
@@ -285,12 +291,12 @@ begin
          audio_right_o             => core_audio_right,
          audio_mix_o               => open,
 
-         -- Phase 3: no keyboard or mouse yet, PS/2 lines idle high
-         ps2_kbd_clk_i             => '1',
-         ps2_kbd_data_i            => '1',
-         ps2_kbd_clk_o             => open,
-         ps2_kbd_data_o            => open,
-         ps2_key_i                 => (others => '0'),
+         -- keyboard: PS/2 device emulated from the MEGA65 keys (keyboard.vhd)
+         ps2_kbd_clk_i             => ps2_kbd_clk,
+         ps2_kbd_data_i            => ps2_kbd_data,
+         ps2_kbd_clk_o             => ps2_host_clk,
+         ps2_kbd_data_o            => ps2_host_data,
+         ps2_key_i                 => ps2_key,
          ps2_mouse_clk_i           => '1',
          ps2_mouse_data_i          => '1',
          ps2_mouse_clk_o           => open,
@@ -378,6 +384,23 @@ begin
    -- The framework samples the overlay with video_ce_ovl_o; the core's pixel
    -- clock enable is the natural choice until the analog path is tuned.
    video_ce_ovl_o <= video_ce_o;
+
+   ---------------------------------------------------------------------------
+   -- Keyboard
+   ---------------------------------------------------------------------------
+
+   i_keyboard : entity work.keyboard
+      port map (
+         clk_main_i      => clk_main_i,
+         rst_i           => reset_cold,
+         key_num_i       => kb_key_num_i,
+         key_pressed_n_i => kb_key_pressed_n_i,
+         ps2_host_clk_i  => ps2_host_clk,
+         ps2_host_data_i => ps2_host_data,
+         ps2_clk_o       => ps2_kbd_clk,
+         ps2_data_o      => ps2_kbd_data,
+         ps2_key_o       => ps2_key
+      ); -- i_keyboard
 
    audio_left_o  <= signed(core_audio_left);
    audio_right_o <= signed(core_audio_right);
