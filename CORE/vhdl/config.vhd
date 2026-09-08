@@ -76,78 +76,84 @@ type WHS_RECORD_ARRAY_TYPE is array (0 to WHS_RECORDS - 1) of WHS_RECORD_TYPE;
 
 constant SCR_WELCOME : string :=
 
-   "Name of the Demo Core Version 1.0\n" &
-   "MiSTer port done by Demo Author in 2022\n\n" &
+   "PCXT-EGA for MEGA65 (work in progress)\n" &
+   "IBM PC/XT with EGA, ported from MiSTer\n\n" &
 
    -- We are not insisting. But it would be nice if you gave us credit for MiSTer2MEGA65 by leaving these lines in
-   "Powered by MiSTer2MEGA65 Version [WIP],\n" &
-   "done by sy2002 and MJoergen in 2022\n" &
+   "Powered by MiSTer2MEGA65,\n" &
+   "done by sy2002 and MJoergen\n\n" &
 
-   "\n\nEdit config.vhd to modify welcome screen.\n\n" &
-   "You can for example show the keyboard map.\n" &
-   "Look at this example for the Demo core:\n\n\n" &
+   "MEGA65 key           PC key\n" &
+   CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_10 & "\n" &
+   "MEGA                 Alt         ALT: AltGr\n" &
+   "RUN/STOP, ESC        Esc\n" &
+   "INS/DEL              Backspace\n" &
+   "Shift+INS/DEL        Insert      MEGA+: Delete\n" &
+   "CLR/HOME             Home\n" &
+   "NO SCROLL            Scroll Lock\n" &
+   "HELP                 F12 (pause + credits)\n" &
+   "Shift+F1..F11        F2..F12\n" &
+   "Shift+: and Shift+;  [ and ]\n" &
+   "Shift+@ and Shift+*  { and }\n" &
+   "Pound, Shift+Pound   # and \\n" &
+   "Arrow left/up        ` and ^   shifted: ~ |\n\n" &
 
-   "    Key                Demo core\n" &
-   "    " & CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_1 & CHR_LINE_1 & "\n" &
-   "    Left Cursor        Paddle left\n" &
-   "    Right Cursor       Paddle right\n" &
-   "    Space              Start game\n" &
-   "    Help               Options menu\n\n\n" &
-
-   "\n\n    Press Space to continue.\n\n\n";
+   "Help key: Options menu\n\n" &
+   "    Press Space to continue.\n";
 
 constant HELP_1 : string :=
 
-   "\n Demo Core for MEGA65 Version 1\n\n" &
+   "\n PCXT-EGA for MEGA65\n\n" &
 
-   " MiSTer port 2022 by YOU\n" &
-   " Powered by MiSTer2MEGA65\n\n\n" &
+   " IBM PC/XT (8088 or 8086) with an EGA card,\n" &
+   " ported from MiSTer-devel/PCXT-EGA_MiSTer.\n" &
+   " MEGA65 port by silent-command, 2026.\n" &
+   " Powered by MiSTer2MEGA65.\n\n" &
 
-   " Lorem ipsum dolor sit amet, consetetur\n" &
-   " sadipscing elitr, sed diam nonumy eirmod\n" &
-   " Mpor invidunt ut labore et dolore magna\n" &
-   " aliquyam erat, sed diam voluptua. At vero\n" &
-   " eos et accusam et justo duo.\n\n" &
+   " Bring-up status:\n" &
+   "  BIOS POST and EGA video    working\n" &
+   "  Keyboard                   working\n" &
+   "  Floppy and hard disk       not yet\n" &
+   "  Mouse, joystick, sound     not yet\n\n" &
 
-   " Dolores et ea rebum. Stet clita kasd gube\n" &
-   " gren, no sea takimata sanctus est Lorem ip\n" &
-   " Sed diam nonumy eirmod tempor invidunt ut\n" &
-   " labore et dolore magna aliquyam era\n\n" &
+   " Memory: 256 KB until the HyperRAM\n" &
+   " backend arrives (then 640 KB + EMS).\n\n" &
 
    " Cursor right to learn more.       (1 of 3)\n" &
    " Press Space to close the help screen.";
 
 constant HELP_2 : string :=
 
-   "\n Demo Core for MEGA65 Version 1\n\n" &
+   "\n Keyboard\n\n" &
 
-   " XYZ ABCDEFGH:\n\n" &
+   " The MEGA65 keys type what they say, on\n" &
+   " a US PC layout. Keys the MEGA65 lacks:\n\n" &
 
-   " 1. ABCD EFGH\n" &
-   " 2. IJK LM NOPQ RSTUVWXYZ\n" &
-   " 3. 10 20 30 40 50\n\n" &
-
-   " a) Dolores et ea rebum\n" &
-   " b) Takimata sanctus est\n" &
-   " c) Tempor Invidunt ut\n" &
-   " d) Sed Diam Nonumy eirmod te\n" &
-   " e) Awesome\n\n" &
-
-   " Ut wisi enim ad minim veniam, quis nostru\n" &
-   " exerci tation ullamcorper suscipit lobor\n" &
-   " tis nisl ut aliquip ex ea commodo.\n\n" &
+   "  [ ]   Shift+:  Shift+;\n" &
+   "  { }   Shift+@  Shift+*\n" &
+   "  # \   Pound    Shift+Pound\n" &
+   "  ` ~   Arrow-left, shifted\n" &
+   "  ^ |   Arrow-up, shifted\n" &
+   "  F2..F12    Shift+F1..F11\n" &
+   "  Insert     Shift+INS/DEL\n" &
+   "  Delete     MEGA+INS/DEL\n" &
+   "  Alt        MEGA     AltGr: ALT\n" &
+   "  Esc        RUN/STOP or ESC\n\n" &
 
    " Crsr left: Prev  Crsr right: Next (2 of 3)\n" &
    " Press Space to close the help screen.";
 
 constant HELP_3 : string :=
 
-   "\n Help Screens\n\n" &
+   "\n Files on the SD card\n\n" &
 
-   " You can have 255 screens per help topic.\n\n" &
+   " /pcxt/pcxt.rom      PC/XT BIOS (64 KB)\n" &
+   " /pcxt/ega_bios.rom  EGA BIOS   (16 KB)\n" &
+   " /pcxt/xtide.rom     XT-IDE BIOS, optional\n\n" &
 
-   " 15 topics overall.\n" &
-   " 1 menu item per topic.\n\n\n\n" &
+   " Both BIOS files are loaded by the core\n" &
+   " at startup; without them it will not\n" &
+   " start.\n\n\n\n" &
 
    " Cursor left to go back.           (3 of 3)\n" &
    " Press Space to close the help screen.";
