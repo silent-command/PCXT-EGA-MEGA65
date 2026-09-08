@@ -31,6 +31,21 @@
 // Priority when several things are pending (S_IDLE): IDE mount, IDE request,
 // floppy mounts, floppy request.  Only one floppy request can exist at a
 // time (one floppy.v serves both drives), so A/B priority never arises.
+//
+// Hard-disk geometry (replaces ARM 2.2's 128-entry size table): at mount the
+// bridge reads block 0 of the image through the block interface (the same
+// blk_rd/blk_ack/buffer path an IDE read uses, so it waits on the SD card
+// like one) and parses the MBR partition table at 0x1BE. The first entry
+// with a non-zero type byte gives heads = end_head + 1 and spt = end_sector
+// & 0x3F. The result is used only if bytes 510/511 are 0x55 0xAA, 1 <= heads
+// <= 16 and 1 <= spt <= 63; otherwise, and for an image shorter than one
+// block, the ARM's fallback of 16 x 63 applies. cylinders = sectors /
+// (heads * spt), truncated, capped at 65535 (the sequential divider). The
+// detected pair is frozen into IDENTIFY words 1/3/4/6 and 54-56 and starts
+// the CHS translation; INITIALIZE DEVICE PARAMETERS (91h) later replaces the
+// translation pair only, like the ARM. Every mount strobe (unmount, remount)
+// redoes the detection, and ide.v is told "present" (reg 6) only after it
+// has finished, so a CHS command can never run on a half-configured drive.
 
 module mgmt_bridge #(
     // Gap between the "media absent" write and the re-insert writes of a
@@ -72,9 +87,10 @@ module mgmt_bridge #(
     localparam [15:0] FDD_BASE = 16'hF200;   // MGMT 1.4: page F2, drive = addr[7], reg = addr[3:0]
     localparam [15:0] FDD_BUF  = 16'hF2FF;   // MGMT 3.2: byte FIFO, shared by both drives
 
-    localparam [4:0]  HD_HEADS_DEF   = 5'd16;    // ARM 2.2 "16x63 rule"
-    localparam [8:0]  HD_SPT_DEF     = 9'd63;
-    localparam [12:0] HD_DIVISOR_DEF = 13'd1008; // 16*63 sectors per cylinder
+    // ARM 2.2 "16x63 rule": the geometry when the MBR yields nothing usable
+    localparam [4:0]  HD_HEADS_FB = 5'd16;
+    localparam [8:0]  HD_SPT_FB   = 9'd63;
+    localparam [8:0]  MBR_PT_OFF  = 9'h1BE;      // partition table: 4 x 16 bytes, then 55 AA at 510/511
 
     // word-5 status bytes exactly as ARM 4.3 lists them (DSC already folded in)
     localparam [7:0] ST_BSY       = 8'h80;   // reset step 2
@@ -101,11 +117,14 @@ module mgmt_bridge #(
     localparam [159:0] ID_SERIAL = "AOHD00000           ";                     // 20 chars
 
     // ------------------------------------------------------------------ IDENTIFY (ARM 2.4)
-    // Words 1/3/6 and 54-56 are the geometry at mount (16 x 63 x cyl); 91h
-    // changes the CHS translation but not this table, like the ARM.
+    // Words 1/3/4/6 and 54-56 are the geometry detected at mount (MBR or the
+    // 16 x 63 fallback, see the header); 91h changes the CHS translation but
+    // not this table, like the ARM.
     // Deviations from ARM 2.4: word 47 = 0x8001 and word 59 = 0x0101 because
     // this bridge moves one sector per DRQ (READ/WRITE MULTIPLE block = 1).
-    function automatic logic [15:0] id_word(input logic [7:0] w, input logic [15:0] cyl, input logic [22:0] total);
+    function automatic logic [15:0] id_word(input logic [7:0] w, input logic [15:0] cyl,
+                                            input logic [4:0] heads, input logic [8:0] spt,
+                                            input logic [22:0] total);
         logic [15:0] r;
         r = 16'h0000;
         if (w >= 8'd10 && w <= 8'd19)
@@ -116,10 +135,10 @@ module mgmt_bridge #(
             case (w)
                 8'd0:   r = 16'h0040;
                 8'd1:   r = cyl;
-                8'd3:   r = {11'd0, HD_HEADS_DEF};
-                8'd4:   r = 16'h7E00;                 // (512*63) & 0xFFFF
+                8'd3:   r = {11'd0, heads};
+                8'd4:   r = {spt[6:0], 9'd0};         // (512*spt) & 0xFFFF
                 8'd5:   r = 16'd512;
-                8'd6:   r = {7'd0, HD_SPT_DEF};
+                8'd6:   r = {7'd0, spt};
                 8'd20:  r = 16'd3;
                 8'd21:  r = 16'd512;
                 8'd22:  r = 16'd4;
@@ -131,8 +150,8 @@ module mgmt_bridge #(
                 8'd52:  r = 16'h0200;
                 8'd53:  r = 16'h0007;
                 8'd54:  r = cyl;
-                8'd55:  r = {11'd0, HD_HEADS_DEF};
-                8'd56:  r = {7'd0, HD_SPT_DEF};
+                8'd55:  r = {11'd0, heads};
+                8'd56:  r = {7'd0, spt};
                 8'd57:  r = total[15:0];
                 8'd58:  r = {9'd0, total[22:16]};
                 8'd59:  r = 16'h0101;                 // multiple valid, 1 sector current
@@ -189,7 +208,8 @@ module mgmt_bridge #(
         S_BLK_ACK_HI, S_BLK_ACK_LO,
         S_DIV_RUN, S_DIV_DONE,
         // IDE (MGMT 5.2, ARM 4.1-4.3)
-        S_IDE_MOUNT, S_IDE_MOUNT_W6A, S_IDE_MOUNT_W6B, S_IDE_MOUNT_REGS,
+        S_IDE_MOUNT, S_IDE_MBR_A, S_IDE_MBR_B, S_IDE_MBR_C, S_IDE_MOUNT_GEO, S_IDE_CYL_DIV,
+        S_IDE_MOUNT_W6A, S_IDE_MOUNT_W6B, S_IDE_MOUNT_REGS,
         S_IDE_RST_W1, S_IDE_RST_W2,
         S_IDE_DECODE, S_IDE_DISPATCH,
         S_IDE_ID_REGS,
@@ -197,7 +217,7 @@ module mgmt_bridge #(
         S_IDE_RD_FETCH, S_IDE_RD_TX, S_IDE_RD_REGS,
         S_IDE_WR_REGS, S_IDE_WR_RX, S_IDE_WR_STORE, S_IDE_WR_NEXT,
         S_IDE_STEP,
-        S_IDE_91_MUL, S_IDE_91_DONE,
+        S_IDE_91_DONE,
         S_IDE_OK_REGS, S_IDE_ABORT_REGS,
         // floppy (MGMT 5.3, ARM 4.4-4.6)
         S_FDD_EJECT, S_FDD_INSERT,
@@ -236,6 +256,15 @@ module mgmt_bridge #(
     logic [15:0] hd_cyl;             // current translation (ARM keeps it too; nothing reads it back, kept for observability)
     /* verilator lint_on UNUSEDSIGNAL */
     logic [15:0] hd_cyl_id;          // frozen at mount for IDENTIFY
+    logic [4:0]  hd_heads_id;
+    logic [8:0]  hd_spt_id;
+    // MBR scan at mount: byte MBR_PT_OFF + mbr_n, n = 0..65
+    logic [6:0]  mbr_n;
+    logic        mbr_take;           // inside the first entry with a non-zero type
+    logic        mbr_found;          // that entry's end head / sector are latched
+    logic        mbr_sig55, mbr_sig_ok;
+    logic [7:0]  mbr_head;           // end head (heads - 1)
+    logic [5:0]  mbr_sec;            // end sector (spt)
     // command snapshot (ARM 4.3: R 0xF000 -> 6 words)
     logic [7:0]  ide_cmd, ide_drv, ide_count, ide_sector, ide_err;
     logic [15:0] ide_cyl;
@@ -267,6 +296,7 @@ module mgmt_bridge #(
     wire [7:0]  dh_rep    = {1'b1, ide_lba, 1'b1, ide_drv[4], rp_head};   // ARM 4: DH'
     wire [7:0]  dh_cmd    = ide_drv | 8'hA0;                             // ARM 4: DH
     wire        hd_in_range = hd_present && drive_mounted[2] && (cur_lba < {9'd0, hd_total});
+    wire        mbr_geo_ok  = mbr_sig_ok && mbr_found && (mbr_head <= 8'd15) && (mbr_sec != 6'd0);   // 1..16 heads, 1..63 spt
     wire [31:0] cur_lba_chs = mul_t * {23'd0, hd_spt} + {24'd0, cur_s} - 32'd1;   // ARM 2.5 get_lba, CHS form
 
     wire        xfdd  = (xmode == XM_FDD_SECT) || (xmode == XM_FDD_ZERO);
@@ -315,10 +345,19 @@ module mgmt_bridge #(
             hd_present <= 1'b0;
             hd_ro     <= 1'b0;
             hd_total  <= 23'd0;
-            hd_heads  <= HD_HEADS_DEF;
-            hd_spt    <= HD_SPT_DEF;
+            hd_heads  <= HD_HEADS_FB;
+            hd_spt    <= HD_SPT_FB;
             hd_cyl    <= 16'd0;
             hd_cyl_id <= 16'd0;
+            hd_heads_id <= HD_HEADS_FB;
+            hd_spt_id <= HD_SPT_FB;
+            mbr_n     <= 7'd0;
+            mbr_take  <= 1'b0;
+            mbr_found <= 1'b0;
+            mbr_sig55 <= 1'b0;
+            mbr_sig_ok <= 1'b0;
+            mbr_head  <= 8'd0;
+            mbr_sec   <= 6'd0;
             ide_cmd   <= 8'd0;
             ide_drv   <= 8'd0;
             ide_count <= 8'd0;
@@ -475,7 +514,7 @@ module mgmt_bridge #(
                 mgmt_addr <= xbuf_addr;
                 case (xmode)
                     XM_IDE_SECT: mgmt_dout <= {buf_rdata, xlo};
-                    XM_IDE_ID:   mgmt_dout <= id_word(xcnt[7:0], hd_cyl_id, hd_total);
+                    XM_IDE_ID:   mgmt_dout <= id_word(xcnt[7:0], hd_cyl_id, hd_heads_id, hd_spt_id, hd_total);
                     XM_FDD_SECT: mgmt_dout <= {8'h00, xlo};
                     default:     mgmt_dout <= 16'h0000;
                 endcase
@@ -544,20 +583,76 @@ module mgmt_bridge #(
             end
 
             // ---------------------------------------------------------- IDE: mount (ARM 4.1)
+            // Geometry first (header): fetch block 0, scan the partition
+            // table, pick heads/spt, divide for the cylinders; only then the
+            // reg-6 writes that make ide.v report the drive present.
             S_IDE_MOUNT: begin
                 hd_present <= (hd_size_lat != 32'd0);
                 hd_ro      <= hd_ro_lat;
                 hd_total   <= hd_size_lat[31:9];
-                hd_heads   <= HD_HEADS_DEF;
-                hd_spt     <= HD_SPT_DEF;
                 ide_rd_act <= 1'b0;
                 ide_wr_act <= 1'b0;
-                div_n   <= {1'b0, hd_size_lat[31:9]};
-                div_d   <= HD_DIVISOR_DEF;
+                mbr_n      <= 7'd0;
+                mbr_take   <= 1'b0;
+                mbr_found  <= 1'b0;
+                mbr_sig55  <= 1'b0;
+                mbr_sig_ok <= 1'b0;
+                if (hd_size_lat[31:9] != 23'd0) begin
+                    blk_lba <= 32'd0;
+                    blk_drv <= 2'd2;
+                    blk_rd  <= 3'b100;
+                    seq_ret <= S_IDE_MBR_A;
+                    state   <= S_BLK_ACK_HI;
+                end else begin
+                    state   <= S_IDE_MOUNT_GEO;    // unmount / image shorter than a block
+                end
+            end
+            // block 0 is in the buffer: walk bytes 0x1BE..0x1FF, one per three clocks
+            S_IDE_MBR_A: begin
+                buf_addr <= MBR_PT_OFF + {2'd0, mbr_n};
+                state    <= S_IDE_MBR_B;
+            end
+            S_IDE_MBR_B: state <= S_IDE_MBR_C;     // buf_rdata valid next clock
+            S_IDE_MBR_C: begin
+                if (!mbr_n[6]) begin               // partition entries: n[5:4] = entry, n[3:0] = byte
+                    case (mbr_n[3:0])
+                        4'd4: if (buf_rdata != 8'h00 && !mbr_found) mbr_take <= 1'b1;   // type
+                        4'd5: if (mbr_take) mbr_head <= buf_rdata;                       // end head
+                        4'd6: if (mbr_take) begin                                        // end sector (low 6 bits; cyl high bits above)
+                            mbr_sec   <= buf_rdata[5:0];
+                            mbr_found <= 1'b1;
+                            mbr_take  <= 1'b0;
+                        end
+                        default: ;
+                    endcase
+                end else if (mbr_n == 7'd64) begin
+                    mbr_sig55 <= (buf_rdata == 8'h55);
+                end else begin                     // n = 65: byte 511
+                    mbr_sig_ok <= mbr_sig55 && (buf_rdata == 8'hAA);
+                end
+                if (mbr_n == 7'd65) state <= S_IDE_MOUNT_GEO;
+                else begin
+                    mbr_n <= mbr_n + 7'd1;
+                    state <= S_IDE_MBR_A;
+                end
+            end
+            S_IDE_MOUNT_GEO: begin
+                hd_heads    <= mbr_geo_ok ? ({1'b0, mbr_head[3:0]} + 5'd1) : HD_HEADS_FB;
+                hd_spt      <= mbr_geo_ok ? {3'd0, mbr_sec} : HD_SPT_FB;
+                hd_heads_id <= mbr_geo_ok ? ({1'b0, mbr_head[3:0]} + 5'd1) : HD_HEADS_FB;
+                hd_spt_id   <= mbr_geo_ok ? {3'd0, mbr_sec} : HD_SPT_FB;
+                seq_ret     <= S_IDE_MOUNT_W6A;
+                state       <= S_IDE_CYL_DIV;
+            end
+            // cylinders = total / (heads * spt), capped (ARM 2.2 ide_set_geometry);
+            // shared by the mount and 91h, the caller sets seq_ret. div_d is 13
+            // bits: at most 16 x 63 from the MBR, 16 x 256 from 91h.
+            S_IDE_CYL_DIV: begin
+                div_d   <= hd_heads * hd_spt;
+                div_n   <= {1'b0, hd_total};
                 div_rem <= 24'd0;
                 div_q   <= 24'd0;
                 div_i   <= 5'd23;
-                seq_ret <= S_IDE_MOUNT_W6A;
                 state   <= S_DIV_RUN;
             end
             S_IDE_MOUNT_W6A: begin                 // step 1: latch present, hob_ena = 0
@@ -667,7 +762,8 @@ module mgmt_bridge #(
                         8'h91: begin                       // INITIALIZE DEVICE PARAMETERS
                             hd_heads <= {1'b0, ide_drv[3:0]} + 5'd1;
                             hd_spt   <= (ide_count == 8'd0) ? 9'd256 : {1'b0, ide_count};
-                            state    <= S_IDE_91_MUL;
+                            seq_ret  <= S_IDE_91_DONE;
+                            state    <= S_IDE_CYL_DIV;
                         end
                         default: state <= S_IDE_ABORT_REGS; // 08, E7, EF, FA, ATAPI, ...
                     endcase
@@ -800,16 +896,7 @@ module mgmt_bridge #(
                 state   <= ide_wr_act ? S_IDE_WR_NEXT : S_IDE_RD_REGS;
             end
 
-            // 91h: cylinders = total / (heads * spt), capped (ARM 2.2 ide_set_geometry)
-            S_IDE_91_MUL: begin
-                div_d   <= hd_heads * hd_spt;
-                div_n   <= {1'b0, hd_total};
-                div_rem <= 24'd0;
-                div_q   <= 24'd0;
-                div_i   <= 5'd23;
-                seq_ret <= S_IDE_91_DONE;
-                state   <= S_DIV_RUN;
-            end
+            // 91h: after S_IDE_CYL_DIV with the new translation pair
             S_IDE_91_DONE: begin
                 hd_cyl <= div_res;
                 state  <= S_IDE_OK_REGS;

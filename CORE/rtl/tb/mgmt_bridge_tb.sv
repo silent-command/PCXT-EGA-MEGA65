@@ -7,9 +7,11 @@
 //     read mux, request packing into mgmt_req),
 //   * the 8088 side: XT-IDE style register accesses on ide.v (io_address 0..7,
 //     14; 16-bit data register) and 8272 command/DMA traffic on floppy.v,
-//   * the MEGA65 framework: mount strobes, a 1 MB HDD image, a 360 KB floppy
-//     A image, the 512-byte shared buffer and blk_rd/blk_wr/blk_ack with a
-//     random acknowledge latency.
+//   * the MEGA65 framework: mount strobes, a 1 MB HDD image (mounted with
+//     its real size, or with the FreeDOS test image's 87,227-sector size and
+//     an MBR in block 0 for the geometry tests; blocks past 1 MB read as
+//     zeros), a 360 KB floppy A image, the 512-byte shared buffer and
+//     blk_rd/blk_wr/blk_ack with a random acknowledge latency.
 //
 // Prints RESULT: PASS or RESULT: FAIL.  Build/run: run_mgmt_bridge_tb.sh.
 
@@ -242,8 +244,12 @@ module mgmt_bridge_tb;
                 for (i = 0; i < 512; i = i + 1) begin
                     @(posedge clk);
                     if (d == 2) begin
-                        if (is_wr) hd_img[lba * 512 + i] <= sbuf[i];
-                        else       sbuf[i] <= hd_img[lba * 512 + i];
+                        // the array holds the first 1 MB; larger mounted sizes read as zeros
+                        if (lba * 512 + i >= HD_BYTES) begin
+                            if (is_wr) check(0, "HDD block write past the modelled image");
+                            else       sbuf[i] <= 8'h00;
+                        end else if (is_wr) hd_img[lba * 512 + i] <= sbuf[i];
+                        else                sbuf[i] <= hd_img[lba * 512 + i];
                     end else if (d == 0) begin
                         if (is_wr) fa_img[lba * 512 + i] <= sbuf[i];
                         else       sbuf[i] <= fa_img[lba * 512 + i];
@@ -488,6 +494,57 @@ module mgmt_bridge_tb;
             fdc_rd(3'd5, b);
             if (k == 0) st0 = b;
         end
+    end
+    endtask
+
+    // MBR helpers for the geometry tests: entry e (0-3) of the partition table
+    // at 0x1BE, classic layout {boot, start CHS, type, end CHS, start LBA, length}
+    task set_mbr_entry(input integer e, input [7:0] typ,
+                       input [7:0] sh, input [7:0] ss, input [15:0] sc,
+                       input [7:0] eh, input [7:0] es, input [15:0] ec,
+                       input [31:0] lba0, input [31:0] len);
+        integer o;
+    begin
+        o = 'h1BE + 16 * e;
+        hd_img[o + 0]  = (typ != 0) ? 8'h80 : 8'h00;
+        hd_img[o + 1]  = sh;
+        hd_img[o + 2]  = {sc[9:8], ss[5:0]};
+        hd_img[o + 3]  = sc[7:0];
+        hd_img[o + 4]  = typ;
+        hd_img[o + 5]  = eh;
+        hd_img[o + 6]  = {ec[9:8], es[5:0]};
+        hd_img[o + 7]  = ec[7:0];
+        hd_img[o + 8]  = lba0[7:0];   hd_img[o + 9]  = lba0[15:8];  hd_img[o + 10] = lba0[23:16]; hd_img[o + 11] = lba0[31:24];
+        hd_img[o + 12] = len[7:0];    hd_img[o + 13] = len[15:8];   hd_img[o + 14] = len[23:16];  hd_img[o + 15] = len[31:24];
+    end
+    endtask
+
+    // block 0 <- zeros, signature (or a broken one), no partition entries
+    task clear_mbr(input sig_ok);
+        integer i;
+    begin
+        for (i = 0; i < 512; i = i + 1) hd_img[i] = 8'h00;
+        hd_img[510] = sig_ok ? 8'h55 : 8'h00;
+        hd_img[511] = sig_ok ? 8'hAA : 8'h00;
+    end
+    endtask
+
+    // IDENTIFY through the CPU side into idw[]
+    task ide_identify;
+        integer k;
+        reg [31:0] v;
+        reg [7:0]  st;
+    begin
+        ide_wr8(4'd6, 8'hA0);
+        ide_wr8(4'd7, 8'hEC);
+        ide_wait_ready(st);
+        check(st == 8'h58, "IDENTIFY: DRQ");
+        for (k = 0; k < 256; k = k + 1) begin
+            ide_rd(4'd0, v);
+            idw[k] = v[15:0];
+        end
+        ide_wait_ready(st);
+        check(st == 8'h40, "IDENTIFY: 0x40 after the last word");
     end
     endtask
 
@@ -794,6 +851,121 @@ module mgmt_bridge_tb;
         check(bad == 0, "RO write: image untouched");
         mount(2, HD_BYTES, 1'b0);
         wait_bridge_idle();
+
+        // ============================================================ 10b. geometry from the MBR
+        // The FreeDOS test image: 44,660,224 bytes = 87,227 sectors = 733 x 7 x 17,
+        // one type-06 partition starting at CHS 0/1/1 (LBA 17) and ending at
+        // CHS 732/6/17. Only block 0 differs from the pattern image.
+        $display("[10b] MBR geometry: 87,227-sector image, partition end CHS 732/6/17 -> 7 x 17");
+        mount(2, 32'd0, 1'b0);                   // unmount first so "present" is observable
+        wait_bridge_idle();
+        check(u_ide.present == 2'b00, "MBR: unmounted before the geometry mount");
+        clear_mbr(1'b1);
+        set_mbr_entry(0, 8'h06, 8'd1, 8'd1, 16'd0, 8'd6, 8'd17, 16'd732, 32'd17, 32'd87210);
+        n0 = blk_count;
+        mount(2, 32'd44660224, 1'b0);
+        // the mount fetches block 0 first; the drive is not present until that is parsed
+        k = 0;
+        while (blk_count == n0 && k < 100000) begin @(posedge clk); k = k + 1; end
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd0 && last_blk_drv == 2 && !last_blk_wr, "MBR: mount reads block 0 of the HDD");
+        check(u_ide.present == 2'b00, "MBR: not present until the geometry is parsed");
+        wait_bridge_idle();
+        check(blk_count == n0 + 1, "MBR: exactly one block read at mount");
+        check(u_ide.present == 2'b01 && u_ide.status == 8'h50, "MBR mount: present, status 0x50");
+        check(u_dut.hd_total == 23'd87227, "MBR: 87227 sectors");
+        check(u_dut.hd_heads == 5'd7 && u_dut.hd_spt == 9'd17 && u_dut.hd_cyl == 16'd733, "MBR: geometry 733/7/17");
+        ide_identify();
+        check(idw[1] == 16'd733, "MBR IDENTIFY word 1 (cylinders = 733)");
+        check(idw[3] == 16'd7, "MBR IDENTIFY word 3 (heads = 7)");
+        check(idw[4] == 16'h2200, "MBR IDENTIFY word 4 (512 * 17)");
+        check(idw[6] == 16'd17, "MBR IDENTIFY word 6 (spt = 17)");
+        check(idw[54] == 16'd733 && idw[55] == 16'd7 && idw[56] == 16'd17, "MBR IDENTIFY words 54-56");
+        check(idw[57] == 16'h54BB && idw[58] == 16'd1, "MBR IDENTIFY words 57/58 = 87227");
+        check(idw[60] == 16'h54BB && idw[61] == 16'd1, "MBR IDENTIFY words 60/61 = 87227");
+        // the MBR's own CHS read of the boot sector: C=0 H=1 S=1 -> LBA 17
+        n0 = blk_count;
+        ide_cmd_chs(16'd0, 4'd1, 8'd1, 8'd1, 9'h020);
+        ide_wait_ready(st);
+        check(st == 8'h58, "MBR CHS read: DRQ");
+        ide_read_block_check(32'd17, 1'b0, "MBR CHS 0/1/1");
+        ide_wait_ready(st);
+        check(st == 8'h40, "MBR CHS read: done");
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd17, "MBR: CHS 0/1/1 -> LBA 17 with 7 x 17");
+        ide_rd(4'd3, v); check(v[7:0] == 8'd1, "MBR CHS read: sector 1 reported");
+        ide_rd(4'd6, v); check(v[7:0] == 8'hA1, "MBR CHS read: head 1 reported");
+        // last sector of cylinder 1: C=1 H=6 S=17 -> (1*7+6)*17 + 16 = 237
+        n0 = blk_count;
+        ide_cmd_chs(16'd1, 4'd6, 8'd17, 8'd2, 9'h020);
+        ide_wait_ready(st);
+        check(st == 8'h58, "MBR CHS 1/6/17: DRQ");
+        ide_read_block_check(32'd237, 1'b0, "MBR CHS 1/6/17");
+        ide_wait_ready(st);
+        check(st == 8'h58, "MBR CHS 1/6/17: DRQ block 2");
+        ide_rd(4'd3, v); check(v[7:0] == 8'd1, "MBR CHS step: sector wraps to 1");
+        ide_rd(4'd4, v); check(v[7:0] == 8'd2, "MBR CHS step: cylinder 2");
+        ide_rd(4'd6, v); check(v[7:0] == 8'hA0, "MBR CHS step: head 0");
+        ide_read_block_check(32'd238, 1'b0, "MBR CHS 2/0/1");
+        ide_wait_ready(st);
+        check(st == 8'h40 && last_blk_lba == 32'd238, "MBR CHS: stepped into cylinder 2 = LBA 238");
+        // the second entry is used when the first is empty (type 0)
+        $display("[10c] MBR: empty first entry, out-of-range entries, missing signature -> fallbacks");
+        clear_mbr(1'b1);
+        set_mbr_entry(0, 8'h00, 8'd0, 8'd0, 16'd0, 8'd15, 8'd63, 16'd0, 32'd0, 32'd0);
+        set_mbr_entry(1, 8'h01, 8'd1, 8'd1, 16'd0, 8'd3, 8'd17, 16'd29, 32'd17, 32'd2023);
+        mount(2, HD_BYTES, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_heads == 5'd4 && u_dut.hd_spt == 9'd17 && u_dut.hd_cyl == 16'd30, "MBR: first non-zero type wins -> 30/4/17");
+        ide_identify();
+        check(idw[1] == 16'd30 && idw[3] == 16'd4 && idw[6] == 16'd17 && idw[4] == 16'h2200, "MBR IDENTIFY 30/4/17");
+        n0 = blk_count;
+        ide_cmd_chs(16'd1, 4'd1, 8'd1, 8'd1, 9'h020);   // (1*4+1)*17 = 85
+        ide_wait_ready(st);
+        ide_read_block_check(32'd85, 1'b0, "MBR 4x17 CHS 1/1/1");
+        ide_wait_ready(st);
+        check(st == 8'h40 && blk_count == n0 + 1 && last_blk_lba == 32'd85, "MBR 4x17: CHS 1/1/1 -> LBA 85");
+        // heads 17 (end head 16): out of range -> 16 x 63
+        clear_mbr(1'b1);
+        set_mbr_entry(0, 8'h06, 8'd1, 8'd1, 16'd0, 8'd16, 8'd17, 16'd10, 32'd17, 32'd1000);
+        mount(2, HD_BYTES, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_heads == 5'd16 && u_dut.hd_spt == 9'd63 && u_dut.hd_cyl == 16'd2, "MBR: 17 heads rejected -> 16 x 63");
+        // sector 0: out of range -> 16 x 63
+        clear_mbr(1'b1);
+        set_mbr_entry(0, 8'h06, 8'd1, 8'd1, 16'd0, 8'd6, 8'd0, 16'd10, 32'd17, 32'd1000);
+        mount(2, HD_BYTES, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_heads == 5'd16 && u_dut.hd_spt == 9'd63, "MBR: spt 0 rejected -> 16 x 63");
+        // all four entries empty with a valid signature -> 16 x 63
+        clear_mbr(1'b1);
+        mount(2, HD_BYTES, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_heads == 5'd16 && u_dut.hd_spt == 9'd63, "MBR: no partitions -> 16 x 63");
+        // a good 7 x 17 entry without the 55 AA signature -> 16 x 63, 87227/1008 = 86 cylinders
+        clear_mbr(1'b0);
+        set_mbr_entry(0, 8'h06, 8'd1, 8'd1, 16'd0, 8'd6, 8'd17, 16'd732, 32'd17, 32'd87210);
+        mount(2, 32'd44660224, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_heads == 5'd16 && u_dut.hd_spt == 9'd63 && u_dut.hd_cyl == 16'd86, "MBR: no signature -> 86/16/63");
+        ide_identify();
+        check(idw[1] == 16'd86 && idw[3] == 16'd16 && idw[6] == 16'd63 && idw[4] == 16'h7E00, "no-signature IDENTIFY 86/16/63");
+        check(idw[57] == 16'h54BB && idw[58] == 16'd1, "no-signature IDENTIFY words 57/58 = 87227");
+        n0 = blk_count;
+        ide_cmd_chs(16'd0, 4'd1, 8'd1, 8'd1, 9'h020);   // 16 x 63: 0/1/1 -> LBA 63
+        ide_wait_ready(st);
+        ide_read_block_check(32'd63, 1'b0, "no-signature CHS 0/1/1");
+        ide_wait_ready(st);
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd63, "no-signature: CHS 0/1/1 -> LBA 63");
+        // half a signature (55 only) -> fallback too
+        hd_img[510] = 8'h55;
+        mount(2, HD_BYTES, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_heads == 5'd16 && u_dut.hd_spt == 9'd63, "MBR: 55 without AA -> 16 x 63");
+        // back to the plain pattern image for the remaining tests
+        for (i = 0; i < 512; i = i + 1) hd_img[i] = hdpat(i);
+        mount(2, HD_BYTES, 1'b0);
+        wait_bridge_idle();
+        check(u_dut.hd_cyl == 16'd2 && u_dut.hd_heads == 5'd16 && u_dut.hd_spt == 9'd63, "pattern image again: 2/16/63");
+        check(u_ide.present == 2'b01 && u_ide.status == 8'h50, "pattern image again: present");
 
         // ============================================================ 11. floppy A mount
         $display("[11] floppy A mount (360 KB)");

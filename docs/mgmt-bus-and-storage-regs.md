@@ -308,7 +308,8 @@ Simplest replacement: drop `hps_ext` and drive `mgmt_addr/mgmt_dout/mgmt_wr/mgmt
 
 ### 5.2 IDE bridge state machine (addresses `0xF00n`)
 
-1. **Init/mount**: `W(6, 0x0009)` (unit 0 present, no HOB) and/or `W(6, 0x0090)` (unit 1); `W(6, 0x0200)`.
+1. **Init/mount**: choose the geometry first (below), then `W(6, 0x0009)` (unit 0 present, no HOB) and/or `W(6, 0x0090)` (unit 1); `W(6, 0x0200)`. The drive is reported present only after the geometry is known, so a CHS command never meets a half-configured drive.
+   - **Geometry** (`mgmt_bridge.sv`, replaces the ARM's 128-entry size table of ARM 2.2): read block 0 of the image through the block interface (`blk_rd[2]` / `blk_ack[2]`, same path and same wait as an IDE sector read) and scan the MBR partition table at 0x1BE. The first entry with a non-zero type byte gives `heads = end_head + 1`, `spt = end_sector & 0x3F`. Accept only if bytes 510/511 are `55 AA`, `1 <= heads <= 16` and `1 <= spt <= 63`; otherwise (and for an unmount or an image shorter than one block) fall back to 16 x 63. `cylinders = sectors / (heads * spt)`, truncated, capped at 65535. Heads/spt/cylinders go into IDENTIFY words 1/3/4/6 and 54-56 (frozen until the next mount strobe) and seed the CHS translation; `0x91` later replaces the translation pair only. The FreeDOS test image (87,227 sectors, one type-06 partition ending at CHS 732/6/17) thus gets 733 x 7 x 17, and its MBR's CHS read of 0/1/1 lands on LBA 17 as on MiSTer.
 2. **Idle**: wait for `mgmt_req[2:0] != 0`.
 3. **`110` reset**: `W(1,0x0101)`, `W(2,0)`, `W(3,0)`, `W(4,0)`, `W(5,0x5000)`; if `req` still `110`, retry after SRST release.
 4. **`100` command**: `R(5)` -> `cmd`, `drv`; `R(0)` -> features; `R(1)`, `R(3)` -> count/sector; `R(2)`, `R(4)` -> cylinder/LBA. Branch:
@@ -320,7 +321,7 @@ Simplest replacement: drop `hps_ext` and drive `mgmt_addr/mgmt_dout/mgmt_wr/mgmt
    - if a write is in progress: `R(5)` (rewind), `R(0xF00F)` x `B*256`, store; then either `W(0,{0,B'})`+`W(5, 0x5800|drv)` for the next block or `W(5, 0x5000|drv)` to finish.
 6. Return to 2.
 
-Bridge-owned state: current command, unit, remaining sector count, current LBA, chosen `B`, per-unit geometry/capacity, IDENTIFY image.
+Bridge-owned state: current command, unit, remaining sector count, current LBA, chosen `B`, per-unit geometry/capacity (MBR-detected at mount, see step 1), IDENTIFY image.
 
 ### 5.3 Floppy bridge state machine (addresses `0xF200 | drive<<7 | n`, FIFO `0xF20F`)
 
