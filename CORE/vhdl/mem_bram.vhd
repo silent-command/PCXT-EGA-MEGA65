@@ -9,7 +9,7 @@
 -- Map (the RAM.sv decoder only ever presents these ranges, see
 -- docs/emu-signal-map.md 3.7):
 --   00000-3FFFF  256 KB conventional RAM        (64 RAMB36)
---   C0000-CFFFF   64 KB EGA BIOS window          (16 RAMB36)
+--   C0000-C3FFF   16 KB EGA BIOS                 (4 RAMB36)
 --   EC000-EFFFF   16 KB XT-IDE BIOS               (4 RAMB36)
 --   F0000-FFFFF   64 KB PC/XT BIOS               (16 RAMB36)
 -- Everything else reads as FF and ignores writes, so the BIOS memory scan
@@ -65,7 +65,7 @@ architecture rtl of mem_bram is
    type ram16k_t  is array (0 to 16383)  of std_logic_vector(7 downto 0);
 
    signal conv_ram  : ram256k_t;
-   signal ega_ram   : ram64k_t;
+   signal ega_ram   : ram16k_t;
    signal xtide_ram : ram16k_t;
    signal bios_ram  : ram64k_t;
 
@@ -105,7 +105,7 @@ architecture rtl of mem_bram is
    signal we_ega    : std_logic;
    signal we_xtide  : std_logic;
    signal we_bios   : std_logic;
-   signal wa_ega    : unsigned(15 downto 0);
+   signal wa_ega    : unsigned(13 downto 0);
    signal wa_xtide  : unsigned(13 downto 0);
    signal wa_bios   : unsigned(15 downto 0);
    signal wd_ega    : std_logic_vector(7 downto 0);
@@ -116,7 +116,7 @@ begin
 
    addr      <= unsigned(avm_address_i);
    sel_conv  <= '1' when addr(21 downto 18) = "0000"                         else '0';  -- 00000-3FFFF
-   sel_ega   <= '1' when addr(21 downto 16) = "001100"                       else '0';  -- C0000-CFFFF
+   sel_ega   <= '1' when addr(21 downto 14) = "00110000"                     else '0';  -- C0000-C3FFF (the rest of the C segment is empty bus: FF, no UMB bait)
    sel_xtide <= '1' when addr(21 downto 14) = "00111011"                     else '0';  -- EC000-EFFFF
    sel_bios  <= '1' when addr(21 downto 16) = "001111"                       else '0';  -- F0000-FFFFF
 
@@ -153,7 +153,7 @@ begin
 
    -- ROM writes win; the Avalon write they displace is the FSM's copy of the same word
    we_ega   <= (rom_we and rom_ega)   or (avm_write_i and sel_ega);
-   wa_ega   <= rom_wa when (rom_we and rom_ega) = '1' else addr(15 downto 0);
+   wa_ega   <= rom_wa(13 downto 0) when (rom_we and rom_ega) = '1' else addr(13 downto 0);
    wd_ega   <= rom_wd when (rom_we and rom_ega) = '1' else avm_writedata_i;
 
    we_xtide <= (rom_we and rom_xtide) or (avm_write_i and sel_xtide);
@@ -183,7 +183,7 @@ begin
          if we_ega = '1' then
             ega_ram(to_integer(wa_ega)) <= wd_ega;
          end if;
-         q_ega <= ega_ram(to_integer(addr(15 downto 0)));
+         q_ega <= ega_ram(to_integer(addr(13 downto 0)));
       end if;
    end process;
 
