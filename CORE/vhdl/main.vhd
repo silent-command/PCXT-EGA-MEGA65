@@ -74,9 +74,9 @@ entity main is
       led_disk_o              : out std_logic;
 
       -- Debug counters for the firmware log (rom_loader readback 6/7, m2m-rom.asm DBG_CORE_STATUS)
-      dbg_bus_reads_o         : out std_logic_vector(15 downto 0);   -- memory reads on the chipset bus
-      dbg_vsync_o             : out std_logic_vector(15 downto 0);   -- vertical syncs from the core
-      dbg_keys_o              : out std_logic_vector(15 downto 0);   -- PS/2 key events sent to the core
+      dbg_bus_reads_o         : out std_logic_vector(15 downto 0);   -- reads in F0000-FFFFF (BIOS fetches)
+      dbg_vsync_o             : out std_logic_vector(15 downto 0);   -- pixel enables per frame / 64
+      dbg_keys_o              : out std_logic_vector(15 downto 0);   -- last read address, bits 21..6
       dbg_flags_o             : out std_logic_vector(7 downto 0);    -- hold/pause state, see p_dbg
 
       -- On-Screen-Menu selections (clk_main_i domain)
@@ -232,7 +232,10 @@ architecture synthesis of main is
          mgmt_rd_i                 : in  std_logic;
          mgmt_req_o                : out std_logic_vector(7 downto 0);
          fdd_present_o             : out std_logic_vector(1 downto 0);
-         led_disk_o                : out std_logic
+         led_disk_o                : out std_logic;
+         dbg_de_o                  : out std_logic;
+         dbg_hb_o                  : out std_logic;
+         dbg_vb_o                  : out std_logic
       );
    end component pcxt_core;
 
@@ -304,10 +307,22 @@ architecture synthesis of main is
    signal dbg_vsync           : unsigned(15 downto 0) := (others => '0');
    signal vs_sync             : std_logic_vector(2 downto 0) := (others => '0');
    signal dbg_keys            : unsigned(15 downto 0) := (others => '0');
+   signal core_video_ce       : std_logic;
+   signal raw_de, raw_hb, raw_vb : std_logic;
+   signal de_cnt, hb_cnt, vb_cnt : unsigned(21 downto 0) := (others => '0');
+   signal de_per_frame, hb_per_frame, vb_per_frame : std_logic_vector(15 downto 0) := (others => '0');
+   signal vs_q2               : std_logic := '0';
+   signal c_writes            : unsigned(15 downto 0) := (others => '0');
+   signal f_writes            : unsigned(17 downto 0) := (others => '0');
+   signal c_reads             : unsigned(17 downto 0) := (others => '0');
+   signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
+   signal ce_per_frame        : std_logic_vector(15 downto 0) := (others => '0');
+   signal vs_q                : std_logic := '0';
    signal key_toggle_q        : std_logic := '0';
    signal core_bm_pcxt        : std_logic;
    signal core_bm_ega         : std_logic;
    signal core_splash         : std_logic;
+   signal splash_sync         : std_logic_vector(1 downto 0) := "00";   -- clk_14 -> clk_main
    signal core_pause          : std_logic;
    signal core_sdram_init     : std_logic;
 
@@ -358,7 +373,7 @@ begin
          reset_button_i            => '0',
 
          video_clk_o               => open,                 -- = clk_video_out_ps_i
-         video_ce_o                => video_ce_o,
+         video_ce_o                => core_video_ce,
          video_red_o               => video_red_o,
          video_green_o             => video_green_o,
          video_blue_o              => video_blue_o,
@@ -460,7 +475,10 @@ begin
          mgmt_rd_i                 => mgmt_rd,
          mgmt_req_o                => mgmt_req,
          fdd_present_o             => open,
-         led_disk_o                => led_disk_o
+         led_disk_o                => led_disk_o,
+         dbg_de_o                  => raw_de,
+         dbg_hb_o                  => raw_hb,
+         dbg_vb_o                  => raw_vb
       ); -- i_pcxt_core
 
    ---------------------------------------------------------------------------
@@ -528,30 +546,55 @@ begin
    p_dbg : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
-         if avm_read = '1' then
+         if avm_read = '1' and avm_address(21 downto 16) = "001111" then   -- F0000-FFFFF
             dbg_bus_reads <= dbg_bus_reads + 1;
          end if;
+         if avm_read = '1' then
+            dbg_keys <= unsigned(avm_address(21 downto 6));
+         end if;
          vs_sync <= vs_sync(1 downto 0) & core_video_vs;
+         splash_sync <= splash_sync(0) & core_splash;
          if vs_sync(1) = '1' and vs_sync(2) = '0' then
             dbg_vsync <= dbg_vsync + 1;
          end if;
       end if;
    end process;
-   dbg_bus_reads_o <= std_logic_vector(dbg_bus_reads);
-   dbg_vsync_o     <= std_logic_vector(dbg_vsync);
-   dbg_keys_o      <= std_logic_vector(dbg_keys);
-   dbg_flags_o     <= '0' & reset_soft_i & reset_cold & core_sdram_init & core_pause & core_splash & core_bm_ega & core_bm_pcxt;
+   dbg_bus_reads_o <= std_logic_vector(c_writes);      -- byte writes into C0000-CFFFF (EGA BIOS load), saturating
+   dbg_vsync_o     <= std_logic_vector(f_writes(17 downto 2)); -- byte writes into F0000-FFFFF / 4
+   dbg_keys_o      <= std_logic_vector(c_reads(17 downto 2));  -- byte reads from C0000-CFFFF / 4 (ROM scan checksum)
+
+   p_dbg_mem : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if avm_write = '1' and avm_address(21 downto 16) = "001100" and c_writes /= x"FFFF" then
+            c_writes <= c_writes + 1;
+         end if;
+         if avm_write = '1' and avm_address(21 downto 16) = "001111" and f_writes /= (f_writes'range => '1') then
+            f_writes <= f_writes + 1;
+         end if;
+         if avm_read = '1' and avm_address(21 downto 16) = "001100" and c_reads /= (c_reads'range => '1') then
+            c_reads <= c_reads + 1;
+         end if;
+      end if;
+   end process;
+   dbg_flags_o     <= '0' & reset_soft_i & reset_cold & core_sdram_init & core_pause & splash_sync(1) & core_bm_ega & core_bm_pcxt;
 
    bios_missing_pcxt_o <= core_bm_pcxt;
    bios_missing_ega_o  <= core_bm_ega;
    splash_active_o     <= core_splash;
 
-   p_dbg_keys : process (clk_main_i)
+   video_ce_o <= core_video_ce;
+
+   -- pixel enables per frame, in the domain of the core's video outputs
+   p_dbg_ce : process (clk_video_out_ps_i)
    begin
-      if rising_edge(clk_main_i) then
-         key_toggle_q <= ps2_key(10);
-         if ps2_key(10) /= key_toggle_q then
-            dbg_keys <= dbg_keys + 1;
+      if rising_edge(clk_video_out_ps_i) then
+         vs_q <= core_video_vs;
+         if core_video_vs = '1' and vs_q = '0' then
+            ce_per_frame <= std_logic_vector(ce_cnt(21 downto 6));
+            ce_cnt <= (others => '0');
+         elsif core_video_ce = '1' then
+            ce_cnt <= ce_cnt + 1;
          end if;
       end if;
    end process;
@@ -606,7 +649,11 @@ begin
          avm_read_i          => avm_read,
          avm_readdata_o      => avm_readdata,
          avm_readdatavalid_o => avm_readdatavalid,
-         avm_waitrequest_o   => avm_waitrequest
+         avm_waitrequest_o   => avm_waitrequest,
+         rom_wr_i            => rom_wr_i,
+         rom_index_i         => rom_index_i,
+         rom_addr_i          => rom_addr_i,
+         rom_data_i          => rom_data_i
       ); -- i_mem
 
 end architecture synthesis;
