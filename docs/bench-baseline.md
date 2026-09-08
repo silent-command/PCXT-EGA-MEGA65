@@ -37,4 +37,4 @@ self-checking; each prints `RESULT: PASS`.
 | `rom_load_tb.sv` | `run_rom_load_tb.sh` (Verilator, WSL) | Full `pcxt_core` wrapper: ROM download stream lands in the BIOS windows |
 | `rom_loader_tb.sv` | `run_rom_loader_tb.ps1` (xsim) | QNICE side of `rom_loader.vhd`: device writes, CDC, timeouts, status |
 | `keyboard_tb.vhd` | `run_keyboard_tb.sh` (GHDL, WSL) | MEGA65 key numbers to PS/2 set-2 frames, host reset (FF) handshake |
-| `mgmt_bridge_tb.sv` | `run_mgmt_bridge_tb.sh` (Icarus, WSL) | Storage bridge against the real `ide.v`/`floppy.v`: mount, IDENTIFY, CHS/LBA reads and writes, 8272 DMA reads/writes (1266 checks) |
+| `mgmt_bridge_tb.sv` | `run_mgmt_bridge_tb.sh` (Icarus, WSL) | Storage bridge against the real `ide.v`/`floppy.v`: mount with MBR geometry detection (7 x 17 FreeDOS layout, fallbacks to 16 x 63), IDENTIFY, CHS/LBA reads and writes, 8272 DMA reads/writes (1387 checks) |
