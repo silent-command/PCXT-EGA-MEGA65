@@ -84,7 +84,7 @@ constant C_HMAP_DEMO          : std_logic_vector(15 downto 0) := x"0200";     --
 -- example virtual drive handler, which is connected to nothing and only here to demo
 -- the file- and directory browsing capabilities of the firmware
 constant C_DEV_DEMO_VD        : std_logic_vector(15 downto 0) := x"0101";
-constant C_DEV_DEMO_NOBUFFER  : std_logic_vector(15 downto 0) := x"AAAA";
+constant C_DEV_VD_SDDIRECT    : std_logic_vector(15 downto 0) := x"AAAA";   -- VD_BUF_SDDIRECT: no RAM buffer, blocks served from the SD card
 
 -- PCXT-EGA: QNICE devices that receive the auto-loaded BIOS files (rom_loader.vhd)
 constant C_DEV_ROM_PCXT       : std_logic_vector(15 downto 0) := x"0110";
@@ -101,9 +101,9 @@ constant C_DEV_ROM_XTIDE      : std_logic_vector(15 downto 0) := x"0112";
 type vd_buf_array is array(natural range <>) of std_logic_vector;
 constant C_VDNUM              : natural := 3;                                          -- amount of virtual drives; maximum is 15
 constant C_VD_DEVICE          : std_logic_vector(15 downto 0) := C_DEV_DEMO_VD;        -- device number of vdrives.vhd device
-constant C_VD_BUFFER          : vd_buf_array := (  C_DEV_DEMO_NOBUFFER,
-                                                   C_DEV_DEMO_NOBUFFER,
-                                                   C_DEV_DEMO_NOBUFFER,
+constant C_VD_BUFFER          : vd_buf_array := (  C_DEV_VD_SDDIRECT,
+                                                   C_DEV_VD_SDDIRECT,
+                                                   C_DEV_VD_SDDIRECT,
                                                    x"EEEE");                           -- Always finish the array using x"EEEE"
 
 ----------------------------------------------------------------------------------------------------------

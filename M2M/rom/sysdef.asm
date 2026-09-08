@@ -318,6 +318,9 @@ M2M$CFG_AUSE_AUTO   .EQU 0x0002     ; auto-sync via M2M$CFG_ASCAL_USAGE
 VD_NUM              .EQU 0x7000     ; amount of virtual drives
 VD_DEVICE           .EQU 0x7001     ; address of the vdrives.vhd device
 VD_RAM_BUFFERS      .EQU 0x7100     ; array of RAM buffers to store dsk images
+VD_BUF_SDDIRECT     .EQU 0xAAAA     ; "buffer" value: no RAM buffer, the image
+                                    ; stays on the SD card and blocks are
+                                    ; transferred on request (see shell.asm)
 
 ; window selectors for vdrives.vhd
 VD_WIN_CAD          .EQU 0x0000     ; control and data registers

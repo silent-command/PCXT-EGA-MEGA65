@@ -725,6 +725,15 @@ _LI_FOPEN_OK    MOVE    R5, R8
                 CMP     0, R6                   ; everything OK?
                 RBRA    _LI_FREAD_RET, !Z       ; no
 
+                ; SD-direct virtual drives have no RAM buffer: the image
+                ; stays on the SD card (file handle stays open) and single
+                ; blocks are transferred on request by HANDLE_DRV_RD/WR
+                CMP     0, R4                   ; vdrive mode?
+                RBRA    _LI_BUFFERED, !Z        ; no
+                CMP     VD_BUF_SDDIRECT, R0     ; drive without RAM buffer?
+                RBRA    _LI_FREAD_EOF, Z        ; yes: nothing to load
+_LI_BUFFERED
+
                 ; For showing a progress bar: Take the remaining size of the
                 ; file, which is filesize minus current read position after
                 ; PREP_LOAD_IMAGE and divide it by the amount of printable
@@ -976,8 +985,18 @@ _HANDLE_IO_3    MOVE    R0, R8
                 CMP     1, R8                   ; cache dirty?
                 RBRA    _HANDLE_IO_NXT3, !Z     ; no: next drive, if any
 
-                ; handle dirty cache and background writing (aka flushing)
+                ; SD-direct drives write through: nothing to flush
                 MOVE    R0, R8
+                RSUB    VD_IS_SDDIRECT, 1
+                RBRA    _HANDLE_IO_FL, !C
+                MOVE    R0, R8
+                MOVE    VD_CACHE_DIRTY, R9
+                XOR     R10, R10
+                RSUB    VD_DRV_WRITE, 1
+                RBRA    _HANDLE_IO_NXT3, 1
+
+                ; handle dirty cache and background writing (aka flushing)
+_HANDLE_IO_FL   MOVE    R0, R8
                 RSUB    FLUSH_CACHE, 1
 
                 ; next drive, if applicable
@@ -1001,6 +1020,9 @@ HANDLE_DRV_RD   SYSCALL(enter, 1)
                 MOVE    VD_SIZEB, R9            ; virtual drive ID still in R8
                 RSUB    VD_DRV_READ, 1
                 MOVE    R8, R0                  ; R0=# bytes to be transmitted
+                MOVE    R11, R8
+                RSUB    VD_IS_SDDIRECT, 1       ; no RAM buffer?
+                RBRA    _HDR_SD, C              ; yes: read from the SD card
                 MOVE    R11, R8
                 MOVE    VD_4K_WIN, R9
                 RSUB    VD_DRV_READ, 1
@@ -1055,6 +1077,64 @@ _HDR_SEND_LOOP  CMP     R6, R0                  ; transmission done?
                 MOVE    M2M$RAMROM_DATA, R5     ; byte zero in next window
                 RBRA    _HDR_SEND_LOOP, 1
 
+                ; SD-direct: position the file at the requested block and
+                ; stream it into the drive buffer
+_HDR_SD         MOVE    HNDL_VD_FILES, R1
+                ADD     R11, R1
+                MOVE    @R1, R1                 ; R1: file handle
+                RBRA    _HDR_SD_1, !Z
+                MOVE    ERR_FATAL_FZERO, R8
+                XOR     R9, R9
+                RBRA    FATAL, 1
+
+_HDR_SD_1       MOVE    R11, R8
+                MOVE    VD_BYTES_L, R9
+                RSUB    VD_DRV_READ, 1
+                MOVE    R8, R2                  ; R2: byte position, low
+                MOVE    R11, R8
+                MOVE    VD_BYTES_H, R9
+                RSUB    VD_DRV_READ, 1
+                MOVE    R8, R3                  ; R3: byte position, high
+                MOVE    R1, R8
+                MOVE    R2, R9
+                MOVE    R3, R10
+                RSUB    VD_SD_SEEK, 1
+
+                MOVE    R11, R8                 ; acknowledge sd_rd_i
+                MOVE    VD_ACK, R9
+                MOVE    1, R10
+                RSUB    VD_DRV_WRITE, 1
+
+                XOR     R6, R6                  ; R6: transmitted bytes
+_HDR_SD_LOOP    CMP     R6, R0                  ; done?
+                RBRA    _HDR_SEND_DONE, Z       ; yes
+                MOVE    R1, R8
+                SYSCALL(f32_fread, 1)           ; R9: next byte of the image
+                CMP     0, R10
+                RBRA    _HDR_SD_2, Z
+                CMP     FAT32$EOF, R10          ; beyond the image: zeros
+                RBRA    _HDR_SD_ERR, !Z
+                XOR     R9, R9
+                RBRA    _HDR_SD_2, 1
+_HDR_SD_ERR     MOVE    ERR_FATAL_LOAD, R8
+                MOVE    R10, R9
+                RBRA    FATAL, 1
+
+_HDR_SD_2       MOVE    R9, R12                 ; R12: byte for the drive
+                MOVE    VD_B_ADDR, R8           ; write buffer: address
+                MOVE    R6, R9
+                RSUB    VD_CAD_WRITE, 1
+                MOVE    VD_B_DOUT, R8           ; write buffer: data out
+                MOVE    R12, R9
+                RSUB    VD_CAD_WRITE, 1
+                MOVE    VD_B_WREN, R8           ; strobe write enable
+                MOVE    1, R9
+                RSUB    VD_CAD_WRITE, 1
+                XOR     R9, R9
+                RSUB    VD_CAD_WRITE, 1
+                ADD     1, R6                   ; next byte
+                RBRA    _HDR_SD_LOOP, 1
+
                 ; unassert ACK
 _HDR_SEND_DONE  MOVE    R11, R8                 ; virtual drive ID
                 MOVE    VD_ACK, R9              ; unassert ACK
@@ -1094,6 +1174,10 @@ HANDLE_DRV_WR   SYSCALL(enter, 1)
                 MOVE    VD_SIZEB, R9
                 RSUB    VD_DRV_READ, 1
                 MOVE    R8, R3                  ; R3: to-be-written amt bytes
+
+                MOVE    R0, R8
+                RSUB    VD_IS_SDDIRECT, 1       ; no RAM buffer?
+                RBRA    _HDW_SD, C              ; yes: write to the SD card
 
                 ; 4k window and offset in disk mount buffer
                 MOVE    R0, R8
@@ -1140,6 +1224,62 @@ _HDW_NEXT_BYTE  MOVE    VD_B_ADDR, R8           ; set address within buffer
                 ADD     1, R4                   ; next 4k window
                 RBRA    _HDW_NEXT_BYTE, 1
 
+                ; SD-direct: position the file at the block, copy the
+                ; drive buffer to the SD card, flush, then acknowledge.
+                ; The cache is never dirty: there is no cache.
+_HDW_SD         MOVE    HNDL_VD_FILES, R4
+                ADD     R0, R4
+                MOVE    @R4, R4                 ; R4: file handle
+                RBRA    _HDW_SD_1, !Z
+                MOVE    ERR_FATAL_FZERO, R8
+                XOR     R9, R9
+                RBRA    FATAL, 1
+
+_HDW_SD_1       MOVE    R4, R8
+                MOVE    R2, R9                  ; byte position, low
+                MOVE    R1, R10                 ; byte position, high
+                RSUB    VD_SD_SEEK, 1
+
+                XOR     R6, R6                  ; R6: transmitted bytes
+_HDW_SD_LOOP    CMP     R3, R6                  ; done?
+                RBRA    _HDW_SD_FLUSH, Z        ; yes
+                MOVE    VD_B_ADDR, R8           ; set address within buffer
+                MOVE    R6, R9
+                RSUB    VD_CAD_WRITE, 1
+                MOVE    R0, R8
+                MOVE    VD_B_DIN, R9            ; read byte from above addr
+                RSUB    VD_DRV_READ, 1
+                MOVE    R8, R9                  ; R9: byte to be written
+                MOVE    R4, R8
+                SYSCALL(f32_fwrite, 1)
+                CMP     0, R9                   ; write successful?
+                RBRA    _HDW_SD_2, Z
+                MOVE    ERR_FATAL_WRITE, R8
+                RBRA    FATAL, 1
+_HDW_SD_2       ADD     1, R6
+                RBRA    _HDW_SD_LOOP, 1
+
+_HDW_SD_FLUSH   MOVE    R4, R8
+                SYSCALL(f32_fflush, 1)
+                CMP     0, R9
+                RBRA    _HDW_SD_ACK, Z
+                MOVE    ERR_FATAL_FLUSH, R8
+                RBRA    FATAL, 1
+
+_HDW_SD_ACK     MOVE    R0, R8                  ; acknowledge sd_wr_i
+                MOVE    VD_ACK, R9
+                MOVE    1, R10
+                RSUB    VD_DRV_WRITE, 1
+                MOVE    R0, R8                  ; unassert ACK
+                MOVE    VD_ACK, R9
+                XOR     R10, R10
+                RSUB    VD_DRV_WRITE, 1
+                MOVE    R0, R8                  ; nothing to flush later
+                MOVE    VD_CACHE_DIRTY, R9
+                XOR     R10, R10
+                RSUB    VD_DRV_WRITE, 1
+                RBRA    _HDW_RET, 1
+
                 ; ackknowledge sd_wr_i
 _HDW_DONE       MOVE    R0, R8
                 MOVE    VD_ACK, R9
@@ -1153,6 +1293,36 @@ _HDW_DONE       MOVE    R0, R8
                 RSUB    VD_DRV_WRITE, 1
 
 _HDW_RET        SYSCALL(leave, 1)
+                RET
+
+; Seek within an SD-direct image file. A seek in the FAT32 library walks the
+; cluster chain from the start of the file, so it is skipped when the file
+; is already positioned at the target (sequential block reads).
+; Input:   R8: file handle, R9/R10: byte position low/high
+; Output:  none (fatal error on failure), registers unchanged
+VD_SD_SEEK      INCRB
+                MOVE    R8, R0
+                ADD     FAT32$FDH_ACCESS_LO, R0
+                CMP     @R0, R9                 ; already there?
+                RBRA    _VDSS_SEEK, !Z
+                MOVE    R8, R0
+                ADD     FAT32$FDH_ACCESS_HI, R0
+                CMP     @R0, R10
+                RBRA    _VDSS_SEEK, !Z
+                DECRB
+                RET
+_VDSS_SEEK      MOVE    R8, R0
+                MOVE    R9, R1
+                MOVE    R10, R2
+                SYSCALL(f32_fseek, 1)
+                CMP     0, R9                   ; seek worked?
+                RBRA    _VDSS_OK, Z
+                MOVE    ERR_FATAL_SEEK, R8      ; no, R9 contains err. no.
+                RBRA    FATAL, 1
+_VDSS_OK        MOVE    R0, R8
+                MOVE    R1, R9
+                MOVE    R2, R10
+                DECRB
                 RET
 
 ; ----------------------------------------------------------------------------

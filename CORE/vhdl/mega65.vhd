@@ -615,13 +615,16 @@ begin
    -- a) In case that this is handled in main.vhd, you need to add the appropriate ports to i_main
    -- b) You might want to change the drive led's color (just like the C64 core does) as long as
    --    the cache is dirty (i.e. as long as the write process is not finished, yet)
-   -- Diagnostic while the ROM path is being brought up: blue = no download in
-   -- progress, green = download flowing (core accepting words), red = download
-   -- in progress but the core holds rom_wait (loader FSM busy or stuck).
+   -- Diagnostics. While a ROM download runs: green = flowing, red = the core
+   -- holds rom_wait (loader stuck). Otherwise: red = a storage request is
+   -- pending on the mgmt bus (the bridge is serving it, or stuck if solid),
+   -- green = a hard disk image is mounted, blue = idle without a hard disk.
    main_drive_led_o     <= '1';
-   main_drive_led_col_o <= x"0000FF" when main_rom_download = '0' else
-                           x"FF0000" when main_rom_wait = '1' else
-                           x"00FF00";
+   main_drive_led_col_o <= x"FF0000" when main_rom_download = '1' and main_rom_wait = '1' else
+                           x"00FF00" when main_rom_download = '1' else
+                           x"FF0000" when main_led_disk = '1' else
+                           x"00FF00" when main_drive_mounted(2) = '1' else
+                           x"0000FF";
 
    i_vdrives : entity work.vdrives
       generic map (
@@ -631,7 +634,9 @@ begin
       (
          clk_qnice_i       => qnice_clk_i,
          clk_core_i        => main_clk,
-         reset_core_i      => main_reset_core_i,
+         -- Mounts survive a core reset: like MiSTer, the PC is reset after mounting
+         -- so the BIOS finds the hard disk at POST. (M2M default: reset unmounts.)
+         reset_core_i      => '0',
 
          -- Core clock domain
          img_mounted_o     => open,

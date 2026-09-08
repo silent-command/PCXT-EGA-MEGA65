@@ -401,6 +401,24 @@ VD_MOUNTED      INCRB
                 ; DECRB and 
                 ; RET done via _VDD_C0 and _VDD_C1
 
+; Returns C=1 if the drive in R8 has no RAM buffer (VD_BUF_SDDIRECT in
+; config.vhd): the image stays on the SD card and HANDLE_DRV_RD/WR in
+; shell.asm transfer single blocks on request.
+;
+; Input:   R8: drive number
+; Returns: Carry flag, all registers unchanged
+VD_IS_SDDIRECT  INCRB
+                MOVE    VDRIVES_BUFS, R0
+                ADD     R8, R0
+                MOVE    @R0, R0
+                CMP     VD_BUF_SDDIRECT, R0
+                RBRA    _VDISD_C1, Z
+                AND     0xFFFB, SR              ; clear Carry
+                RBRA    _VDISD_RET, 1
+_VDISD_C1       OR      0x0004, SR              ; set Carry
+_VDISD_RET      DECRB
+                RET
+
 ; Strobes the "image mount" signal: This is used to mount and to unmount
 ; drives: When the "image size" registers are non-zero, then the drive is
 ; mounted, otherwise it is held is reset state
