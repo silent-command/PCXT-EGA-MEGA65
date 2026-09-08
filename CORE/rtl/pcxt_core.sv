@@ -189,7 +189,11 @@ module pcxt_core
         output wire  [7:0] mgmt_req_o,             // [7] FDD write, [6] FDD read, [2:0] IDE request
         output wire  [1:0] fdd_present_o,
         // 3.9 misc
-        output wire        led_disk_o              // any FDD or IDE request pending
+        output wire        led_disk_o,              // any FDD or IDE request pending
+    // 3.10 debug: raw chipset video signals before the mixer/retime stages
+    output wire        dbg_de_o,
+    output wire        dbg_hb_o,
+    output wire        dbg_vb_o
     );
 
     ///////// MEGA65: MiSTer framework signals the body still refers to /////////
@@ -2147,5 +2151,8 @@ module pcxt_core
     // storage
     assign fdd_present_o = fdd_present;
     assign led_disk_o    = |mgmt_req[7:6] | |mgmt_req[2:0];
+    assign dbg_de_o      = de_o;
+    assign dbg_hb_o      = HBlank;
+    assign dbg_vb_o      = VBlank;
 
 endmodule
