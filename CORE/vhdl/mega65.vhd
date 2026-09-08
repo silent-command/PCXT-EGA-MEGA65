@@ -554,7 +554,7 @@ begin
          qnice_dev_wait_o  => qnice_rom_wait,
          qnice_dev_data_o  => qnice_rom_data,
          core_clk_i        => main_clk,
-         core_rst_i        => main_reset_m2m_i,
+         core_rst_i        => main_rst,             -- clock-lock reset only: main_reset_m2m_i is held during autoload
          rom_download_o    => main_rom_download,
          rom_index_o       => main_rom_index,
          rom_wr_o          => main_rom_wr,
@@ -581,8 +581,13 @@ begin
    -- a) In case that this is handled in main.vhd, you need to add the appropriate ports to i_main
    -- b) You might want to change the drive led's color (just like the C64 core does) as long as
    --    the cache is dirty (i.e. as long as the write process is not finished, yet)
-   main_drive_led_o     <= main_led_disk;
-   main_drive_led_col_o <= x"00FF00";  -- 24-bit RGB value for the led
+   -- Diagnostic while the ROM path is being brought up: blue = no download in
+   -- progress, green = download flowing (core accepting words), red = download
+   -- in progress but the core holds rom_wait (loader FSM busy or stuck).
+   main_drive_led_o     <= '1';
+   main_drive_led_col_o <= x"0000FF" when main_rom_download = '0' else
+                           x"FF0000" when main_rom_wait = '1' else
+                           x"00FF00";
 
    i_vdrives : entity work.vdrives
       generic map (
