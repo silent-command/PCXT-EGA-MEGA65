@@ -17,7 +17,7 @@
 --   ` ~      <- arrow-left, shift+arrow-left          [ ]  <- shift+:  shift+;
 --   ^ |      <- arrow-up,   shift+arrow-up            { }  <- shift+@  shift+*
 --   # \      <- pound,      shift+pound               F2..F12 <- shift+F1..F11
---   F12      <- HELP (credits/pause in this core)     Esc  <- ESC and RUN/STOP
+--   F12      <- Shift+F11 (HELP stays with the framework)   Esc  <- ESC and RUN/STOP
 --   Insert   <- shift+INS/DEL   Delete <- MEGA+INS/DEL   Home <- CLR/HOME
 --   Alt      <- MEGA            AltGr  <- ALT   ScrollLock <- NO SCROLL
 --
@@ -232,7 +232,10 @@ architecture beh of keyboard is
          when m65_alt        => return X(K_RALT);
          when m65_capslock   => return E(K_CAPS);
          when m65_no_scrl    => return E(K_SCRL);
-         when m65_help       => return E(K_F12);
+         -- HELP belongs to the framework (options menu). It must not reach the
+         -- core: the chipset toggles its F12 pause on the break code, which halts
+         -- the CPU and swallows every key. F12 is Shift+F11.
+         when m65_help       => return NONE;
 
          when m65_ins_del    => if mega then return SH_XOFF(K_DEL); elsif shift then return SH_XOFF(K_INS); else return E(K_BKSP); end if;
          when m65_clr_home   => return X(K_HOME);

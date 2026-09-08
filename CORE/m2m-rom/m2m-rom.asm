@@ -118,6 +118,7 @@ PREP_LOAD_IMAGE XOR     R8, R8                  ; no errors
 ;   R8: 0=OK, else pointer to string with error message
 ;   R9: 0=OK, else error code
 PREP_START      INCRB
+                RSUB    DBG_CORE_STATUS, 1
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
@@ -156,6 +157,7 @@ OSM_SEL_POST    INCRB
 ; called before the functionality and semantics associated with a certain
 ; menu item has been handled by the framework.
 OSM_SEL_PRE     INCRB
+                RSUB    DBG_CORE_STATUS, 1
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
@@ -186,6 +188,51 @@ CUSTOM_MSG      XOR     R8, R8
 ; Add your core specific constants and strings here
 
 ; This needs to be the last thing before the "Variables" sections starts
+; ----------------------------------------------------------------------------
+; Debug: log the rom_loader status registers and the core activity counters
+; to the serial console. rom_loader.vhd readback: 0 flags, 1 words delivered,
+; 2 words dropped, 3 checksum pcxt.rom, 4 checksum ega_bios.rom,
+; 5 checksum xtide.rom, 6 chipset-bus reads, 7 vsyncs (6/7 are free-running
+; 16-bit counters: unchanged between two calls means the core is dead).
+; ----------------------------------------------------------------------------
+DBG_DEV_ROM     .EQU 0x0110
+DBG_STR_0       .ASCII_W "PCXT core: flags="
+DBG_STR_1       .ASCII_W " ok="
+DBG_STR_2       .ASCII_W " drop="
+DBG_STR_3       .ASCII_W " sum0="
+DBG_STR_4       .ASCII_W " sum3="
+DBG_STR_5       .ASCII_W " sum2="
+DBG_STR_6       .ASCII_W " bus="
+DBG_STR_7       .ASCII_W " vs="
+DBG_STR_8       .ASCII_W " keys="
+DBG_STRS        .DW DBG_STR_0, DBG_STR_1, DBG_STR_2, DBG_STR_3
+                .DW DBG_STR_4, DBG_STR_5, DBG_STR_6, DBG_STR_7
+                .DW DBG_STR_8
+
+DBG_CORE_STATUS SYSCALL(enter, 1)
+                SUB     2, SP                   ; buffer for SAVE_DEVSEL
+                MOVE    SP, R8
+                RSUB    SAVE_DEVSEL, 1
+                MOVE    M2M$RAMROM_DEV, R0
+                MOVE    DBG_DEV_ROM, @R0
+                MOVE    M2M$RAMROM_4KWIN, R0
+                MOVE    0, @R0
+                MOVE    M2M$RAMROM_DATA, R1     ; R1: register 0
+                MOVE    DBG_STRS, R2            ; R2: label strings
+                MOVE    9, R3                   ; R3: registers to print
+_DBG_CS_LOOP    MOVE    @R2++, R8
+                SYSCALL(puts, 1)
+                MOVE    @R1++, R8
+                SYSCALL(puthex, 1)
+                SUB     1, R3
+                RBRA    _DBG_CS_LOOP, !Z
+                SYSCALL(crlf, 1)
+                MOVE    SP, R8
+                RSUB    RESTORE_DEVSEL, 1
+                ADD     2, SP
+                SYSCALL(leave, 1)
+                RET
+
 END_OF_ROM      .DW 0
 
 ; ----------------------------------------------------------------------------

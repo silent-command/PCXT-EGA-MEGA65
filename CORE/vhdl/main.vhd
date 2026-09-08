@@ -73,6 +73,12 @@ entity main is
       splash_active_o         : out std_logic;
       led_disk_o              : out std_logic;
 
+      -- Debug counters for the firmware log (rom_loader readback 6/7, m2m-rom.asm DBG_CORE_STATUS)
+      dbg_bus_reads_o         : out std_logic_vector(15 downto 0);   -- memory reads on the chipset bus
+      dbg_vsync_o             : out std_logic_vector(15 downto 0);   -- vertical syncs from the core
+      dbg_keys_o              : out std_logic_vector(15 downto 0);   -- PS/2 key events sent to the core
+      dbg_flags_o             : out std_logic_vector(7 downto 0);    -- hold/pause state, see p_dbg
+
       -- On-Screen-Menu selections (clk_main_i domain)
       osm_control_i           : in  std_logic_vector(255 downto 0);
 
@@ -292,6 +298,19 @@ architecture synthesis of main is
    -- OSM decode
    signal osm_cpu_speed       : std_logic_vector(1 downto 0);
 
+   -- debug counters
+   signal core_video_vs       : std_logic;
+   signal dbg_bus_reads       : unsigned(15 downto 0) := (others => '0');
+   signal dbg_vsync           : unsigned(15 downto 0) := (others => '0');
+   signal vs_sync             : std_logic_vector(2 downto 0) := (others => '0');
+   signal dbg_keys            : unsigned(15 downto 0) := (others => '0');
+   signal key_toggle_q        : std_logic := '0';
+   signal core_bm_pcxt        : std_logic;
+   signal core_bm_ega         : std_logic;
+   signal core_splash         : std_logic;
+   signal core_pause          : std_logic;
+   signal core_sdram_init     : std_logic;
+
    -- storage bridge <-> vd_glue (clk_main_i domain)
    signal mgmt_addr           : std_logic_vector(15 downto 0);
    signal mgmt_dout           : std_logic_vector(15 downto 0);
@@ -344,7 +363,7 @@ begin
          video_green_o             => video_green_o,
          video_blue_o              => video_blue_o,
          video_hs_o                => video_hs_o,
-         video_vs_o                => video_vs_o,
+         video_vs_o                => core_video_vs,
          video_hblank_o            => core_video_hblank,
          video_vblank_o            => core_video_vblank,
          video_de_o                => core_video_de,
@@ -406,11 +425,11 @@ begin
          osm_mpu401_disable_i      => '1',                  -- nothing behind the MPU-401
          osm_floppy_wp_i           => "00",
 
-         bios_missing_pcxt_o       => bios_missing_pcxt_o,
-         bios_missing_ega_o        => bios_missing_ega_o,
+         bios_missing_pcxt_o       => core_bm_pcxt,
+         bios_missing_ega_o        => core_bm_ega,
          reset_pending_o           => open,
-         pause_o                   => open,
-         splash_active_o           => splash_active_o,
+         pause_o                   => core_pause,
+         splash_active_o           => core_splash,
 
          rom_download_i            => rom_download_i,
          rom_index_i               => rom_index_i,
@@ -431,7 +450,7 @@ begin
          sdram_dq_in_i             => sdram_dq_in,
          sdram_dqml_o              => open,
          sdram_dqmh_o              => open,
-         sdram_initialized_o       => open,
+         sdram_initialized_o       => core_sdram_init,
 
          -- floppy/IDE storage bridge (Phase 5)
          mgmt_addr_i               => mgmt_addr,
@@ -501,6 +520,41 @@ begin
          sd_buff_din_o  => sd_buff_din_o,
          sd_buff_wr_i   => sd_buff_wr_i
       ); -- i_vd_glue
+
+   video_vs_o <= core_video_vs;
+
+   -- Debug counters: chipset-bus reads (is the CPU/DMA alive?) and vsyncs
+   -- (is the EGA producing frames?). Read asynchronously by the firmware.
+   p_dbg : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if avm_read = '1' then
+            dbg_bus_reads <= dbg_bus_reads + 1;
+         end if;
+         vs_sync <= vs_sync(1 downto 0) & core_video_vs;
+         if vs_sync(1) = '1' and vs_sync(2) = '0' then
+            dbg_vsync <= dbg_vsync + 1;
+         end if;
+      end if;
+   end process;
+   dbg_bus_reads_o <= std_logic_vector(dbg_bus_reads);
+   dbg_vsync_o     <= std_logic_vector(dbg_vsync);
+   dbg_keys_o      <= std_logic_vector(dbg_keys);
+   dbg_flags_o     <= '0' & reset_soft_i & reset_cold & core_sdram_init & core_pause & core_splash & core_bm_ega & core_bm_pcxt;
+
+   bios_missing_pcxt_o <= core_bm_pcxt;
+   bios_missing_ega_o  <= core_bm_ega;
+   splash_active_o     <= core_splash;
+
+   p_dbg_keys : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         key_toggle_q <= ps2_key(10);
+         if ps2_key(10) /= key_toggle_q then
+            dbg_keys <= dbg_keys + 1;
+         end if;
+      end if;
+   end process;
 
    -- Blanking for the framework: video_de_o is aligned with the RGB output,
    -- the core's own blank outputs lead it by a few pixels (see the wrapper

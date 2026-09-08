@@ -91,11 +91,11 @@ constant SCR_WELCOME : string :=
    "Shift+INS/DEL        Insert      MEGA+: Delete\n" &
    "CLR/HOME             Home\n" &
    "NO SCROLL            Scroll Lock\n" &
-   "HELP                 F12 (pause + credits)\n" &
+   "HELP                 Options menu\n" &
    "Shift+F1..F11        F2..F12\n" &
    "Shift+: and Shift+;  [ and ]\n" &
    "Shift+@ and Shift+*  { and }\n" &
-   "Pound, Shift+Pound   # and \\n" &
+   "Pound, Shift+Pound   # and backslash\n" &
    "Arrow left/up        ` and ^   shifted: ~ |\n\n" &
 
    "Help key: Options menu\n\n" &
