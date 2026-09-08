@@ -1,14 +1,27 @@
 -------------------------------------------------------------------------------------------------------------
--- PCXT-EGA on MiSTer2MEGA65: PS/2 device-side transmitter
+-- PCXT-EGA on MiSTer2MEGA65: PS/2 keyboard device emulation (both directions)
 --
 -- Emulates the keyboard end of a PS/2 link, the way MiSTer's hps_io ps2_device
--- does for this core: bytes queued by the key translator are sent as 11-bit
--- frames (start, 8 data bits LSB first, odd parity, stop) with the device
--- driving the clock at G_CLK_HZ / (2 * G_DIV) = 12.5 kHz. A frame starts only
+-- plus the ARM do for this core.
+--
+-- Device -> host: bytes queued by the key translator are sent as 11-bit frames
+-- (start, 8 data bits LSB first, odd parity, stop) with the device driving the
+-- clock at clk / (2 * G_DIV) = 12.5 kHz. Each bit is placed on the data line
+-- while the clock is high and the clock then goes low for half a bit, so a
+-- receiver sampling on the falling edge sees stable data. A frame starts only
 -- while the host leaves both lines high; the XT keyboard controller pulls its
--- clock low while a scancode interrupt is pending and during keyboard reset,
--- and no frame is started or continued in that state (the chipset in this
--- core never sends commands to the keyboard, so nothing is received).
+-- clock low while a scancode interrupt is pending, and a frame in flight is
+-- abandoned then.
+--
+-- Host -> device: the chipset's KFPS2KB_Send_Data issues a keyboard reset (FF)
+-- whenever the BIOS enables the keyboard via port B bit 6: clock low, then data
+-- low (request to send), then it releases the clock and shifts one bit per
+-- falling edge of the device clock: start, 8 data bits, parity, stop. The
+-- device clocks 11 pulses, samples the bits on its rising edges and pulls data
+-- low on the 11th (acknowledge). The chipset holds its receive path locked
+-- until this completes, so without it the keyboard is dead. Replies: FA for
+-- every command, plus AA (self test passed) after FF. Pending scancodes are
+-- flushed on a received command, as the MiSTer emulation does.
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 -------------------------------------------------------------------------------------------------------------
@@ -54,17 +67,32 @@ architecture rtl of ps2_tx is
    signal bit_clk   : std_logic := '1';     -- internal bit clock, high = first half
    signal tick      : std_logic;            -- one clock per half bit period
 
-   signal tx_state  : natural range 0 to 11 := 0;   -- 0 idle, 1..8 data, 9 parity, 10 stop, 11 gap
+   -- transmit: tx_state = bit currently presented on the data line
+   --   0 idle, 1 start, 2..9 data bits, 10 parity, 11 stop
+   signal tx_state  : natural range 0 to 11 := 0;
    signal tx_byte   : std_logic_vector(7 downto 0);
    signal parity    : std_logic;
    signal idle_gap  : natural range 0 to 3 := 0;    -- bit times of silence between frames
 
-   signal host_clk_q  : std_logic_vector(1 downto 0) := "11";
+   -- receive: rx_state = clock pulse being generated, 1..11; 12 = finish
+   signal rx_state  : natural range 0 to 12 := 0;
+   signal rx_byte   : std_logic_vector(7 downto 0);
+   signal rx_reply  : natural range 0 to 2 := 0;    -- reply bytes still to queue
+
+   signal host_clk_q  : std_logic_vector(2 downto 0) := "111";
    signal host_data_q : std_logic_vector(1 downto 0) := "11";
    signal host_idle   : std_logic;
+   signal host_rts    : std_logic;          -- host released its clock while holding data low
 
    signal clk_out   : std_logic := '1';
    signal data_out  : std_logic := '1';
+
+   -- queue control, shared by the translator (we_i) and the reply logic
+   signal q_push    : std_logic;
+   signal q_push_d  : std_logic_vector(7 downto 0);
+   signal q_flush   : std_logic := '0';
+   signal reply_we  : std_logic := '0';
+   signal reply_d   : std_logic_vector(7 downto 0) := x"FA";
 
 begin
 
@@ -72,6 +100,11 @@ begin
    empty_o <= '1' when count = 0 else '0';
 
    host_idle <= host_clk_q(1) and host_data_q(1);
+   host_rts  <= host_clk_q(1) and not host_data_q(1);   -- clock released, data held low
+
+   -- the reply logic has priority over the translator for the queue
+   q_push   <= reply_we or we_i;
+   q_push_d <= reply_d when reply_we = '1' else data_i;
 
    -- half-bit-period ticks
    p_div : process (clk_i)
@@ -84,7 +117,7 @@ begin
          else
             div <= div + 1;
          end if;
-         host_clk_q  <= host_clk_q(0) & host_clk_i;
+         host_clk_q  <= host_clk_q(1 downto 0) & host_clk_i;
          host_data_q <= host_data_q(0) & host_data_i;
          if rst_i = '1' then
             div  <= 0;
@@ -93,16 +126,40 @@ begin
       end if;
    end process;
 
-   p_tx : process (clk_i)
-      variable pop : boolean;
+   p_link : process (clk_i)
+      variable pop  : boolean;
+      variable push : boolean;
    begin
       if rising_edge(clk_i) then
-         pop := false;
+         pop  := false;
+         push := false;
+         reply_we <= '0';
 
-         -- queue write
-         if we_i = '1' and count /= 2**G_FIFO_BITS then
-            fifo(to_integer(wptr)) <= data_i;
+         -- queue write (translator or reply)
+         if q_push = '1' and count /= 2**G_FIFO_BITS and q_flush = '0' then
+            fifo(to_integer(wptr)) <= q_push_d;
             wptr <= wptr + 1;
+            push := true;
+         end if;
+
+         -- the host pulled its clock low: abandon a frame at once (a real keyboard
+         -- does the same; the host does not wait for it)
+         if tx_state /= 0 and host_clk_q(1) = '0' then
+            tx_state <= 0;
+            data_out <= '1';
+            clk_out  <= '1';
+            idle_gap <= 3;
+         end if;
+
+         -- reply bytes, one per clock, after the command has been received
+         if rx_reply > 0 and reply_we = '0' then
+            reply_we <= '1';
+            if rx_reply = 2 then
+               reply_d <= x"FA";
+            else
+               reply_d <= x"AA";
+            end if;
+            rx_reply <= rx_reply - 1;
          end if;
 
          if tick = '1' then
@@ -110,54 +167,89 @@ begin
 
             if bit_clk = '1' then
                ---------------------------------------------------------------
-               -- first half of a bit ends: present the next data bit while the
-               -- clock line is high, then the clock goes low for the second half
+               -- first half of a bit ends: the clock goes low. Transmit: the
+               -- bit on the data line has been stable for half a bit. Receive:
+               -- pulse the host, the 11th pulse carries the acknowledge.
                ---------------------------------------------------------------
-               case tx_state is
-                  when 0 =>
-                     -- idle: wait for a byte, host lines high, and a gap since
-                     -- the previous frame
-                     if idle_gap > 0 then
-                        idle_gap <= idle_gap - 1;
-                     elsif count /= 0 and host_idle = '1' then
-                        tx_byte  <= fifo(to_integer(rptr));
-                        pop      := true;
-                        parity   <= '1';
-                        data_out <= '0';             -- start bit
-                        tx_state <= 1;
+               if rx_state /= 0 then
+                  if rx_state <= 11 then
+                     clk_out <= '0';
+                     if rx_state = 11 then
+                        data_out <= '0';
                      end if;
-                  when 1 to 8 =>
-                     data_out <= tx_byte(0);
-                     if tx_byte(0) = '1' then parity <= not parity; end if;
-                     tx_byte  <= '0' & tx_byte(7 downto 1);
-                     tx_state <= tx_state + 1;
-                  when 9 =>
-                     data_out <= parity;
-                     tx_state <= 10;
-                  when 10 =>
-                     data_out <= '1';                -- stop bit
-                     tx_state <= 11;
-                  when 11 =>
-                     tx_state <= 0;
-                     idle_gap <= 2;
-                  when others =>
-                     tx_state <= 0;
-               end case;
-
-               -- the device clocks each presented bit with a low pulse;
-               -- if the host inhibits (clock low), hold the clock high and
-               -- abandon the frame: the host will not read it anyway and the
-               -- byte is lost, exactly as with a real keyboard
-               if (tx_state >= 1 and tx_state <= 10) or (tx_state = 0 and count /= 0 and host_idle = '1' and idle_gap = 0) then
+                  end if;
+               elsif tx_state /= 0 then
                   clk_out <= '0';
+               elsif idle_gap > 0 then
+                  idle_gap <= idle_gap - 1;
                end if;
             else
-               -- second half ends: clock back high
+               ---------------------------------------------------------------
+               -- second half ends: the clock goes high. Transmit: present the
+               -- next bit. Receive: sample the host's bit.
+               ---------------------------------------------------------------
                clk_out <= '1';
-               if tx_state /= 0 and host_clk_q(1) = '0' then
-                  tx_state <= 0;                     -- inhibited mid-frame
+               if rx_state /= 0 then
+                  case rx_state is
+                     when 1 to 8 =>
+                        rx_byte <= host_data_q(1) & rx_byte(7 downto 1);   -- LSB first
+                        rx_state <= rx_state + 1;
+                     when 9 | 10 =>
+                        rx_state <= rx_state + 1;                          -- parity, stop
+                     when 11 =>
+                        data_out <= '1';                                   -- release ack
+                        rx_state <= 12;
+                     when 12 =>
+                        -- command complete: queue the reply
+                        q_flush <= '0';
+                        wptr <= (others => '0');
+                        rptr <= (others => '0');
+                        count <= (others => '0');
+                        if rx_byte = x"FF" then
+                           rx_reply <= 2;                                  -- FA, AA
+                        else
+                           rx_reply <= 1;                                  -- FA
+                        end if;
+                        rx_state <= 0;
+                        idle_gap <= 2;
+                     when others =>
+                        rx_state <= 0;
+                  end case;
+               elsif tx_state /= 0 and host_clk_q(1) = '0' then
+                  tx_state <= 0;                     -- inhibited mid-frame, frame lost
                   data_out <= '1';
                   idle_gap <= 3;
+               elsif host_rts = '1' and tx_state = 0 then
+                  -- host request to send: clock released while data is held low,
+                  -- which the host keeps up until the device clocks the start bit.
+                  -- Started here, at a bit boundary, so that state 1 gets its pulse.
+                  rx_state <= 1;
+                  q_flush  <= '1';                  -- drop pending scancodes, like MiSTer
+               else
+                  case tx_state is
+                     when 0 =>
+                        if idle_gap = 0 and count /= 0 and host_idle = '1' then
+                           tx_byte  <= fifo(to_integer(rptr));
+                           pop      := true;
+                           parity   <= '1';
+                           data_out <= '0';             -- start bit
+                           tx_state <= 1;
+                        end if;
+                     when 1 to 8 =>
+                        data_out <= tx_byte(0);         -- data bits
+                        if tx_byte(0) = '1' then parity <= not parity; end if;
+                        tx_byte  <= '0' & tx_byte(7 downto 1);
+                        tx_state <= tx_state + 1;
+                     when 9 =>
+                        data_out <= parity;
+                        tx_state <= 10;
+                     when 10 =>
+                        data_out <= '1';                -- stop bit
+                        tx_state <= 11;
+                     when 11 =>
+                        tx_state <= 0;                  -- stop bit has been clocked
+                        idle_gap <= 2;
+                  end case;
                end if;
             end if;
          end if;
@@ -166,10 +258,10 @@ begin
             rptr <= rptr + 1;
          end if;
 
-         -- occupancy
-         if (we_i = '1' and count /= 2**G_FIFO_BITS) and not pop then
+         -- occupancy (the flush above overrides on the same clock)
+         if push and not pop then
             count <= count + 1;
-         elsif pop and not (we_i = '1' and count /= 2**G_FIFO_BITS) then
+         elsif pop and not push then
             count <= count - 1;
          end if;
 
@@ -178,6 +270,9 @@ begin
             rptr     <= (others => '0');
             count    <= (others => '0');
             tx_state <= 0;
+            rx_state <= 0;
+            rx_reply <= 0;
+            q_flush  <= '0';
             bit_clk  <= '1';
             clk_out  <= '1';
             data_out <= '1';
