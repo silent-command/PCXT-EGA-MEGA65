@@ -40,7 +40,8 @@ entity rom_loader is
       G_DEV_PCXT     : std_logic_vector(15 downto 0) := x"0110";   -- QNICE device ids (>= 0x0100)
       G_DEV_EGA      : std_logic_vector(15 downto 0) := x"0111";
       G_DEV_XTIDE    : std_logic_vector(15 downto 0) := x"0112";
-      G_TIMEOUT      : natural := 12_500_000            -- core clocks of silence that end a download (250 ms at 50 MHz)
+      G_TIMEOUT      : natural := 12_500_000;           -- core clocks of silence that end a download (250 ms at 50 MHz)
+      G_WORD_TIMEOUT : natural := 500_000               -- core clocks a word may wait for rom_wait (10 ms); then it is dropped
    );
    port (
       -- QNICE side
@@ -52,6 +53,7 @@ entity rom_loader is
       qnice_dev_ce_i   : in  std_logic;
       qnice_dev_we_i   : in  std_logic;
       qnice_dev_wait_o : out std_logic;
+      qnice_dev_data_o : out std_logic_vector(15 downto 0);  -- status readback (see p_readback)
 
       -- Core side (pcxt_core ROM download port, clk_chipset domain)
       core_clk_i       : in  std_logic;
@@ -89,6 +91,11 @@ architecture rtl of rom_loader is
    signal c_ack_toggle  : std_logic := '0';
    signal c_word_valid  : std_logic := '0';
    signal c_timeout     : natural range 0 to G_TIMEOUT;
+   signal c_settle      : natural range 0 to 15;         -- cycles to let the core see rom_download before the first word
+   signal c_word_wait   : natural range 0 to G_WORD_TIMEOUT;
+   signal c_words_ok    : unsigned(15 downto 0) := (others => '0');
+   signal c_words_drop  : unsigned(15 downto 0) := (others => '0');
+   signal c_rom_wait_q  : std_logic := '0';
    signal c_download    : std_logic := '0';
 
 begin
@@ -158,16 +165,39 @@ begin
             rom_data_o   <= q_word;
             rom_addr_o   <= q_word_addr & '0';
             rom_index_o  <= q_word_index;
-            c_download   <= '1';
             c_timeout    <= G_TIMEOUT;
+            if c_download = '0' then
+               c_download <= '1';
+               c_settle   <= 15;   -- the core's loader FSM leaves idle a few clocks after rom_download rises
+            end if;
          end if;
 
-         -- hand the word to the core once it is ready for it
-         if c_word_valid = '1' and rom_wait_i = '0' then
+         if c_settle > 0 then
+            c_settle <= c_settle - 1;
+         end if;
+
+         -- hand the word to the core once it is ready for it; a core that never
+         -- becomes ready must not freeze the firmware, so the word is dropped
+         -- after G_WORD_TIMEOUT and counted in c_words_drop
+         if c_word_valid = '1' and rom_wait_i = '0' and c_settle = 0 then
             rom_wr_o     <= '1';
             c_word_valid <= '0';
             c_ack_toggle <= not c_ack_toggle;
+            c_words_ok   <= c_words_ok + 1;
+            c_word_wait  <= 0;
+         elsif c_word_valid = '1' then
+            if c_word_wait = G_WORD_TIMEOUT then
+               c_word_valid <= '0';
+               c_ack_toggle <= not c_ack_toggle;
+               c_words_drop <= c_words_drop + 1;
+               c_word_wait  <= 0;
+            else
+               c_word_wait  <= c_word_wait + 1;
+            end if;
+         else
+            c_word_wait <= 0;
          end if;
+         c_rom_wait_q <= rom_wait_i;
 
          -- download ends after a period of silence
          if c_word_valid = '0' then
@@ -184,11 +214,25 @@ begin
             c_word_valid <= '0';
             c_download   <= '0';
             c_timeout    <= 0;
+            c_settle     <= 0;
+            c_word_wait  <= 0;
+            c_words_ok   <= (others => '0');
+            c_words_drop <= (others => '0');
             rom_wr_o     <= '0';
          end if;
       end if;
    end process;
 
    rom_download_o <= c_download;
+
+   ---------------------------------------------------------------------------
+   -- Status readback for the QNICE side (debug): word offset 0 = flags,
+   -- 1 = words delivered, 2 = words dropped. The counters are in the core
+   -- clock domain and only read while the loader is quiet, so no CDC.
+   ---------------------------------------------------------------------------
+   qnice_dev_data_o <= (0 => c_rom_wait_q, 1 => c_download, 2 => c_word_valid, others => '0') when qnice_dev_addr_i(1 downto 0) = "00" else
+                       std_logic_vector(c_words_ok)   when qnice_dev_addr_i(1 downto 0) = "01" else
+                       std_logic_vector(c_words_drop) when qnice_dev_addr_i(1 downto 0) = "10" else
+                       x"EEEE";
 
 end architecture rtl;
