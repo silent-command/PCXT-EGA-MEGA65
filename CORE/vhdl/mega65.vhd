@@ -14,6 +14,7 @@ library work;
 use work.globals.all;
 use work.types_pkg.all;
 use work.video_modes_pkg.all;
+use work.vdrives_pkg.all;
 
 library xpm;
 use xpm.vcomponents.all;
@@ -261,21 +262,38 @@ signal qnice_rom_data         : std_logic_vector(15 downto 0);
 ---------------------------------------------------------------------------------------------
 
 -- Democore menu items
-constant C_MENU_HDMI_16_9_50   : natural := 12;
-constant C_MENU_HDMI_16_9_60   : natural := 13;
-constant C_MENU_HDMI_4_3_50    : natural := 14;
-constant C_MENU_HDMI_5_4_50    : natural := 15;
-constant C_MENU_HDMI_640_60    : natural := 16;
-constant C_MENU_HDMI_720_5994  : natural := 17;
-constant C_MENU_SVGA_800_60    : natural := 18;
-constant C_MENU_CRT_EMULATION  : natural := 30;
-constant C_MENU_HDMI_ZOOM      : natural := 31;
-constant C_MENU_IMPROVE_AUDIO  : natural := 32;
+-- Menu line numbers (bit numbers in qnice_osm_control_i), see config.vhd OPTM_ITEMS
+constant C_MENU_HDMI_16_9_50   : natural := 16;
+constant C_MENU_HDMI_16_9_60   : natural := 17;
+constant C_MENU_HDMI_4_3_50    : natural := 18;
+constant C_MENU_HDMI_5_4_50    : natural := 19;
+constant C_MENU_HDMI_640_60    : natural := 20;
+constant C_MENU_HDMI_720_5994  : natural := 21;
+constant C_MENU_SVGA_800_60    : natural := 22;
+constant C_MENU_CRT_EMULATION  : natural := 26;
+constant C_MENU_HDMI_ZOOM      : natural := 27;
+constant C_MENU_IMPROVE_AUDIO  : natural := 28;
 
 -- QNICE clock domain
 signal qnice_demo_vd_data_o   : std_logic_vector(15 downto 0);
 signal qnice_demo_vd_ce       : std_logic;
 signal qnice_demo_vd_we       : std_logic;
+
+-- vdrives <-> main (floppy A, floppy B, hard disk)
+signal main_img_mounted       : std_logic_vector(C_VDNUM-1 downto 0);
+signal main_img_readonly      : std_logic;
+signal main_img_size          : std_logic_vector(31 downto 0);
+signal main_drive_mounted     : std_logic_vector(C_VDNUM-1 downto 0);
+signal qnice_sd_lba           : vd_vec_array(C_VDNUM-1 downto 0)(31 downto 0);
+signal qnice_sd_blk_cnt       : vd_vec_array(C_VDNUM-1 downto 0)(5 downto 0);
+signal qnice_sd_rd            : vd_std_array(C_VDNUM-1 downto 0);
+signal qnice_sd_wr            : vd_std_array(C_VDNUM-1 downto 0);
+signal qnice_sd_ack           : vd_std_array(C_VDNUM-1 downto 0);
+signal qnice_sd_buff_addr     : std_logic_vector(AW downto 0);
+signal qnice_sd_buff_dout     : std_logic_vector(DW downto 0);
+signal qnice_sd_buff_din      : vd_vec_array(C_VDNUM-1 downto 0)(DW downto 0);
+signal qnice_sd_buff_wr       : std_logic;
+signal main_cache_dirty       : std_logic_vector(C_VDNUM-1 downto 0);
 
 begin
 
@@ -420,6 +438,22 @@ begin
          led_disk_o           => main_led_disk,
 
          osm_control_i        => main_osm_control_i,
+
+         -- virtual drives: floppy A, floppy B, hard disk
+         clk_qnice_i          => qnice_clk_i,
+         img_mounted_i        => main_img_mounted,
+         img_readonly_i       => main_img_readonly,
+         img_size_i           => main_img_size,
+         drive_mounted_i      => main_drive_mounted,
+         sd_lba_o             => qnice_sd_lba,
+         sd_blk_cnt_o         => qnice_sd_blk_cnt,
+         sd_rd_o              => qnice_sd_rd,
+         sd_wr_o              => qnice_sd_wr,
+         sd_ack_i             => qnice_sd_ack,
+         sd_buff_addr_i       => qnice_sd_buff_addr,
+         sd_buff_dout_i       => qnice_sd_buff_dout,
+         sd_buff_din_o        => qnice_sd_buff_din,
+         sd_buff_wr_i         => qnice_sd_buff_wr,
 
          -- M2M Keyboard interface
          kb_key_num_i         => main_kb_key_num_i,

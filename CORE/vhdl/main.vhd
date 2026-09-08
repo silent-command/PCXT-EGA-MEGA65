@@ -18,6 +18,7 @@ use ieee.numeric_std.all;
 
 library work;
 use work.video_modes_pkg.all;
+use work.vdrives_pkg.all;
 
 entity main is
    generic (
@@ -74,6 +75,23 @@ entity main is
 
       -- On-Screen-Menu selections (clk_main_i domain)
       osm_control_i           : in  std_logic_vector(255 downto 0);
+
+      -- Virtual drives (framework vdrives): 0 = floppy A, 1 = floppy B, 2 = hard disk.
+      -- img_* and drive_mounted_i are in the clk_main_i domain, sd_* in the QNICE domain.
+      clk_qnice_i             : in  std_logic;
+      img_mounted_i           : in  std_logic_vector(2 downto 0);
+      img_readonly_i          : in  std_logic;
+      img_size_i              : in  std_logic_vector(31 downto 0);
+      drive_mounted_i         : in  std_logic_vector(2 downto 0);
+      sd_lba_o                : out vd_vec_array(2 downto 0)(31 downto 0);
+      sd_blk_cnt_o            : out vd_vec_array(2 downto 0)(5 downto 0);
+      sd_rd_o                 : out vd_std_array(2 downto 0);
+      sd_wr_o                 : out vd_std_array(2 downto 0);
+      sd_ack_i                : in  vd_std_array(2 downto 0);
+      sd_buff_addr_i          : in  std_logic_vector(AW downto 0);
+      sd_buff_dout_i          : in  std_logic_vector(DW downto 0);
+      sd_buff_din_o           : out vd_vec_array(2 downto 0)(DW downto 0);
+      sd_buff_wr_i            : in  std_logic;
 
       -- M2M Keyboard interface
       kb_key_num_i            : in  integer range 0 to 79;    -- cycles through all MEGA65 keys
@@ -238,6 +256,32 @@ architecture synthesis of main is
 
    signal reset_cold          : std_logic;
 
+   -- the SystemVerilog storage bridge (CORE/rtl/mgmt_bridge.sv)
+   component mgmt_bridge is
+      port (
+         clk             : in  std_logic;
+         reset           : in  std_logic;
+         mgmt_addr       : out std_logic_vector(15 downto 0);
+         mgmt_dout       : out std_logic_vector(15 downto 0);
+         mgmt_din        : in  std_logic_vector(15 downto 0);
+         mgmt_wr         : out std_logic;
+         mgmt_rd         : out std_logic;
+         mgmt_req        : in  std_logic_vector(7 downto 0);
+         img_mounted     : in  std_logic_vector(2 downto 0);
+         img_size        : in  std_logic_vector(31 downto 0);
+         img_readonly    : in  std_logic;
+         drive_mounted   : in  std_logic_vector(2 downto 0);
+         blk_rd          : out std_logic_vector(2 downto 0);
+         blk_wr          : out std_logic_vector(2 downto 0);
+         blk_lba         : out std_logic_vector(31 downto 0);
+         blk_ack         : in  std_logic_vector(2 downto 0);
+         buf_addr        : out std_logic_vector(8 downto 0);
+         buf_wdata       : out std_logic_vector(7 downto 0);
+         buf_we          : out std_logic;
+         buf_rdata       : in  std_logic_vector(7 downto 0)
+      );
+   end component mgmt_bridge;
+
    -- keyboard: emulated PS/2 device
    signal ps2_kbd_clk         : std_logic;
    signal ps2_kbd_data        : std_logic;
@@ -245,7 +289,32 @@ architecture synthesis of main is
    signal ps2_host_data       : std_logic;
    signal ps2_key             : std_logic_vector(10 downto 0);
 
+   -- OSM decode
+   signal osm_cpu_speed       : std_logic_vector(1 downto 0);
+
+   -- storage bridge <-> vd_glue (clk_main_i domain)
+   signal mgmt_addr           : std_logic_vector(15 downto 0);
+   signal mgmt_dout           : std_logic_vector(15 downto 0);
+   signal mgmt_din            : std_logic_vector(15 downto 0);
+   signal mgmt_wr             : std_logic;
+   signal mgmt_rd             : std_logic;
+   signal mgmt_req            : std_logic_vector(7 downto 0);
+   signal blk_rd              : std_logic_vector(2 downto 0);
+   signal blk_wr              : std_logic_vector(2 downto 0);
+   signal blk_lba             : std_logic_vector(31 downto 0);
+   signal blk_ack             : std_logic_vector(2 downto 0);
+   signal buf_addr            : std_logic_vector(8 downto 0);
+   signal buf_wdata           : std_logic_vector(7 downto 0);
+   signal buf_we              : std_logic;
+   signal buf_rdata           : std_logic_vector(7 downto 0);
+
 begin
+
+   -- CPU speed: menu lines 8..11 of config.vhd (4.77 / 7.16 / 9.54 / Max), status[18:17]
+   osm_cpu_speed <= "11" when osm_control_i(11) = '1' else
+                    "10" when osm_control_i(10) = '1' else
+                    "01" when osm_control_i(9)  = '1' else
+                    "00";
 
    -- Cold reset re-streams the ROMs (see the reset tree in docs/emu-signal-map.md).
    -- Only a lost clock lock counts. reset_hard_i cannot be used: the framework's
@@ -307,7 +376,7 @@ begin
          joya1_i                   => (others => '0'),
 
          -- OSM: MiSTer defaults (all status bits zero) until config.vhd grows the menu
-         osm_cpu_speed_i           => "00",
+         osm_cpu_speed_i           => osm_cpu_speed,
          osm_cpu_8086_i            => '0',
          osm_fake286_i             => '0',
          osm_splash_off_i          => '0',
@@ -364,16 +433,74 @@ begin
          sdram_dqmh_o              => open,
          sdram_initialized_o       => open,
 
-         -- Phase 3: no floppy/IDE bridge yet
-         mgmt_addr_i               => (others => '0'),
-         mgmt_dout_i               => (others => '0'),
-         mgmt_din_o                => open,
-         mgmt_wr_i                 => '0',
-         mgmt_rd_i                 => '0',
-         mgmt_req_o                => open,
+         -- floppy/IDE storage bridge (Phase 5)
+         mgmt_addr_i               => mgmt_addr,
+         mgmt_dout_i               => mgmt_dout,
+         mgmt_din_o                => mgmt_din,
+         mgmt_wr_i                 => mgmt_wr,
+         mgmt_rd_i                 => mgmt_rd,
+         mgmt_req_o                => mgmt_req,
          fdd_present_o             => open,
          led_disk_o                => led_disk_o
       ); -- i_pcxt_core
+
+   ---------------------------------------------------------------------------
+   -- Storage: floppy A/B and the hard disk are images on the SD card, served
+   -- by the framework (vdrives). mgmt_bridge plays the MiSTer ARM against the
+   -- core's mgmt bus, vd_glue crosses into the QNICE domain and owns the
+   -- 512-byte block buffer.
+   ---------------------------------------------------------------------------
+
+   i_mgmt_bridge : mgmt_bridge
+      port map (
+         clk             => clk_main_i,
+         reset           => reset_cold,
+         mgmt_addr       => mgmt_addr,
+         mgmt_dout       => mgmt_dout,
+         mgmt_din        => mgmt_din,
+         mgmt_wr         => mgmt_wr,
+         mgmt_rd         => mgmt_rd,
+         mgmt_req        => mgmt_req,
+         img_mounted     => img_mounted_i,
+         img_size        => img_size_i,
+         img_readonly    => img_readonly_i,
+         drive_mounted   => drive_mounted_i,
+         blk_rd          => blk_rd,
+         blk_wr          => blk_wr,
+         blk_lba         => blk_lba,
+         blk_ack         => blk_ack,
+         buf_addr        => buf_addr,
+         buf_wdata       => buf_wdata,
+         buf_we          => buf_we,
+         buf_rdata       => buf_rdata
+      ); -- i_mgmt_bridge
+
+   i_vd_glue : entity work.vd_glue
+      generic map (
+         G_VDNUM        => 3
+      )
+      port map (
+         core_clk_i     => clk_main_i,
+         core_rst_i     => reset_cold,
+         blk_rd_i       => blk_rd,
+         blk_wr_i       => blk_wr,
+         blk_lba_i      => blk_lba,
+         blk_ack_o      => blk_ack,
+         buf_addr_i     => buf_addr,
+         buf_wdata_i    => buf_wdata,
+         buf_we_i       => buf_we,
+         buf_rdata_o    => buf_rdata,
+         qnice_clk_i    => clk_qnice_i,
+         sd_lba_o       => sd_lba_o,
+         sd_blk_cnt_o   => sd_blk_cnt_o,
+         sd_rd_o        => sd_rd_o,
+         sd_wr_o        => sd_wr_o,
+         sd_ack_i       => sd_ack_i,
+         sd_buff_addr_i => sd_buff_addr_i,
+         sd_buff_dout_i => sd_buff_dout_i,
+         sd_buff_din_o  => sd_buff_din_o,
+         sd_buff_wr_i   => sd_buff_wr_i
+      ); -- i_vd_glue
 
    -- Blanking for the framework: video_de_o is aligned with the RGB output,
    -- the core's own blank outputs lead it by a few pixels (see the wrapper

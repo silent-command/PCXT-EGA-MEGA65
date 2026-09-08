@@ -194,7 +194,7 @@ constant SEL_CFG_FILE      : std_logic_vector(15 downto 0) := x"0101";
 
 -- START YOUR CONFIGURATION BELOW THIS LINE
 
-constant DIR_START         : string := "/m2m";
+constant DIR_START         : string := "/pcxt";
 constant CFG_FILE          : string := "/m2m/m2mcfg";
 
 --------------------------------------------------------------------------------------------------------------------
@@ -335,7 +335,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 35;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 33;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -343,61 +343,64 @@ constant OPTM_SIZE         : natural := 35;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 24;
+constant OPTM_DY           : natural := 22;
 
+-- Line numbers of this menu are the bit numbers in qnice_osm_control_i / main_osm_control_i:
+--  2  Drive A:        3  Drive B:        4  Hard Disk:
+--  8..11 CPU speed 4.77 / 7.16 / 9.54 / Max
+--  16..22 HDMI modes   26 CRT emulation   27 Zoom-in   28 Audio improvements
 constant OPTM_ITEMS        : string :=
 
-   " Demo Headline A\n"     &
-   "\n"                     &
-   " Item A.1\n"            &
-   " Item A.2\n"            &
-   " Item A.3\n"            &
-   " Item A.4\n"            &
-   "\n"                     &
-   " Demo Headline B\n"     &
-   "\n"                     &
+   " PCXT-EGA\n"            &    --  0
+   "\n"                     &    --  1
+   " Drive A:%s\n"          &    --  2
+   " Drive B:%s\n"          &    --  3
+   " Hard Disk:%s\n"        &    --  4
+   "\n"                     &    --  5
+   " CPU Speed\n"           &    --  6
+   "\n"                     &    --  7
+   " 4.77 MHz\n"            &    --  8
+   " 7.16 MHz\n"            &    --  9
+   " 9.54 MHz\n"            &    -- 10
+   " Max\n"                 &    -- 11
+   "\n"                     &    -- 12
 
-   " HDMI: %s\n"            &    -- HDMI submenu
-   " HDMI Settings\n"       &
-   "\n"                     &
-   " 720p 50 Hz 16:9\n"     &
-   " 720p 60 Hz 16:9\n"     &
-   " 576p 50 Hz 4:3\n"      &
-   " 576p 50 Hz 5:4\n"      &
-   " 640x480 60 Hz\n"       &
-   " 720x480 59.94 Hz\n"    &
-   " 800x600 60 Hz\n"       &
-   "\n"                     &
-   " Back to main menu\n"   &
+   " HDMI: %s\n"            &    -- 13  HDMI submenu
+   " HDMI Settings\n"       &    -- 14
+   "\n"                     &    -- 15
+   " 720p 50 Hz 16:9\n"     &    -- 16
+   " 720p 60 Hz 16:9\n"     &    -- 17
+   " 576p 50 Hz 4:3\n"      &    -- 18
+   " 576p 50 Hz 5:4\n"      &    -- 19
+   " 640x480 60 Hz\n"       &    -- 20
+   " 720x480 59.94 Hz\n"    &    -- 21
+   " 800x600 60 Hz\n"       &    -- 22
+   "\n"                     &    -- 23
+   " Back to main menu\n"   &    -- 24
 
-   "\n"                     &
-   " Drives\n"              &
-   "\n"                     &
-   " Drive X:%s\n"          &
-   " Drive Y:%s\n"          &
-   " Drive Z:%s\n"          &
-   "\n"                     &
-   " Another Headline\n"    &
-   "\n"                     &
-   " HDMI: CRT emulation\n" &
-   " HDMI: Zoom-in\n"       &
-   " Audio improvements\n"  &
-   "\n"                     &
-   " Close Menu\n";
+   "\n"                     &    -- 25
+   " HDMI: CRT emulation\n" &    -- 26
+   " HDMI: Zoom-in\n"       &    -- 27
+   " Audio improvements\n"  &    -- 28
+   "\n"                     &    -- 29
+   " Help\n"                &    -- 30
+   "\n"                     &    -- 31
+   " Close Menu\n";              -- 32
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
 -- and be aware that you can only have a maximum of 254 groups (255 means "Close Menu");
 -- also make sure that your group numbers are monotonic increasing (e.g. 1, 2, 3, 4, ...)
 -- single-select items and therefore also drive mount items need to have unique identifiers
-constant OPTM_G_Demo_A     : integer := 1;
-constant OPTM_G_HDMI       : integer := 2;
-constant OPTM_G_Drive_X    : integer := 3;
-constant OPTM_G_Drive_Y    : integer := 4;
-constant OPTM_G_Drive_Z    : integer := 5;
+constant OPTM_G_DRIVE_A    : integer := 1;
+constant OPTM_G_DRIVE_B    : integer := 2;
+constant OPTM_G_HDD        : integer := 3;
+constant OPTM_G_CPU_SPEED  : integer := 4;
+constant OPTM_G_HDMI       : integer := 5;
 constant OPTM_G_CRT        : integer := 6;
 constant OPTM_G_Zoom       : integer := 7;
 constant OPTM_G_Audio      : integer := 8;
+constant OPTM_G_HELP_ITEM  : integer := 9;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -405,44 +408,41 @@ type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC-
 -- define your menu groups: which menu items are belonging together to form a group?
 -- where are separator lines? which items should be selected by default?
 -- make sure that you have exactly the same amount of entries here than in OPTM_ITEMS and defined by OPTM_SIZE
-constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Demo Headline A"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_Demo_A + OPTM_G_START,             -- Item A.1, cursor start position
-                                             OPTM_G_Demo_A + OPTM_G_STDSEL,            -- Item A.2, selected by default
-                                             OPTM_G_Demo_A,                            -- Item A.3
-                                             OPTM_G_Demo_A,                            -- Item A.4
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Demo Headline B"
-                                             OPTM_G_LINE,                              -- Line
+constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            --  0 Headline "PCXT-EGA"
+                                             OPTM_G_LINE,                              --  1
+                                             OPTM_G_DRIVE_A + OPTM_G_MOUNT_DRV + OPTM_G_START, --  2 Drive A, cursor start
+                                             OPTM_G_DRIVE_B + OPTM_G_MOUNT_DRV,        --  3 Drive B
+                                             OPTM_G_HDD     + OPTM_G_MOUNT_DRV,        --  4 Hard Disk
+                                             OPTM_G_LINE,                              --  5
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  6 Headline "CPU Speed"
+                                             OPTM_G_LINE,                              --  7
+                                             OPTM_G_CPU_SPEED + OPTM_G_STDSEL,         --  8 4.77 MHz (default)
+                                             OPTM_G_CPU_SPEED,                         --  9 7.16 MHz
+                                             OPTM_G_CPU_SPEED,                         -- 10 9.54 MHz
+                                             OPTM_G_CPU_SPEED,                         -- 11 Max
+                                             OPTM_G_LINE,                              -- 12
 
-                                             OPTM_G_SUBMENU,                           -- HDMI submenu block: START: "HDMI: %s"
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "HDMI Settings"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 720p 50 Hz 16:9, selected by default
-                                             OPTM_G_HDMI,                              -- 720p 60 Hz 16:9
-                                             OPTM_G_HDMI,                              -- 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 576p 50 Hz 5:4
-                                             OPTM_G_HDMI,                              -- 640x480 60 Hz
-                                             OPTM_G_HDMI,                              -- 720x480 59.94 Hz
-                                             OPTM_G_HDMI,                              -- 600p 60 Hz
-                                             OPTM_G_LINE,                              -- open
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- Close submenu / back to main menu
-                                                                                       -- HDMI submenu block: END
+                                             OPTM_G_SUBMENU,                           -- 13 HDMI submenu block: START: "HDMI: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 14 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              -- 15
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 16 720p 50 Hz 16:9, selected by default
+                                             OPTM_G_HDMI,                              -- 17 720p 60 Hz 16:9
+                                             OPTM_G_HDMI,                              -- 18 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              -- 19 576p 50 Hz 5:4
+                                             OPTM_G_HDMI,                              -- 20 640x480 60 Hz
+                                             OPTM_G_HDMI,                              -- 21 720x480 59.94 Hz
+                                             OPTM_G_HDMI,                              -- 22 800x600 60 Hz
+                                             OPTM_G_LINE,                              -- 23
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 24 Back to main menu; HDMI submenu block: END
 
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Drives"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_Drive_X + OPTM_G_MOUNT_DRV,        -- Drive X
-                                             OPTM_G_Drive_Y + OPTM_G_MOUNT_DRV,        -- Drive Y
-                                             OPTM_G_Drive_Z + OPTM_G_MOUNT_DRV,        -- Drive Z
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Another Headline"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- On/Off toggle ("Single Select")
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- On/Off toggle ("Single Select")
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- On/Off toggle ("Single Select")
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_CLOSE                              -- Close Menu
+                                             OPTM_G_LINE,                              -- 25
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 26 On/Off toggle
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 27 On/Off toggle
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 28 On/Off toggle
+                                             OPTM_G_LINE,                              -- 29
+                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 30 Help screens (WHS 1)
+                                             OPTM_G_LINE,                              -- 31
+                                             OPTM_G_CLOSE                              -- 32 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------
