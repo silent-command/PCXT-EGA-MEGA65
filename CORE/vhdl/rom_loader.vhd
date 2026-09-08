@@ -63,7 +63,13 @@ entity rom_loader is
       rom_wr_o         : out std_logic;
       rom_addr_o       : out std_logic_vector(24 downto 0);
       rom_data_o       : out std_logic_vector(15 downto 0);
-      rom_wait_i       : in  std_logic
+      rom_wait_i       : in  std_logic;
+
+      -- debug counters from the core, shown in the status readback (6, 7)
+      dbg_a_i          : in  std_logic_vector(15 downto 0) := (others => '0');
+      dbg_b_i          : in  std_logic_vector(15 downto 0) := (others => '0');
+      dbg_c_i          : in  std_logic_vector(15 downto 0) := (others => '0');
+      dbg_flags_i      : in  std_logic_vector(7 downto 0)  := (others => '0')   -- readback 0, bits 15..8
    );
 end entity rom_loader;
 
@@ -95,6 +101,9 @@ architecture rtl of rom_loader is
    signal c_word_wait   : natural range 0 to G_WORD_TIMEOUT;
    signal c_words_ok    : unsigned(15 downto 0) := (others => '0');
    signal c_words_drop  : unsigned(15 downto 0) := (others => '0');
+   signal c_sum_pcxt    : unsigned(15 downto 0) := (others => '0');   -- 16-bit sums of the delivered words
+   signal c_sum_ega     : unsigned(15 downto 0) := (others => '0');
+   signal c_sum_xtide   : unsigned(15 downto 0) := (others => '0');
    signal c_rom_wait_q  : std_logic := '0';
    signal c_download    : std_logic := '0';
 
@@ -187,6 +196,13 @@ begin
             c_ack_toggle <= not c_ack_toggle;
             c_words_ok   <= c_words_ok + 1;
             c_word_wait  <= 0;
+            if q_word_index = C_IDX_PCXT then
+               c_sum_pcxt <= c_sum_pcxt + unsigned(q_word);
+            elsif q_word_index = C_IDX_EGA then
+               c_sum_ega <= c_sum_ega + unsigned(q_word);
+            elsif q_word_index = C_IDX_XTIDE then
+               c_sum_xtide <= c_sum_xtide + unsigned(q_word);
+            end if;
          elsif c_word_valid = '1' then
             if c_word_wait = G_WORD_TIMEOUT then
                c_word_valid <= '0';
@@ -220,6 +236,9 @@ begin
             c_word_wait  <= 0;
             c_words_ok   <= (others => '0');
             c_words_drop <= (others => '0');
+            c_sum_pcxt   <= (others => '0');
+            c_sum_ega    <= (others => '0');
+            c_sum_xtide  <= (others => '0');
             rom_wr_o     <= '0';
          end if;
       end if;
@@ -232,9 +251,16 @@ begin
    -- 1 = words delivered, 2 = words dropped. The counters are in the core
    -- clock domain and only read while the loader is quiet, so no CDC.
    ---------------------------------------------------------------------------
-   qnice_dev_data_o <= (0 => c_rom_wait_q, 1 => c_download, 2 => c_word_valid, others => '0') when qnice_dev_addr_i(1 downto 0) = "00" else
-                       std_logic_vector(c_words_ok)   when qnice_dev_addr_i(1 downto 0) = "01" else
-                       std_logic_vector(c_words_drop) when qnice_dev_addr_i(1 downto 0) = "10" else
+   -- 3/4/5 = checksums of pcxt.rom / ega_bios.rom / xtide.rom words, 6/7 = debug counters
+   qnice_dev_data_o <= dbg_flags_i & "00000" & c_word_valid & c_download & c_rom_wait_q when qnice_dev_addr_i(3 downto 0) = "0000" else
+                       std_logic_vector(c_words_ok)   when qnice_dev_addr_i(3 downto 0) = "0001" else
+                       std_logic_vector(c_words_drop) when qnice_dev_addr_i(3 downto 0) = "0010" else
+                       std_logic_vector(c_sum_pcxt)   when qnice_dev_addr_i(3 downto 0) = "0011" else
+                       std_logic_vector(c_sum_ega)    when qnice_dev_addr_i(3 downto 0) = "0100" else
+                       std_logic_vector(c_sum_xtide)  when qnice_dev_addr_i(3 downto 0) = "0101" else
+                       dbg_a_i                        when qnice_dev_addr_i(3 downto 0) = "0110" else
+                       dbg_b_i                        when qnice_dev_addr_i(3 downto 0) = "0111" else
+                       dbg_c_i                        when qnice_dev_addr_i(3 downto 0) = "1000" else
                        x"EEEE";
 
 end architecture rtl;

@@ -295,6 +295,12 @@ signal qnice_sd_buff_din      : vd_vec_array(C_VDNUM-1 downto 0)(DW downto 0);
 signal qnice_sd_buff_wr       : std_logic;
 signal main_cache_dirty       : std_logic_vector(C_VDNUM-1 downto 0);
 
+-- debug counters from main.vhd, read back through rom_loader
+signal main_dbg_bus_reads     : std_logic_vector(15 downto 0);
+signal main_dbg_vsync         : std_logic_vector(15 downto 0);
+signal main_dbg_keys          : std_logic_vector(15 downto 0);
+signal main_dbg_flags         : std_logic_vector(7 downto 0);
+
 begin
 
    hr_core_write_o      <= '0';
@@ -436,6 +442,10 @@ begin
          bios_missing_ega_o   => open,
          splash_active_o      => open,
          led_disk_o           => main_led_disk,
+         dbg_bus_reads_o      => main_dbg_bus_reads,
+         dbg_vsync_o          => main_dbg_vsync,
+         dbg_keys_o           => main_dbg_keys,
+         dbg_flags_o          => main_dbg_flags,
 
          osm_control_i        => main_osm_control_i,
 
@@ -594,7 +604,11 @@ begin
          rom_wr_o          => main_rom_wr,
          rom_addr_o        => main_rom_addr,
          rom_data_o        => main_rom_data,
-         rom_wait_i        => main_rom_wait
+         rom_wait_i        => main_rom_wait,
+         dbg_a_i           => main_dbg_bus_reads,
+         dbg_b_i           => main_dbg_vsync,
+         dbg_c_i           => main_dbg_keys,
+         dbg_flags_i       => main_dbg_flags
       ); -- i_rom_loader
    --
    -- Use the M2M framework's official RAM/ROM: dualport_2clk_ram
