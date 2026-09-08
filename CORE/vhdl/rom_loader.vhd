@@ -114,8 +114,10 @@ begin
 
    q_pending  <= q_req_toggle xor q_ack_toggle;
 
-   -- A write is stalled while the previous word has not been consumed yet.
-   qnice_dev_wait_o <= q_selected and qnice_dev_ce_i and qnice_dev_we_i and q_pending;
+   -- Wait while a word is pending, whenever this device is selected (like the
+   -- framework's HyperRAM device): the CPU samples wait a cycle before its data
+   -- strobe, so gating on ce/we would let a write slip through and be lost.
+   qnice_dev_wait_o <= q_selected and q_pending;
 
    p_qnice : process (qnice_clk_i)
    begin
