@@ -227,8 +227,13 @@ end entity;
 
 architecture rtl of dpram is
 begin
+    -- enable_x and cs_x are ignored on purpose: the only user (ide.v) leaves
+    -- them unconnected, and Vivado ties an unconnected input of a VHDL entity
+    -- instantiated from Verilog to 0 rather than to its default, which made
+    -- the IDE sector buffer read as all ones (no model name, 128 PiB, no
+    -- boot sector).
     u : entity work.dpram_dif
         generic map (addr_width, data_width, addr_width, data_width, mem_init_file)
-        port map (clock, address_a, data_a, enable_a, wren_a, q_a, cs_a,
-                  address_b, data_b, enable_b, wren_b, q_b, cs_b);
+        port map (clock, address_a, data_a, '1', wren_a, q_a, '1',
+                  address_b, data_b, '1', wren_b, q_b, '1');
 end architecture;
