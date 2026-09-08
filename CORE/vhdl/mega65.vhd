@@ -246,6 +246,7 @@ signal main_led_disk          : std_logic;
 
 -- QNICE clock domain
 signal qnice_rom_wait         : std_logic;
+signal qnice_rom_data         : std_logic_vector(15 downto 0);
 
 ---------------------------------------------------------------------------------------------
 -- main_clk (MiSTer core's clock)
@@ -519,6 +520,7 @@ begin
          -- BIOS ROM files, auto-loaded by the firmware into rom_loader (see globals.vhd)
          when C_DEV_ROM_PCXT | C_DEV_ROM_EGA | C_DEV_ROM_XTIDE =>
             qnice_dev_wait_o     <= qnice_rom_wait;
+            qnice_dev_data_o     <= qnice_rom_data;
 
          when others => null;
       end case;
@@ -546,6 +548,7 @@ begin
          qnice_dev_ce_i    => qnice_dev_ce_i,
          qnice_dev_we_i    => qnice_dev_we_i,
          qnice_dev_wait_o  => qnice_rom_wait,
+         qnice_dev_data_o  => qnice_rom_data,
          core_clk_i        => main_clk,
          core_rst_i        => main_reset_m2m_i,
          rom_download_o    => main_rom_download,
