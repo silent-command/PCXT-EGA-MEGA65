@@ -2162,23 +2162,31 @@ module pcxt_core
     // floppy CPU<->FDC path probes (hierarchical taps; no submodule edit)
     wire fdc_iowr   = u_CHIPSET.u_PERIPHERALS.fdd_io_write;
     wire [2:0] fdc_ioad = u_CHIPSET.u_PERIPHERALS.fdd_io_address;
-    wire fdc_irq    = u_CHIPSET.u_PERIPHERALS.fdd_interrupt;
-    wire fdc_motor0 = u_CHIPSET.u_PERIPHERALS.floppy.motor_enable[0];
-    wire fdc_media0 = u_CHIPSET.u_PERIPHERALS.floppy.media_present[0];
-    wire fdc_dack2  = ~u_CHIPSET.u_BUS_ARBITER.dma_acknowledge_n[2];
-    reg [7:0] p_dor, p_cmd, p_irq, p_intr, p_dack;
-    reg fdc_irq_q, intr_q, dack_q;
+    // READ-start diagnosis: latch the four hang conditions and key values at
+    // each cmd_read_write_start pulse (why floppy.v refuses to begin a read)
+    wire       fr_start = u_CHIPSET.u_PERIPHERALS.floppy.cmd_read_write_start;
+    wire       fr_motor = u_CHIPSET.u_PERIPHERALS.floppy.motor_enable[0];
+    wire       fr_media = u_CHIPSET.u_PERIPHERALS.floppy.media_present[0];
+    wire [7:0] fr_ncode = u_CHIPSET.u_PERIPHERALS.floppy.command[23:16];
+    wire [7:0] fr_cyl   = u_CHIPSET.u_PERIPHERALS.floppy.command[47:40];
+    wire [7:0] fr_mcyl  = u_CHIPSET.u_PERIPHERALS.floppy.media_cylinders[0];
+    reg [7:0] p_dor, p_rwstart, p_last_n, p_last_cyl, p_mcyl;
+    reg [3:0] p_hang;
+    reg       p_motor_ever;
     always @(posedge clk_chipset) begin
-        fdc_irq_q <= fdc_irq; intr_q <= interrupt_to_cpu; dack_q <= fdc_dack2;
-        if (fdc_iowr && fdc_ioad == 3'd2) p_dor  <= p_dor + 8'd1;
-        if (fdc_iowr && fdc_ioad == 3'd5) p_cmd  <= p_cmd + 8'd1;
-        if (fdc_irq && ~fdc_irq_q)        p_irq  <= p_irq + 8'd1;
-        if (interrupt_to_cpu && ~intr_q)  p_intr <= p_intr + 8'd1;
-        if (fdc_dack2 && ~dack_q)         p_dack <= p_dack + 8'd1;
-        if (reset) begin p_dor<=0; p_cmd<=0; p_irq<=0; p_intr<=0; p_dack<=0; end
+        if (fdc_iowr && fdc_ioad == 3'd2) p_dor <= p_dor + 8'd1;
+        if (fr_motor) p_motor_ever <= 1'b1;
+        if (fr_start) begin
+            p_rwstart  <= p_rwstart + 8'd1;
+            p_last_n   <= fr_ncode;
+            p_last_cyl <= fr_cyl;
+            p_mcyl     <= fr_mcyl;
+            p_hang     <= {~fr_motor, ~fr_media, (fr_ncode != 8'h02), (fr_cyl >= fr_mcyl)};
+        end
+        if (reset) begin p_dor<=0; p_rwstart<=0; p_last_n<=0; p_last_cyl<=0; p_mcyl<=0; p_hang<=0; p_motor_ever<=0; end
     end
-    assign dbg_fdc0_o = {p_irq, p_dor};
-    assign dbg_fdc1_o = {6'd0, fdc_media0, fdc_motor0, p_cmd};
-    assign dbg_fdc2_o = {p_intr, p_dack};
+    assign dbg_fdc0_o = {p_mcyl, p_last_n};                          // dor= : {media_cylinders, last READ N}
+    assign dbg_fdc1_o = {p_last_cyl, 3'd0, p_motor_ever, p_hang};    // mtr= : {last READ cyl, motor_ever, hang{mot,med,N,cyl}}
+    assign dbg_fdc2_o = {p_rwstart, p_dor};                          // int= : {read-start count, DOR writes}
 
 endmodule
