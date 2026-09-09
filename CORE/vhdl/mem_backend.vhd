@@ -32,6 +32,12 @@
 -- HyperRAM read is outstanding. HyperRAM accesses are never held off by the
 -- ROM side; the FIFO applies its own back-pressure.
 --
+-- Resets: rst_i (clock lock) and hr_rst_i (framework, also on the reset
+-- button) are independent. hr_rst_i is synchronised into clk_i and resets the
+-- byte side too (out_count, the command FIFO, acceptance), because the cache,
+-- arbiter and controller forget every transaction when they reset; nothing is
+-- offered to the cache while hr_rst_i is high.
+--
 -- ROM port: as in mem_bram.vhd, the BIOS images are written here directly
 -- from rom_loader.vhd (the core's own loader FSM drops the odd word).
 --
@@ -79,7 +85,12 @@ entity mem_backend is
       hr_burstcount_o     : out std_logic_vector(7 downto 0);
       hr_readdata_i       : in  std_logic_vector(15 downto 0);
       hr_readdatavalid_i  : in  std_logic;
-      hr_waitrequest_i    : in  std_logic
+      hr_waitrequest_i    : in  std_logic;
+
+      -- debug counters (clk_i): HyperRAM reads accepted, read data returned, writes accepted
+      dbg_hrd_o           : out std_logic_vector(15 downto 0);
+      dbg_hrv_o           : out std_logic_vector(15 downto 0);
+      dbg_hwr_o           : out std_logic_vector(15 downto 0)
    );
 end entity mem_backend;
 
@@ -161,12 +172,24 @@ architecture rtl of mem_backend is
    signal out_count      : natural range 0 to C_OUT_MAX := 0;
    signal hyper_busy     : std_logic;
 
+   -- hr_rst_i seen from clk_i: the backend resets as a whole when the HyperRAM
+   -- side resets (reset button: hr_rst_i follows reset_core_n, rst_i does not).
+   -- Everything the byte side remembers about HyperRAM transactions (out_count,
+   -- commands queued in the FIFO) is void once the cache/arbiter/controller
+   -- have been reset, and a command handed to the cache while it is in reset
+   -- is silently dropped (its waitrequest is 0 in reset), so accept nothing
+   -- and drop the queue while either reset is active.
+   signal hr_rst_meta    : std_logic := '1';
+   signal hr_rst_sync    : std_logic := '1';
+   signal rst_all        : std_logic;
+
    -- one read at a time into the cache (G_CACHE only, see g_cache)
    signal c_read         : std_logic;
    signal c_waitrequest  : std_logic;
    signal c_pending      : std_logic := '0';
 
    signal hyper_accept   : std_logic;
+   signal dbg_hrd, dbg_hrv, dbg_hwr : unsigned(15 downto 0) := (others => '0');
    signal rom_accept     : std_logic;
    signal none_accept    : std_logic;
 
@@ -190,12 +213,23 @@ begin
 
    hyper_busy <= '1' when out_count /= 0 else '0';
 
-   -- acceptance: ROM/unmapped accesses wait while HyperRAM reads are outstanding
-   rom_accept   <= (avm_read_i or avm_write_i) and sel_rom  and not hyper_busy;
-   none_accept  <= (avm_read_i or avm_write_i) and sel_none and not hyper_busy;
-   hyper_accept <= (avm_read_i or avm_write_i) and sel_hyper and not s_waitrequest;
+   p_hr_rst_sync : process (clk_i)
+   begin
+      if rising_edge(clk_i) then
+         hr_rst_meta <= hr_rst_i;
+         hr_rst_sync <= hr_rst_meta;
+      end if;
+   end process;
+   rst_all <= rst_i or hr_rst_sync;
+
+   -- acceptance: ROM/unmapped accesses wait while HyperRAM reads are outstanding,
+   -- nothing is accepted while either side is in reset
+   rom_accept   <= (avm_read_i or avm_write_i) and sel_rom  and not hyper_busy and not rst_all;
+   none_accept  <= (avm_read_i or avm_write_i) and sel_none and not hyper_busy and not rst_all;
+   hyper_accept <= (avm_read_i or avm_write_i) and sel_hyper and not s_waitrequest and not rst_all;
 
    avm_waitrequest_o <= '0'            when (avm_read_i or avm_write_i) = '0' else
+                        '1'            when rst_all = '1' else
                         s_waitrequest  when sel_hyper = '1' else
                         hyper_busy;
 
@@ -296,16 +330,23 @@ begin
          end if;
 
          rom_valid_q <= rom_accept and avm_read_i;
+         if (hyper_accept and avm_read_i) = '1'  then dbg_hrd <= dbg_hrd + 1; end if;
+         if (hyper_accept and avm_write_i) = '1' then dbg_hwr <= dbg_hwr + 1; end if;
+         if s_readdatavalid = '1'                 then dbg_hrv <= dbg_hrv + 1; end if;
          none_q      <= none_accept and avm_read_i;
          sel_q       <= sel_bios & sel_xtide & sel_ega;
 
-         if rst_i = '1' then
+         if rst_all = '1' then
             out_count   <= 0;
             rom_valid_q <= '0';
             none_q      <= '0';
          end if;
       end if;
    end process;
+
+   dbg_hrd_o <= std_logic_vector(dbg_hrd);
+   dbg_hrv_o <= std_logic_vector(dbg_hrv);
+   dbg_hwr_o <= std_logic_vector(dbg_hwr);
 
    -- the oldest outstanding read is at index out_count-1 (shift register)
    avm_readdatavalid_o <= rom_valid_q or none_q or s_readdatavalid;
@@ -329,7 +370,7 @@ begin
       )
       port map (
          s_clk_i               => clk_i,
-         s_rst_i               => rst_i,
+         s_rst_i               => rst_all,
          s_avm_waitrequest_o   => s_waitrequest,
          s_avm_write_i         => s_write,
          s_avm_read_i          => s_read,
@@ -359,8 +400,10 @@ begin
       -- it in the clock of the first data beat and answers both reads with a
       -- single readdatavalid, so one read is lost and out_count never drains.
       -- Hold the FIFO's read until the previous one has answered; writes pass.
+      -- Nothing is offered to the cache while it is in reset: its waitrequest
+      -- is 0 then and it would take the command from the FIFO and drop it.
       c_read        <= m_read and not c_pending;
-      m_waitrequest <= c_waitrequest or (m_read and c_pending);
+      m_waitrequest <= c_waitrequest or (m_read and c_pending) or hr_rst_i;
 
       p_pending : process (hr_clk_i)
       begin

@@ -328,6 +328,7 @@ architecture synthesis of main is
    signal c_writes            : unsigned(15 downto 0) := (others => '0');
    signal f_writes            : unsigned(17 downto 0) := (others => '0');
    signal c_reads             : unsigned(17 downto 0) := (others => '0');
+   signal dbg_hrd, dbg_hrv, dbg_hwr : std_logic_vector(15 downto 0);
    signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
    signal ce_per_frame        : std_logic_vector(15 downto 0) := (others => '0');
    signal vs_q                : std_logic := '0';
@@ -572,9 +573,9 @@ begin
          end if;
       end if;
    end process;
-   dbg_bus_reads_o <= std_logic_vector(c_writes);      -- byte writes into C0000-CFFFF (EGA BIOS load), saturating
-   dbg_vsync_o     <= std_logic_vector(f_writes(17 downto 2)); -- byte writes into F0000-FFFFF / 4
-   dbg_keys_o      <= std_logic_vector(c_reads(17 downto 2));  -- byte reads from C0000-CFFFF / 4 (ROM scan checksum)
+   dbg_bus_reads_o <= dbg_hrd;   -- HyperRAM reads accepted
+   dbg_vsync_o     <= dbg_hrv;   -- HyperRAM read data returned
+   dbg_keys_o      <= dbg_hwr;   -- HyperRAM writes accepted
 
    p_dbg_mem : process (clk_main_i)
    begin
@@ -677,7 +678,10 @@ begin
          hr_burstcount_o     => hr_burstcount_o,
          hr_readdata_i       => hr_readdata_i,
          hr_readdatavalid_i  => hr_readdatavalid_i,
-         hr_waitrequest_i    => hr_waitrequest_i
+         hr_waitrequest_i    => hr_waitrequest_i,
+         dbg_hrd_o           => dbg_hrd,
+         dbg_hrv_o           => dbg_hrv,
+         dbg_hwr_o           => dbg_hwr
       ); -- i_mem
 
 end architecture synthesis;
