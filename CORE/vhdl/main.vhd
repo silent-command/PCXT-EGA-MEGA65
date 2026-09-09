@@ -248,10 +248,7 @@ architecture synthesis of main is
          led_disk_o                : out std_logic;
          dbg_de_o                  : out std_logic;
          dbg_hb_o                  : out std_logic;
-         dbg_vb_o                  : out std_logic;
-         dbg_fdc0_o                : out std_logic_vector(15 downto 0);
-         dbg_fdc1_o                : out std_logic_vector(15 downto 0);
-         dbg_fdc2_o                : out std_logic_vector(15 downto 0)
+         dbg_vb_o                  : out std_logic
       );
    end component pcxt_core;
 
@@ -332,11 +329,6 @@ architecture synthesis of main is
    signal f_writes            : unsigned(17 downto 0) := (others => '0');
    signal c_reads             : unsigned(17 downto 0) := (others => '0');
    signal dbg_hrd, dbg_hrv, dbg_hwr : std_logic_vector(15 downto 0);
-   signal f2_writes           : unsigned(15 downto 0) := (others => '0');
-   signal f2_last             : std_logic_vector(15 downto 0) := (others => '0');
-   signal fdd_reqs            : unsigned(15 downto 0) := (others => '0');
-   signal fdd_req_q           : std_logic := '0';
-   signal fdc0, fdc1, fdc2    : std_logic_vector(15 downto 0);
    signal mreq7_q, mreq6_q, blkwr_q, blkack_q : std_logic := '0';
    signal wr_req_cnt, rd_req_cnt, blk_wr_cnt, blk_ack_cnt : unsigned(7 downto 0) := (others => '0');
    signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
@@ -502,10 +494,7 @@ begin
          led_disk_o                => led_disk_o,
          dbg_de_o                  => raw_de,
          dbg_hb_o                  => raw_hb,
-         dbg_vb_o                  => raw_vb,
-         dbg_fdc0_o                => fdc0,
-         dbg_fdc1_o                => fdc1,
-         dbg_fdc2_o                => fdc2
+         dbg_vb_o                  => raw_vb
       ); -- i_pcxt_core
 
    ---------------------------------------------------------------------------
@@ -586,9 +575,10 @@ begin
          end if;
       end if;
    end process;
-   dbg_bus_reads_o <= fdc0;                                   -- dor= : {FDC WRITE-DATA starts, read+write starts}
-   dbg_vsync_o     <= std_logic_vector(wr_req_cnt) & std_logic_vector(rd_req_cnt);  -- mtr= : {FDD write reqs, FDD read reqs}
-   dbg_keys_o      <= std_logic_vector(blk_ack_cnt) & std_logic_vector(blk_wr_cnt); -- int= : {blk_ack (drive A), blk_wr issued (drive A)}
+   -- Status line (rom_loader regs 6/7/8, printed by the firmware at start and on every OSM selection)
+   dbg_bus_reads_o <= dbg_hrd;                                                       -- bist= : HyperRAM self test {done, mismatches}
+   dbg_vsync_o     <= std_logic_vector(wr_req_cnt) & std_logic_vector(rd_req_cnt);  -- req=  : {FDD write requests, FDD read requests}
+   dbg_keys_o      <= std_logic_vector(blk_ack_cnt) & std_logic_vector(blk_wr_cnt); -- blk=  : {block acks, block writes} for drive A
 
    p_dbg_wr : process (clk_main_i)
    begin
@@ -599,23 +589,6 @@ begin
          if mgmt_req(6) = '1' and mreq6_q = '0' then rd_req_cnt <= rd_req_cnt + 1; end if;
          if blk_wr(0)   = '1' and blkwr_q = '0' then blk_wr_cnt <= blk_wr_cnt + 1; end if;
          if blk_ack(0)  = '1' and blkack_q = '0' then blk_ack_cnt <= blk_ack_cnt + 1; end if;
-      end if;
-   end process;
-
-   p_dbg_fdd : process (clk_main_i)
-   begin
-      if rising_edge(clk_main_i) then
-         if mgmt_wr = '1' and mgmt_addr(15 downto 8) = x"F2" then
-            f2_writes <= f2_writes + 1;
-            f2_last(15 downto 8) <= mgmt_addr(7) & "000" & mgmt_addr(3 downto 0);
-            if mgmt_addr(7 downto 0) = x"00" then
-               f2_last(7 downto 0) <= mgmt_dout(7 downto 0);
-            end if;
-         end if;
-         fdd_req_q <= mgmt_req(6);
-         if mgmt_req(6) = '1' and fdd_req_q = '0' then
-            fdd_reqs <= fdd_reqs + 1;
-         end if;
       end if;
    end process;
 

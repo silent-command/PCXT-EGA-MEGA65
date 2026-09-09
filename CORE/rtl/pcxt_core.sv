@@ -193,11 +193,7 @@ module pcxt_core
     // 3.10 debug: raw chipset video signals before the mixer/retime stages
     output wire        dbg_de_o,
     output wire        dbg_hb_o,
-    output wire        dbg_vb_o,
-        // floppy CPU<->FDC path probes
-    output wire [15:0] dbg_fdc0_o,
-    output wire [15:0] dbg_fdc1_o,
-    output wire [15:0] dbg_fdc2_o
+    output wire        dbg_vb_o
     );
 
     ///////// MEGA65: MiSTer framework signals the body still refers to /////////
@@ -2159,22 +2155,5 @@ module pcxt_core
     assign dbg_hb_o      = HBlank;
     assign dbg_vb_o      = VBlank;
 
-    // floppy CPU<->FDC path probes (hierarchical taps; no submodule edit)
-    wire fdc_iowr   = u_CHIPSET.u_PERIPHERALS.fdd_io_write;
-    wire [2:0] fdc_ioad = u_CHIPSET.u_PERIPHERALS.fdd_io_address;
-    // READ-start diagnosis: latch the four hang conditions and key values at
-    // each cmd_read_write_start pulse (why floppy.v refuses to begin a read)
-    wire       fr_start = u_CHIPSET.u_PERIPHERALS.floppy.cmd_read_write_start;
-    wire       fr_wr    = u_CHIPSET.u_PERIPHERALS.floppy.cmd_write_normal_start;  // WRITE DATA start
-    reg [7:0] p_dor, p_rwstart, p_wrstart;
-    always @(posedge clk_chipset) begin
-        if (fdc_iowr && fdc_ioad == 3'd2) p_dor <= p_dor + 8'd1;
-        if (fr_start) p_rwstart <= p_rwstart + 8'd1;
-        if (fr_wr)    p_wrstart <= p_wrstart + 8'd1;
-        if (reset) begin p_dor<=0; p_rwstart<=0; p_wrstart<=0; end
-    end
-    assign dbg_fdc0_o = {p_wrstart, p_rwstart};   // dor= : {WRITE-DATA starts, read+write starts}
-    assign dbg_fdc1_o = 16'd0;                    // (main.vhd overrides reg7/reg8 with bridge-side counts)
-    assign dbg_fdc2_o = {p_rwstart, p_dor};       // (unused; main.vhd overrides)
 
 endmodule

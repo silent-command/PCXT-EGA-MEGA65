@@ -202,7 +202,7 @@ DBG_STR_2       .ASCII_W " drop="
 DBG_STR_3       .ASCII_W " sum0="
 DBG_STR_4       .ASCII_W " sum3="
 DBG_STR_5       .ASCII_W " sum2="
-DBG_STR_6       .ASCII_W " wrs="
+DBG_STR_6       .ASCII_W " bist="
 DBG_STR_7       .ASCII_W " req="
 DBG_STR_8       .ASCII_W " blk="
 DBG_STRS        .DW DBG_STR_0, DBG_STR_1, DBG_STR_2, DBG_STR_3
