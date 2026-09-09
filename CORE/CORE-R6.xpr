@@ -299,7 +299,7 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/PCXT-EGA_MiSTer/rtl/KFPC-XT/HDL/RAM.sv">
+      <File Path="$PPRDIR/rtl/overlay/RAM.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
