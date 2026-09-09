@@ -431,7 +431,7 @@ begin
          osm_vga13_tv_i            => '0',
          osm_monitor_i             => "00",
          osm_ems_disable_i         => '1',                  -- no EMS backend in the BRAM build
-         osm_umb_disable_i         => '1',                  -- no UMB backend in the BRAM build
+         osm_umb_disable_i         => '0',                  -- UMB C4000-CFFFF backed by mem_bram (the FreeDOS image expects it)
          osm_joy1_i                => "00",
          osm_joy2_i                => "00",
          osm_joy_sync_i            => '0',
