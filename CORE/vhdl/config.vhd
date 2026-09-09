@@ -110,14 +110,16 @@ constant HELP_1 : string :=
    " MEGA65 port by silent-command, 2026.\n" &
    " Powered by MiSTer2MEGA65.\n\n" &
 
-   " Bring-up status:\n" &
-   "  BIOS POST and EGA video    working\n" &
-   "  Keyboard                   working\n" &
-   "  Floppy and hard disk       not yet\n" &
-   "  Mouse, joystick, sound     not yet\n\n" &
+   " 640 KB, upper memory and 2 MB EMS live\n" &
+   " in HyperRAM. Floppy images (A: and B:)\n" &
+   " and a hard disk image mount from the\n" &
+   " menu; boot from C: with Ctrl+Alt+Del.\n\n" &
 
-   " Memory: 256 KB until the HyperRAM\n" &
-   " backend arrives (then 640 KB + EMS).\n\n" &
+   " Submenus: CPU (speed, type), HDMI, Sound\n" &
+   " (Adlib, SB FM, Tandy, speaker), Display\n" &
+   " (monitor, tint), Input (joysticks, write\n" &
+   " protect). Settings are remembered when\n" &
+   " /m2m/m2mcfg exists on the SD card.\n\n" &
 
    " Cursor right to learn more.       (1 of 3)\n" &
    " Press Space to close the help screen.";
@@ -274,7 +276,7 @@ constant SEL_CORENAME      : std_logic_vector(15 downto 0) := x"0200";
 
 -- Currently this is only used in the debug console. Use the welcome screen and the
 -- help system to display the name and version of your core to the end user
-constant CORENAME          : string := "M2M DEMO CORE V1.0";
+constant CORENAME          : string := "PCXT-EGA V0.7";
 
 --------------------------------------------------------------------------------------------------------------------
 -- "Help" menu / Options menu  (Selectors 0x0300 .. 0x0312): DO NOT TOUCH
@@ -335,7 +337,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 33;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 82;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -343,12 +345,18 @@ constant OPTM_SIZE         : natural := 33;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 22;
+constant OPTM_DY           : natural := 19;
 
--- Line numbers of this menu are the bit numbers in qnice_osm_control_i / main_osm_control_i:
---  2  Drive A:        3  Drive B:        4  Hard Disk:
---  8..11 CPU speed 4.77 / 7.16 / 9.54 / Max
---  16..22 HDMI modes   26 CRT emulation   27 Zoom-in   28 Audio improvements
+-- Line numbers of this menu are the bit numbers in qnice_osm_control_i / main_osm_control_i.
+-- main.vhd decodes the core options, mega65.vhd the framework ones (C_MENU_*):
+--   2 Drive A   3 Drive B   4 Hard Disk
+--   9..12 CPU speed 4.77 / 7.16 / 9.54 / Max   14 8086 CPU   15 286 speedup
+--  21..27 HDMI modes
+--  33..35 FM synth Adlib / SB FM / none   37 Tandy sound   38 SB IRQ 7
+--  40..43 speaker volume   45..47 audio boost
+--  53..55 monitor 5154 / 5153 / 5151   57..60 tint full / green / amber / b&w
+--  66 joystick 1   67 joystick 2   68 swap   70 write-protect A   71 write-protect B
+--  75 CRT emulation   76 zoom   77 audio improvements
 constant OPTM_ITEMS        : string :=
 
    " PCXT-EGA\n"            &    --  0
@@ -357,35 +365,88 @@ constant OPTM_ITEMS        : string :=
    " Drive B:%s\n"          &    --  3
    " Hard Disk:%s\n"        &    --  4
    "\n"                     &    --  5
-   " CPU Speed\n"           &    --  6
-   "\n"                     &    --  7
-   " 4.77 MHz\n"            &    --  8
-   " 7.16 MHz\n"            &    --  9
-   " 9.54 MHz\n"            &    -- 10
-   " Max\n"                 &    -- 11
-   "\n"                     &    -- 12
 
-   " HDMI: %s\n"            &    -- 13  HDMI submenu
-   " HDMI Settings\n"       &    -- 14
-   "\n"                     &    -- 15
-   " 720p 50 Hz 16:9\n"     &    -- 16
-   " 720p 60 Hz 16:9\n"     &    -- 17
-   " 576p 50 Hz 4:3\n"      &    -- 18
-   " 576p 50 Hz 5:4\n"      &    -- 19
-   " 640x480 60 Hz\n"       &    -- 20
-   " 720x480 59.94 Hz\n"    &    -- 21
-   " 800x600 60 Hz\n"       &    -- 22
-   "\n"                     &    -- 23
-   " Back to main menu\n"   &    -- 24
+   " CPU: %s\n"             &    --  6  CPU submenu
+   " CPU Settings\n"        &    --  7
+   "\n"                     &    --  8
+   " 4.77 MHz\n"            &    --  9
+   " 7.16 MHz\n"            &    -- 10
+   " 9.54 MHz\n"            &    -- 11
+   " Max\n"                 &    -- 12
+   "\n"                     &    -- 13
+   " 8086 CPU (reset)\n"    &    -- 14
+   " 286 speedup\n"         &    -- 15
+   "\n"                     &    -- 16
+   " Back to main menu\n"   &    -- 17
 
-   "\n"                     &    -- 25
-   " HDMI: CRT emulation\n" &    -- 26
-   " HDMI: Zoom-in\n"       &    -- 27
-   " Audio improvements\n"  &    -- 28
-   "\n"                     &    -- 29
-   " Help\n"                &    -- 30
-   "\n"                     &    -- 31
-   " Close Menu\n";              -- 32
+   " HDMI: %s\n"            &    -- 18  HDMI submenu
+   " HDMI Settings\n"       &    -- 19
+   "\n"                     &    -- 20
+   " 720p 50 Hz 16:9\n"     &    -- 21
+   " 720p 60 Hz 16:9\n"     &    -- 22
+   " 576p 50 Hz 4:3\n"      &    -- 23
+   " 576p 50 Hz 5:4\n"      &    -- 24
+   " 640x480 60 Hz\n"       &    -- 25
+   " 720x480 59.94 Hz\n"    &    -- 26
+   " 800x600 60 Hz\n"       &    -- 27
+   "\n"                     &    -- 28
+   " Back to main menu\n"   &    -- 29
+
+   " Sound: %s\n"           &    -- 30  Sound submenu
+   " Sound Settings\n"      &    -- 31
+   "\n"                     &    -- 32
+   " Adlib\n"               &    -- 33
+   " Sound Blaster FM\n"    &    -- 34
+   " No FM synth\n"         &    -- 35
+   "\n"                     &    -- 36
+   " Tandy sound\n"         &    -- 37
+   " Sound Blaster IRQ 7\n" &    -- 38
+   "\n"                     &    -- 39
+   " Speaker: Low\n"        &    -- 40
+   " Speaker: Medium\n"     &    -- 41
+   " Speaker: High\n"       &    -- 42
+   " Speaker: Max\n"        &    -- 43
+   "\n"                     &    -- 44
+   " Boost: None\n"         &    -- 45
+   " Boost: 2x\n"           &    -- 46
+   " Boost: 4x\n"           &    -- 47
+   "\n"                     &    -- 48
+   " Back to main menu\n"   &    -- 49
+
+   " Display: %s\n"         &    -- 50  Display submenu
+   " Display Settings\n"    &    -- 51
+   "\n"                     &    -- 52
+   " EGA monitor 5154\n"    &    -- 53
+   " CGA monitor 5153\n"    &    -- 54
+   " Mono monitor 5151\n"   &    -- 55
+   "\n"                     &    -- 56
+   " Full color\n"          &    -- 57
+   " Green\n"               &    -- 58
+   " Amber\n"               &    -- 59
+   " Black and white\n"     &    -- 60
+   "\n"                     &    -- 61
+   " Back to main menu\n"   &    -- 62
+
+   " Input Settings\n"      &    -- 63  Input submenu
+   " Input Settings\n"      &    -- 64
+   "\n"                     &    -- 65
+   " Joystick 1\n"          &    -- 66
+   " Joystick 2\n"          &    -- 67
+   " Swap joysticks\n"      &    -- 68
+   "\n"                     &    -- 69
+   " Write-protect A:\n"    &    -- 70
+   " Write-protect B:\n"    &    -- 71
+   "\n"                     &    -- 72
+   " Back to main menu\n"   &    -- 73
+
+   "\n"                     &    -- 74
+   " HDMI: CRT emulation\n" &    -- 75
+   " HDMI: Zoom-in\n"       &    -- 76
+   " Audio improvements\n"  &    -- 77
+   "\n"                     &    -- 78
+   " Help\n"                &    -- 79
+   "\n"                     &    -- 80
+   " Close Menu\n";              -- 81
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -396,11 +457,25 @@ constant OPTM_G_DRIVE_A    : integer := 1;
 constant OPTM_G_DRIVE_B    : integer := 2;
 constant OPTM_G_HDD        : integer := 3;
 constant OPTM_G_CPU_SPEED  : integer := 4;
-constant OPTM_G_HDMI       : integer := 5;
-constant OPTM_G_CRT        : integer := 6;
-constant OPTM_G_Zoom       : integer := 7;
-constant OPTM_G_Audio      : integer := 8;
-constant OPTM_G_HELP_ITEM  : integer := 9;
+constant OPTM_G_CPU_8086   : integer := 5;
+constant OPTM_G_FAKE286    : integer := 6;
+constant OPTM_G_HDMI       : integer := 7;
+constant OPTM_G_OPL        : integer := 8;
+constant OPTM_G_TANDY      : integer := 9;
+constant OPTM_G_SB_IRQ7    : integer := 10;
+constant OPTM_G_SPEAKER    : integer := 11;
+constant OPTM_G_BOOST      : integer := 12;
+constant OPTM_G_MONITOR    : integer := 13;
+constant OPTM_G_TINT       : integer := 14;
+constant OPTM_G_JOY1       : integer := 15;
+constant OPTM_G_JOY2       : integer := 16;
+constant OPTM_G_JOY_SWAP   : integer := 17;
+constant OPTM_G_WP_A       : integer := 18;
+constant OPTM_G_WP_B       : integer := 19;
+constant OPTM_G_CRT        : integer := 20;
+constant OPTM_G_Zoom       : integer := 21;
+constant OPTM_G_Audio      : integer := 22;
+constant OPTM_G_HELP_ITEM  : integer := 23;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -414,35 +489,88 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_DRIVE_B + OPTM_G_MOUNT_DRV,        --  3 Drive B
                                              OPTM_G_HDD     + OPTM_G_MOUNT_DRV,        --  4 Hard Disk
                                              OPTM_G_LINE,                              --  5
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  6 Headline "CPU Speed"
-                                             OPTM_G_LINE,                              --  7
-                                             OPTM_G_CPU_SPEED + OPTM_G_STDSEL,         --  8 4.77 MHz (default)
-                                             OPTM_G_CPU_SPEED,                         --  9 7.16 MHz
-                                             OPTM_G_CPU_SPEED,                         -- 10 9.54 MHz
-                                             OPTM_G_CPU_SPEED,                         -- 11 Max
-                                             OPTM_G_LINE,                              -- 12
 
-                                             OPTM_G_SUBMENU,                           -- 13 HDMI submenu block: START: "HDMI: %s"
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 14 Headline "HDMI Settings"
-                                             OPTM_G_LINE,                              -- 15
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 16 720p 50 Hz 16:9, selected by default
-                                             OPTM_G_HDMI,                              -- 17 720p 60 Hz 16:9
-                                             OPTM_G_HDMI,                              -- 18 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 19 576p 50 Hz 5:4
-                                             OPTM_G_HDMI,                              -- 20 640x480 60 Hz
-                                             OPTM_G_HDMI,                              -- 21 720x480 59.94 Hz
-                                             OPTM_G_HDMI,                              -- 22 800x600 60 Hz
-                                             OPTM_G_LINE,                              -- 23
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 24 Back to main menu; HDMI submenu block: END
+                                             OPTM_G_SUBMENU,                           --  6 CPU submenu: START "CPU: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  7 Headline "CPU Settings"
+                                             OPTM_G_LINE,                              --  8
+                                             OPTM_G_CPU_SPEED + OPTM_G_STDSEL,         --  9 4.77 MHz (default)
+                                             OPTM_G_CPU_SPEED,                         -- 10 7.16 MHz
+                                             OPTM_G_CPU_SPEED,                         -- 11 9.54 MHz
+                                             OPTM_G_CPU_SPEED,                         -- 12 Max
+                                             OPTM_G_LINE,                              -- 13
+                                             OPTM_G_CPU_8086 + OPTM_G_SINGLESEL,       -- 14 8086 CPU toggle (applied at reset)
+                                             OPTM_G_FAKE286  + OPTM_G_SINGLESEL,       -- 15 286 speedup toggle
+                                             OPTM_G_LINE,                              -- 16
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 17 Back; CPU submenu: END
 
-                                             OPTM_G_LINE,                              -- 25
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 26 On/Off toggle
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 27 On/Off toggle
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 28 On/Off toggle
-                                             OPTM_G_LINE,                              -- 29
-                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 30 Help screens (WHS 1)
-                                             OPTM_G_LINE,                              -- 31
-                                             OPTM_G_CLOSE                              -- 32 Close Menu
+                                             OPTM_G_SUBMENU,                           -- 18 HDMI submenu: START "HDMI: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 19 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              -- 20
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 21 720p 50 Hz 16:9 (default)
+                                             OPTM_G_HDMI,                              -- 22 720p 60 Hz 16:9
+                                             OPTM_G_HDMI,                              -- 23 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              -- 24 576p 50 Hz 5:4
+                                             OPTM_G_HDMI,                              -- 25 640x480 60 Hz
+                                             OPTM_G_HDMI,                              -- 26 720x480 59.94 Hz
+                                             OPTM_G_HDMI,                              -- 27 800x600 60 Hz
+                                             OPTM_G_LINE,                              -- 28
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 29 Back; HDMI submenu: END
+
+                                             OPTM_G_SUBMENU,                           -- 30 Sound submenu: START "Sound: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 31 Headline "Sound Settings"
+                                             OPTM_G_LINE,                              -- 32
+                                             OPTM_G_OPL + OPTM_G_STDSEL,               -- 33 Adlib (default)
+                                             OPTM_G_OPL,                               -- 34 Sound Blaster FM
+                                             OPTM_G_OPL,                               -- 35 No FM synth
+                                             OPTM_G_LINE,                              -- 36
+                                             OPTM_G_TANDY   + OPTM_G_SINGLESEL,        -- 37 Tandy sound toggle
+                                             OPTM_G_SB_IRQ7 + OPTM_G_SINGLESEL,        -- 38 SB IRQ 7 toggle (off = IRQ 5)
+                                             OPTM_G_LINE,                              -- 39
+                                             OPTM_G_SPEAKER + OPTM_G_STDSEL,           -- 40 Speaker: Low (default)
+                                             OPTM_G_SPEAKER,                           -- 41 Speaker: Medium
+                                             OPTM_G_SPEAKER,                           -- 42 Speaker: High
+                                             OPTM_G_SPEAKER,                           -- 43 Speaker: Max
+                                             OPTM_G_LINE,                              -- 44
+                                             OPTM_G_BOOST + OPTM_G_STDSEL,             -- 45 Boost: None (default)
+                                             OPTM_G_BOOST,                             -- 46 Boost: 2x
+                                             OPTM_G_BOOST,                             -- 47 Boost: 4x
+                                             OPTM_G_LINE,                              -- 48
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 49 Back; Sound submenu: END
+
+                                             OPTM_G_SUBMENU,                           -- 50 Display submenu: START "Display: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 51 Headline "Display Settings"
+                                             OPTM_G_LINE,                              -- 52
+                                             OPTM_G_MONITOR + OPTM_G_STDSEL,           -- 53 EGA monitor 5154 (default)
+                                             OPTM_G_MONITOR,                           -- 54 CGA monitor 5153
+                                             OPTM_G_MONITOR,                           -- 55 Mono monitor 5151
+                                             OPTM_G_LINE,                              -- 56
+                                             OPTM_G_TINT + OPTM_G_STDSEL,              -- 57 Full color (default)
+                                             OPTM_G_TINT,                              -- 58 Green
+                                             OPTM_G_TINT,                              -- 59 Amber
+                                             OPTM_G_TINT,                              -- 60 Black and white
+                                             OPTM_G_LINE,                              -- 61
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 62 Back; Display submenu: END
+
+                                             OPTM_G_SUBMENU,                           -- 63 Input submenu: START "Input Settings"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 64 Headline "Input Settings"
+                                             OPTM_G_LINE,                              -- 65
+                                             OPTM_G_JOY1 + OPTM_G_SINGLESEL + OPTM_G_STDSEL, -- 66 Joystick 1 toggle (default on)
+                                             OPTM_G_JOY2 + OPTM_G_SINGLESEL + OPTM_G_STDSEL, -- 67 Joystick 2 toggle (default on)
+                                             OPTM_G_JOY_SWAP + OPTM_G_SINGLESEL,       -- 68 Swap joysticks toggle
+                                             OPTM_G_LINE,                              -- 69
+                                             OPTM_G_WP_A + OPTM_G_SINGLESEL,           -- 70 Write-protect A: toggle
+                                             OPTM_G_WP_B + OPTM_G_SINGLESEL,           -- 71 Write-protect B: toggle
+                                             OPTM_G_LINE,                              -- 72
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 73 Back; Input submenu: END
+
+                                             OPTM_G_LINE,                              -- 74
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 75 On/Off toggle
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 76 On/Off toggle
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 77 On/Off toggle
+                                             OPTM_G_LINE,                              -- 78
+                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 79 Help screens (WHS 1)
+                                             OPTM_G_LINE,                              -- 80
+                                             OPTM_G_CLOSE                              -- 81 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

@@ -263,16 +263,16 @@ signal qnice_rom_data         : std_logic_vector(15 downto 0);
 
 -- Democore menu items
 -- Menu line numbers (bit numbers in qnice_osm_control_i), see config.vhd OPTM_ITEMS
-constant C_MENU_HDMI_16_9_50   : natural := 16;
-constant C_MENU_HDMI_16_9_60   : natural := 17;
-constant C_MENU_HDMI_4_3_50    : natural := 18;
-constant C_MENU_HDMI_5_4_50    : natural := 19;
-constant C_MENU_HDMI_640_60    : natural := 20;
-constant C_MENU_HDMI_720_5994  : natural := 21;
-constant C_MENU_SVGA_800_60    : natural := 22;
-constant C_MENU_CRT_EMULATION  : natural := 26;
-constant C_MENU_HDMI_ZOOM      : natural := 27;
-constant C_MENU_IMPROVE_AUDIO  : natural := 28;
+constant C_MENU_HDMI_16_9_50   : natural := 21;
+constant C_MENU_HDMI_16_9_60   : natural := 22;
+constant C_MENU_HDMI_4_3_50    : natural := 23;
+constant C_MENU_HDMI_5_4_50    : natural := 24;
+constant C_MENU_HDMI_640_60    : natural := 25;
+constant C_MENU_HDMI_720_5994  : natural := 26;
+constant C_MENU_SVGA_800_60    : natural := 27;
+constant C_MENU_CRT_EMULATION  : natural := 75;
+constant C_MENU_HDMI_ZOOM      : natural := 76;
+constant C_MENU_IMPROVE_AUDIO  : natural := 77;
 
 -- QNICE clock domain
 signal qnice_demo_vd_data_o   : std_logic_vector(15 downto 0);

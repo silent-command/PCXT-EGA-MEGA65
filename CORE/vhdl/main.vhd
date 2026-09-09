@@ -257,6 +257,9 @@ architecture synthesis of main is
    signal core_video_hblank   : std_logic;
    signal core_video_vblank   : std_logic;
    signal core_audio_left     : std_logic_vector(15 downto 0);
+   signal osm_opl2, osm_speaker, osm_boost, osm_monitor, osm_joy1, osm_joy2, osm_floppy_wp : std_logic_vector(1 downto 0);
+   signal osm_display         : std_logic_vector(2 downto 0);
+   signal joy0_vec, joy1_vec  : std_logic_vector(13 downto 0);
    signal core_audio_right    : std_logic_vector(15 downto 0);
 
    -- the byte bus that the KFSDRAM overlay carries on the SDRAM pins
@@ -360,11 +363,46 @@ architecture synthesis of main is
 
 begin
 
-   -- CPU speed: menu lines 8..11 of config.vhd (4.77 / 7.16 / 9.54 / Max), status[18:17]
-   osm_cpu_speed <= "11" when osm_control_i(11) = '1' else
-                    "10" when osm_control_i(10) = '1' else
-                    "01" when osm_control_i(9)  = '1' else
+   -- Options menu decode (bit numbers = line numbers in config.vhd OPTM_ITEMS)
+   -- CPU speed: lines 9..12 (4.77 / 7.16 / 9.54 / Max), status[18:17]
+   osm_cpu_speed <= "11" when osm_control_i(12) = '1' else
+                    "10" when osm_control_i(11) = '1' else
+                    "01" when osm_control_i(10) = '1' else
                     "00";
+   -- FM synth: lines 33..35 (Adlib / Sound Blaster FM / none), status[43:42]
+   osm_opl2      <= "10" when osm_control_i(35) = '1' else
+                    "01" when osm_control_i(34) = '1' else
+                    "00";
+   -- Speaker volume: lines 40..43, status[33:32]
+   osm_speaker   <= "11" when osm_control_i(43) = '1' else
+                    "10" when osm_control_i(42) = '1' else
+                    "01" when osm_control_i(41) = '1' else
+                    "00";
+   -- Audio boost: lines 45..47 (none / 2x / 4x), status[37:36]
+   osm_boost     <= "10" when osm_control_i(47) = '1' else
+                    "01" when osm_control_i(46) = '1' else
+                    "00";
+   -- Monitor: lines 53..55 (5154 / 5153 / 5151), status[45:44], applied at reset
+   osm_monitor   <= "10" when osm_control_i(55) = '1' else
+                    "01" when osm_control_i(54) = '1' else
+                    "00";
+   -- Tint: lines 57..60 (full color / green / amber / b&w), status[16:14]
+   osm_display   <= "011" when osm_control_i(60) = '1' else
+                    "010" when osm_control_i(59) = '1' else
+                    "001" when osm_control_i(58) = '1' else
+                    "000";
+   -- Joysticks: lines 66/67 toggles. The MEGA65 sticks are digital, so "on"
+   -- selects the core's digital mode ([0]) and "off" disables the port ([1]).
+   osm_joy1      <= "01" when osm_control_i(66) = '1' else "10";
+   osm_joy2      <= "01" when osm_control_i(67) = '1' else "10";
+   -- Floppy write protect: lines 70 (A:) and 71 (B:), status[20:19] = {B, A}
+   osm_floppy_wp <= osm_control_i(71) & osm_control_i(70);
+
+   -- MEGA65 joystick ports -> game port: [0] right [1] left [2] down [3] up [4] fire
+   joy0_vec <= "000000000" & (not joy_1_fire_n_i) & (not joy_1_up_n_i) & (not joy_1_down_n_i)
+                           & (not joy_1_left_n_i) & (not joy_1_right_n_i);
+   joy1_vec <= "000000000" & (not joy_2_fire_n_i) & (not joy_2_up_n_i) & (not joy_2_down_n_i)
+                           & (not joy_2_left_n_i) & (not joy_2_right_n_i);
 
    -- Cold reset re-streams the ROMs (see the reset tree in docs/emu-signal-map.md).
    -- Only a lost clock lock counts. reset_hard_i cannot be used: the framework's
@@ -420,22 +458,22 @@ begin
          ps2_mouse_data_i          => '1',
          ps2_mouse_clk_o           => open,
          ps2_mouse_data_o          => open,
-         joy0_i                    => (others => '0'),
-         joy1_i                    => (others => '0'),
+         joy0_i                    => joy0_vec,
+         joy1_i                    => joy1_vec,
          joya0_i                   => (others => '0'),
          joya1_i                   => (others => '0'),
 
          -- OSM: MiSTer defaults (all status bits zero) until config.vhd grows the menu
          osm_cpu_speed_i           => osm_cpu_speed,
-         osm_cpu_8086_i            => '0',
-         osm_fake286_i             => '0',
+         osm_cpu_8086_i            => osm_control_i(14),
+         osm_fake286_i             => osm_control_i(15),
          osm_splash_off_i          => '0',
          osm_bios_writable_i       => "00",
          osm_audio220_i            => "00",
-         osm_opl2_i                => "00",
-         osm_tandy_i               => '0',
-         osm_speaker_vol_i         => "00",
-         osm_audio_boost_i         => "00",
+         osm_opl2_i                => osm_opl2,
+         osm_tandy_i               => osm_control_i(37),
+         osm_speaker_vol_i         => osm_speaker,
+         osm_audio_boost_i         => osm_boost,
          osm_stereo_mix_i          => "00",
          osm_crt_h_i               => "0000",
          osm_crt_v_i               => "000",
@@ -443,18 +481,18 @@ begin
          osm_hsync_w_i             => "000",
          osm_scandoubler_fx_i      => "00",
          osm_aspect_i              => "00",
-         osm_display_i             => "000",
+         osm_display_i             => osm_display,
          osm_vga13_tv_i            => '0',
-         osm_monitor_i             => "00",
+         osm_monitor_i             => osm_monitor,
          osm_ems_disable_i         => '0',                  -- 2 MB EMS, page frame D000, pages in HyperRAM
          osm_umb_disable_i         => '0',                  -- UMB C4000-CFFFF (HyperRAM)
-         osm_joy1_i                => "00",
-         osm_joy2_i                => "00",
+         osm_joy1_i                => osm_joy1,
+         osm_joy2_i                => osm_joy2,
          osm_joy_sync_i            => '0',
-         osm_joy_swap_i            => '0',
-         osm_sb_irq7_i             => '0',
+         osm_joy_swap_i            => osm_control_i(68),
+         osm_sb_irq7_i             => osm_control_i(38),
          osm_mpu401_disable_i      => '1',                  -- nothing behind the MPU-401
-         osm_floppy_wp_i           => "00",
+         osm_floppy_wp_i           => osm_floppy_wp,
 
          bios_missing_pcxt_o       => core_bm_pcxt,
          bios_missing_ega_o        => core_bm_ega,
