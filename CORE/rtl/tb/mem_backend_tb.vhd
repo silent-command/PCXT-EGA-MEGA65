@@ -2,26 +2,32 @@
 -- mem_backend_tb: self-checking bench for CORE/vhdl/mem_backend.vhd
 --
 -- Two copies of the DUT run side by side in one simulation, one with G_CACHE = true
--- (default line of 8 words) and one with G_CACHE = false, each behind its own model of
--- the framework's HyperRAM path (hr_model below: avm_arbit_general + hyperram_errata +
--- hyperram_config + hyperram_ctrl as seen from the core's Avalon port). The byte bus is
--- driven the way CORE/rtl/overlay/KFSDRAM.sv drives it: read/write held until
--- waitrequest drops, readdatavalid any time later, in order.
+-- (default line of 8 words) and one with G_CACHE = false. Behind each DUT sits either
+--   * G_REAL_PATH = true (default): the framework's real RTL, avm_arbit_general (slot 2 a
+--     scaler model bursting 64 words, slot 1 the DUT, slot 0 a QNICE model with single
+--     accesses) -> hyperram_errata -> hyperram_config -> hyperram_ctrl -> hb_device, a
+--     behavioural HyperRAM at the controller's HyperBus ports; or
+--   * G_REAL_PATH = false: hr_model, a compact Avalon model of the same behaviour.
+-- The byte bus is driven the way CORE/rtl/overlay/KFSDRAM.sv drives it: read/write held
+-- until waitrequest drops, readdatavalid any time later, in order.
 --
 -- Clocks: byte bus 50 MHz, HyperRAM side 100 MHz with an unrelated phase.
 --
 -- Tests per copy: 0 reset ordering (hr_rst_i vs rst_i), 1 ROM port + ROM windows,
 -- 2 HyperRAM regions, 3 ordering rules, 4 sequential fetch with latency measurement,
--- 5 random traffic against a reference array. Any read that never answers or request
--- that is never accepted is reported as a hang with the DUT's internal state (VHDL-2008
--- external names) and the bench resets the DUT and carries on. The last line is
+-- 5 random traffic against a reference array. After every test the response balance is
+-- checked: reads accepted on the byte side = readdatavalids from the FIFO, reads the
+-- cache accepted = readdatavalids it produced, and the other masters got exactly one beat
+-- per burst word. Any read that never answers or request that is never accepted is
+-- reported as a hang with the DUT's internal state (VHDL-2008 external names) and the
+-- bench resets the DUT and carries on. The last line is
 -- "MBT RESULT: PASS/FAIL checks=N errors=M".
 --
--- Run: powershell -File CORE/rtl/tb/run_mem_backend_tb.ps1
+-- Run: powershell -File CORE/rtl/tb/run_mem_backend_tb.ps1 [-Seed n]
 -------------------------------------------------------------------------------------------------------------
 
 -------------------------------------------------------------------------------------------------------------
--- hr_model: the HyperRAM as the core sees it behind the framework's arbiter.
+-- hr_model: the HyperRAM as the core sees it behind the framework's arbiter (compact model).
 --   * after reset waitrequest stays '1' for G_INIT_HOLD clocks (hyperram_config: 150 us on hardware)
 --   * a request is accepted in one clock while idle (waitrequest '0'); from then on waitrequest is '1'
 --     for a random latency (G_LAT_MIN..G_LAT_MAX), all read beats (burst up to 255, consecutive or
@@ -92,7 +98,6 @@ begin
       variable viol     : natural := 0;
       variable is_rd    : boolean := false;
       variable req_held : boolean := false;
-      variable v        : natural;
 
       procedure rnd(lo : natural; hi : natural; x : out natural) is
          variable y : natural;
@@ -118,7 +123,6 @@ begin
       if rising_edge(clk_i) then
          avm_readdatavalid_o <= '0';
 
-         -- Avalon rules
          if req_held and avm_write_i = '0' and avm_read_i = '0' then
             viol := viol + 1;
             report "hr_model: request withdrawn while waitrequest = '1'" severity error;
@@ -138,7 +142,7 @@ begin
                   st      <= ST_IDLE;
                end if;
 
-            when ST_IDLE =>                       -- waitreq is '0' here: a request is accepted at this edge
+            when ST_IDLE =>
                if avm_write_i = '1' or avm_read_i = '1' then
                   is_rd := avm_read_i = '1';
                   cur   := to_integer(unsigned(avm_address_i));
@@ -151,7 +155,7 @@ begin
                   st <= ST_LAT;
                else
                   uniform(s1, s2, r);
-                  if r < 1.0 / 150.0 then          -- another master takes the bus while we are idle
+                  if r < 1.0 / 150.0 then
                      rnd(1, G_HOLD_MAX, cnt);
                      waitreq <= '1';
                      st      <= ST_HOLD;
@@ -200,7 +204,7 @@ begin
                   end if;
                end if;
 
-            when ST_WR =>                         -- further beats of a write burst (the DUT never bursts writes)
+            when ST_WR =>
                if avm_write_i = '1' then
                   store;
                   if beats = 0 then
@@ -210,12 +214,12 @@ begin
                   end if;
                end if;
 
-            when others =>                        -- ST_REC
+            when others =>
                if cnt > 1 then
                   cnt := cnt - 1;
                else
                   uniform(s1, s2, r);
-                  if r < 0.5 then                 -- the arbiter swaps to another master
+                  if r < 0.5 then
                      rnd(1, G_HOLD_MAX, cnt);
                      st <= ST_HOLD;
                   else
@@ -239,7 +243,291 @@ end architecture sim;
 
 
 -------------------------------------------------------------------------------------------------------------
--- one DUT + model + master + checks
+-- hb_device: a HyperRAM at hyperram_ctrl's HyperBus ports (the rx/tx DDR primitives folded in).
+--   CS# low: the first three words with dq_oe are the command/address (RW, AS, linear burst, address);
+--   a register write (AS = 1) takes one more word which is ignored. RWDS during CA says whether the
+--   device wants the doubled latency (random, as refresh collisions do on hardware). Reads: one word
+--   per CK cycle while the controller asserts hb_read, delivered G_DELAY clocks later with dq_ie
+--   (the controller drops the words past its burst count). Writes: one word per CK cycle while
+--   rwds_oe is high, bytes masked by the RWDS output bits.
+-------------------------------------------------------------------------------------------------------------
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.math_real.all;
+
+entity hb_device is
+   generic (
+      G_ADDR_BITS : natural  := 22;    -- 4 M words = 8 MB, like the MEGA65 HyperRAM
+      G_SEED      : positive := 1;
+      G_DELAY     : natural  := 2
+   );
+   port (
+      clk_i             : in  std_logic;
+      hb_csn_i          : in  std_logic;
+      hb_ck_ddr_i       : in  std_logic_vector(1 downto 0);
+      hb_dq_ddr_out_i   : in  std_logic_vector(15 downto 0);
+      hb_dq_oe_i        : in  std_logic;
+      hb_rwds_ddr_out_i : in  std_logic_vector(1 downto 0);
+      hb_rwds_oe_i      : in  std_logic;
+      hb_read_i         : in  std_logic;
+      hb_dq_ddr_in_o    : out std_logic_vector(15 downto 0) := (others => '0');
+      hb_dq_ie_o        : out std_logic := '0';
+      hb_rwds_in_o      : out std_logic := '0';
+      words_read_o      : out natural := 0;   -- words handed to the controller
+      phase_o           : out natural := 0
+   );
+end entity hb_device;
+
+architecture sim of hb_device is
+   type mem_t is array (0 to 2**G_ADDR_BITS-1) of std_logic_vector(15 downto 0);
+   type pipe_d_t is array (0 to G_DELAY) of std_logic_vector(15 downto 0);
+begin
+   p_dev : process (clk_i)
+      variable mem     : mem_t := (others => (others => '0'));
+      variable phase   : natural := 0;   -- 0 idle, 1 CA, 2 data
+      variable ca_cnt  : natural := 0;
+      variable ca      : std_logic_vector(47 downto 0) := (others => '0');
+      variable addr    : natural := 0;
+      variable is_read : boolean := false;
+      variable is_reg  : boolean := false;
+      variable pipe_d  : pipe_d_t := (others => (others => '0'));
+      variable pipe_v  : std_logic_vector(G_DELAY downto 0) := (others => '0');
+      variable nw      : std_logic_vector(15 downto 0);
+      variable nv      : std_logic;
+      variable s1      : positive := G_SEED;
+      variable s2      : positive := G_SEED * 17 + 3;
+      variable r       : real;
+      variable words   : natural := 0;
+      variable dq_d    : std_logic_vector(15 downto 0) := (others => '0');
+      variable rwds_d  : std_logic_vector(1 downto 0)  := "11";
+      variable rwds_oe_d : std_logic := '0';
+   begin
+      if rising_edge(clk_i) then
+         nw := (others => '0');
+         nv := '0';
+
+         if hb_csn_i = '1' then
+            phase := 0;
+            uniform(s1, s2, r);                       -- latency flag for the next access
+            if r < 0.3 then hb_rwds_in_o <= '1'; else hb_rwds_in_o <= '0'; end if;
+         else
+            case phase is
+               when 0 =>
+                  if hb_dq_oe_i = '1' then
+                     ca(47 downto 32) := hb_dq_ddr_out_i;
+                     ca_cnt := 1;
+                     phase  := 1;
+                  end if;
+               when 1 =>
+                  if hb_dq_oe_i = '1' then
+                     if ca_cnt = 1 then
+                        ca(31 downto 16) := hb_dq_ddr_out_i;
+                        ca_cnt := 2;
+                     else
+                        ca(15 downto 0) := hb_dq_ddr_out_i;
+                        is_read := ca(47) = '1';
+                        is_reg  := ca(46) = '1';
+                        addr    := to_integer(unsigned(std_logic_vector'(ca(43 downto 16) & ca(2 downto 0)))) mod 2**G_ADDR_BITS;
+                        phase   := 2;
+                     end if;
+                  end if;
+               when others =>
+                  if is_reg then
+                     null;                            -- configuration register: ignored
+                  elsif is_read then
+                     if hb_read_i = '1' and hb_ck_ddr_i = "10" then
+                        nw   := mem(addr);
+                        nv   := '1';
+                        addr := (addr + 1) mod 2**G_ADDR_BITS;
+                     end if;
+                  else
+                     -- hyperram_tx puts DQ/RWDS through ODDRs on clk_i and CK through one on the 90-degree
+                     -- clock: the word and mask of the previous cycle travel with this cycle's CK and rwds_oe
+                     if rwds_oe_d = '1' and hb_ck_ddr_i = "10" then
+                        if rwds_d(0) = '0' then
+                           mem(addr)(7 downto 0) := dq_d(7 downto 0);
+                        end if;
+                        if rwds_d(1) = '0' then
+                           mem(addr)(15 downto 8) := dq_d(15 downto 8);
+                        end if;
+                        addr := (addr + 1) mod 2**G_ADDR_BITS;
+                     end if;
+                  end if;
+            end case;
+         end if;
+         dq_d      := hb_dq_ddr_out_i;
+         rwds_d    := hb_rwds_ddr_out_i;
+         rwds_oe_d := hb_rwds_oe_i;
+
+         -- read data pipeline
+         for i in G_DELAY downto 1 loop
+            pipe_d(i) := pipe_d(i - 1);
+            pipe_v(i) := pipe_v(i - 1);
+         end loop;
+         pipe_d(0) := nw;
+         pipe_v(0) := nv;
+         hb_dq_ddr_in_o <= pipe_d(G_DELAY);
+         hb_dq_ie_o     <= pipe_v(G_DELAY);
+         if pipe_v(G_DELAY) = '1' then
+            words := words + 1;
+         end if;
+         words_read_o <= words;
+         phase_o      <= phase;
+      end if;
+   end process;
+end architecture sim;
+
+
+-------------------------------------------------------------------------------------------------------------
+-- avm_master_model: another master on the arbiter (the scaler with 64-word bursts, QNICE with single
+-- accesses). Checks that every read burst returns exactly its burstcount beats and that no beat
+-- arrives while it has nothing outstanding.
+-------------------------------------------------------------------------------------------------------------
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.math_real.all;
+
+entity avm_master_model is
+   generic (
+      G_NAME     : string;
+      G_SEED     : positive;
+      G_BURST    : natural;
+      G_ADDR_LO  : natural;
+      G_ADDR_HI  : natural;
+      G_IDLE_MIN : natural;
+      G_IDLE_MAX : natural
+   );
+   port (
+      clk_i               : in  std_logic;
+      rst_i               : in  std_logic;
+      avm_write_o         : out std_logic := '0';
+      avm_read_o          : out std_logic := '0';
+      avm_address_o       : out std_logic_vector(31 downto 0) := (others => '0');
+      avm_writedata_o     : out std_logic_vector(15 downto 0) := (others => '0');
+      avm_byteenable_o    : out std_logic_vector(1 downto 0)  := "11";
+      avm_burstcount_o    : out std_logic_vector(7 downto 0)  := x"01";
+      avm_readdata_i      : in  std_logic_vector(15 downto 0);
+      avm_readdatavalid_i : in  std_logic;
+      avm_waitrequest_i   : in  std_logic;
+      errors_o            : out natural := 0;
+      reads_o             : out natural := 0;
+      beats_o             : out natural := 0
+   );
+end entity avm_master_model;
+
+architecture sim of avm_master_model is
+   signal expecting : natural := 0;   -- beats still expected from the current read burst
+begin
+   p_master : process
+      variable s1, s2 : positive;
+      variable r      : real;
+      variable n, a   : natural;
+      variable errors : natural := 0;
+      variable reads  : natural := 0;
+      variable beats  : natural := 0;
+      variable got    : natural;
+      variable w      : natural;
+
+      procedure rnd(lo : natural; hi : natural; x : out natural) is
+         variable y : natural;
+      begin
+         uniform(s1, s2, r);
+         y := lo + natural(trunc(r * real(hi - lo + 1)));
+         if y > hi then y := hi; end if;
+         x := y;
+      end procedure;
+
+      procedure edge is
+      begin
+         wait until rising_edge(clk_i);
+         if avm_readdatavalid_i = '1' then
+            beats := beats + 1;
+            if expecting = 0 then
+               errors := errors + 1;
+               report "MBT [" & G_NAME & "] FAIL: readdatavalid with no read outstanding (stray beat)" severity error;
+            else
+               expecting <= expecting - 1;
+            end if;
+         end if;
+         errors_o <= errors;
+         reads_o  <= reads;
+         beats_o  <= beats;
+      end procedure;
+   begin
+      s1 := G_SEED;
+      s2 := G_SEED * 13 + 5;
+      loop
+         if rst_i = '1' then
+            avm_read_o  <= '0';
+            avm_write_o <= '0';
+            expecting   <= 0;
+            wait until rising_edge(clk_i) and rst_i = '0';
+            for i in 1 to 50 loop edge; end loop;
+         end if;
+         rnd(G_IDLE_MIN, G_IDLE_MAX, n);
+         for i in 1 to n loop
+            edge;
+            exit when rst_i = '1';
+         end loop;
+         next when rst_i = '1';
+
+         rnd(G_ADDR_LO, G_ADDR_HI - G_BURST, a);
+         avm_address_o    <= std_logic_vector(to_unsigned(a, 32));
+         avm_burstcount_o <= std_logic_vector(to_unsigned(G_BURST, 8));
+         uniform(s1, s2, r);
+         if r < 0.5 then
+            -- read burst
+            avm_read_o <= '1';
+            expecting  <= G_BURST;
+            w := 0;
+            loop
+               edge;
+               exit when avm_waitrequest_i = '0' or rst_i = '1';
+               w := w + 1;
+            end loop;
+            avm_read_o <= '0';
+            next when rst_i = '1';
+            reads := reads + 1;
+            w := 0;
+            while expecting > 0 loop
+               edge;
+               exit when rst_i = '1';
+               w := w + 1;
+               if w > 20000 then
+                  errors := errors + 1;
+                  report "MBT [" & G_NAME & "] FAIL: read burst at " & to_hstring(to_unsigned(a, 32)) & " never completed, " &
+                         integer'image(expecting) & " beats missing" severity error;
+                  expecting <= 0;
+                  exit;
+               end if;
+            end loop;
+         else
+            -- write burst, beats presented back to back with the odd pause
+            for b in 0 to G_BURST - 1 loop
+               avm_writedata_o <= std_logic_vector(to_unsigned((a + b) mod 65536, 16));
+               avm_write_o     <= '1';
+               loop
+                  edge;
+                  exit when avm_waitrequest_i = '0' or rst_i = '1';
+               end loop;
+               avm_write_o <= '0';
+               exit when rst_i = '1';
+               uniform(s1, s2, r);
+               if r < 0.2 then
+                  rnd(1, 3, n);
+                  for i in 1 to n loop edge; end loop;
+               end if;
+            end loop;
+         end if;
+      end loop;
+   end process;
+end architecture sim;
+
+
+-------------------------------------------------------------------------------------------------------------
+-- one DUT + HyperRAM path + master + checks
 -------------------------------------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -251,8 +539,9 @@ entity mem_backend_harness is
       G_NAME        : string;
       G_CACHE       : boolean;
       G_SEED        : positive;
-      G_INIT_HOLD   : natural := 300;     -- model: waitrequest after reset (hr clocks)
-      G_LAT_MIN     : natural := 10;
+      G_REAL_PATH   : boolean := true;    -- framework arbiter/errata/config/ctrl + hb_device, else hr_model
+      G_INIT_HOLD   : natural := 15000;   -- waitrequest after reset (hr clocks): hyperram_config's 150 us
+      G_LAT_MIN     : natural := 10;      -- hr_model only
       G_LAT_MAX     : natural := 60;
       G_HOLD_MAX    : natural := 80;
       G_RANDOM_OPS  : natural := 3000;
@@ -273,9 +562,15 @@ end entity mem_backend_harness;
 
 architecture sim of mem_backend_harness is
 
-   constant C_MEM_BITS       : natural := 21;
-   constant C_ACCEPT_TIMEOUT : natural := 1000;
-   constant C_DONE_TIMEOUT   : natural := 3000;
+   function pick(c : boolean; a : natural; b : natural) return natural is
+   begin
+      if c then return a; else return b; end if;
+   end function;
+
+   constant C_MEM_BITS       : natural := pick(G_REAL_PATH, 22, 21);
+   constant C_HR_BASE        : natural := pick(G_REAL_PATH, 16#200000#, 0);   -- word address of XT byte 0
+   constant C_ACCEPT_TIMEOUT : natural := G_INIT_HOLD / 2 + 2000;
+   constant C_DONE_TIMEOUT   : natural := G_INIT_HOLD / 2 + 4000;
 
    signal rst               : std_logic := '1';
    signal hr_rst            : std_logic := '1';
@@ -293,6 +588,7 @@ architecture sim of mem_backend_harness is
    signal rom_addr          : std_logic_vector(24 downto 0) := (others => '0');
    signal rom_data          : std_logic_vector(15 downto 0) := (others => '0');
 
+   -- the DUT's HyperRAM port
    signal hr_write          : std_logic;
    signal hr_read           : std_logic;
    signal hr_address        : std_logic_vector(31 downto 0);
@@ -302,8 +598,41 @@ architecture sim of mem_backend_harness is
    signal hr_readdata       : std_logic_vector(15 downto 0);
    signal hr_readdatavalid  : std_logic;
    signal hr_waitrequest    : std_logic;
-   signal hr_state          : natural;
-   signal hr_viol           : natural;
+   signal hr_state          : natural := 0;     -- hr_model state / hb_device phase
+   signal hr_viol           : natural := 0;
+
+   -- real path
+   signal sc_write, sc_read, sc_readdatavalid, sc_waitrequest : std_logic;
+   signal sc_address        : std_logic_vector(31 downto 0);
+   signal sc_writedata, sc_readdata : std_logic_vector(15 downto 0);
+   signal sc_byteenable     : std_logic_vector(1 downto 0);
+   signal sc_burstcount     : std_logic_vector(7 downto 0);
+   signal qn_write, qn_read, qn_readdatavalid, qn_waitrequest : std_logic;
+   signal qn_address        : std_logic_vector(31 downto 0);
+   signal qn_writedata, qn_readdata : std_logic_vector(15 downto 0);
+   signal qn_byteenable     : std_logic_vector(1 downto 0);
+   signal qn_burstcount     : std_logic_vector(7 downto 0);
+   signal ar_write, ar_read, ar_readdatavalid, ar_waitrequest : std_logic;
+   signal ar_address        : std_logic_vector(31 downto 0);
+   signal ar_writedata, ar_readdata : std_logic_vector(15 downto 0);
+   signal ar_byteenable     : std_logic_vector(1 downto 0);
+   signal ar_burstcount     : std_logic_vector(7 downto 0);
+   signal er_write, er_read, er_readdatavalid, er_waitrequest : std_logic;
+   signal er_address        : std_logic_vector(31 downto 0);
+   signal er_writedata, er_readdata : std_logic_vector(15 downto 0);
+   signal er_byteenable     : std_logic_vector(1 downto 0);
+   signal er_burstcount     : std_logic_vector(7 downto 0);
+   signal cf_write, cf_read, cf_readdatavalid, cf_waitrequest : std_logic;
+   signal cf_address        : std_logic_vector(31 downto 0);
+   signal cf_writedata, cf_readdata : std_logic_vector(15 downto 0);
+   signal cf_byteenable     : std_logic_vector(1 downto 0);
+   signal cf_burstcount     : std_logic_vector(7 downto 0);
+   signal hb_csn, hb_dq_oe, hb_rwds_oe, hb_read, hb_dq_ie, hb_rwds_in, hb_rstn : std_logic;
+   signal hb_ck_ddr, hb_rwds_ddr_out : std_logic_vector(1 downto 0);
+   signal hb_dq_ddr_in, hb_dq_ddr_out : std_logic_vector(15 downto 0);
+   signal cnt_long, cnt_short : unsigned(31 downto 0);
+   signal sc_errors, qn_errors, sc_reads, qn_reads, sc_beats, qn_beats : natural := 0;
+   signal hb_words          : natural := 0;
 
    -- HyperRAM-side monitor (hr_clk domain)
    signal mon_wr_count : natural := 0;
@@ -318,6 +647,12 @@ architecture sim of mem_backend_harness is
    signal mon_both     : natural := 0;   -- read and write asserted together
    signal mon_beats    : natural := 0;   -- readdatavalid beats delivered to the DUT
 
+   -- balance: reads the cache (or the plain path) accepted from the FIFO vs readdatavalids it gave back,
+   -- and readdatavalids the backend refused to forward (surplus responses)
+   signal hs_reads     : natural := 0;
+   signal hs_valids    : natural := 0;
+   signal hs_dropped   : natural := 0;
+
    signal dump_trig    : std_logic := '0';
 
 begin
@@ -327,7 +662,7 @@ begin
    ---------------------------------------------------------------------------
    i_dut : entity work.mem_backend
       generic map (
-         G_HR_BASE    => x"00000000",
+         G_HR_BASE    => to_unsigned(C_HR_BASE, 32),
          G_CACHE      => G_CACHE,
          G_CACHE_SIZE => 8
       )
@@ -359,32 +694,207 @@ begin
       );
 
    ---------------------------------------------------------------------------
-   -- HyperRAM path model
+   -- the HyperRAM path
    ---------------------------------------------------------------------------
-   i_mem : entity work.hr_model
-      generic map (
-         G_ADDRESS_SIZE => C_MEM_BITS,
-         G_SEED         => G_SEED * 3 + 1,
-         G_INIT_HOLD    => G_INIT_HOLD,
-         G_LAT_MIN      => G_LAT_MIN,
-         G_LAT_MAX      => G_LAT_MAX,
-         G_HOLD_MAX     => G_HOLD_MAX
-      )
-      port map (
-         clk_i               => hr_clk_i,
-         rst_i               => hr_rst,
-         avm_write_i         => hr_write,
-         avm_read_i          => hr_read,
-         avm_address_i       => hr_address(C_MEM_BITS-1 downto 0),
-         avm_writedata_i     => hr_writedata,
-         avm_byteenable_i    => hr_byteenable,
-         avm_burstcount_i    => hr_burstcount,
-         avm_readdata_o      => hr_readdata,
-         avm_readdatavalid_o => hr_readdatavalid,
-         avm_waitrequest_o   => hr_waitrequest,
-         state_o             => hr_state,
-         viol_o              => hr_viol
-      );
+   gen_model : if not G_REAL_PATH generate
+      i_mem : entity work.hr_model
+         generic map (
+            G_ADDRESS_SIZE => C_MEM_BITS,
+            G_SEED         => G_SEED * 3 + 1,
+            G_INIT_HOLD    => G_INIT_HOLD,
+            G_LAT_MIN      => G_LAT_MIN,
+            G_LAT_MAX      => G_LAT_MAX,
+            G_HOLD_MAX     => G_HOLD_MAX
+         )
+         port map (
+            clk_i               => hr_clk_i,
+            rst_i               => hr_rst,
+            avm_write_i         => hr_write,
+            avm_read_i          => hr_read,
+            avm_address_i       => hr_address(C_MEM_BITS-1 downto 0),
+            avm_writedata_i     => hr_writedata,
+            avm_byteenable_i    => hr_byteenable,
+            avm_burstcount_i    => hr_burstcount,
+            avm_readdata_o      => hr_readdata,
+            avm_readdatavalid_o => hr_readdatavalid,
+            avm_waitrequest_o   => hr_waitrequest,
+            state_o             => hr_state,
+            viol_o              => hr_viol
+         );
+   end generate gen_model;
+
+   gen_real : if G_REAL_PATH generate
+      -- slot 2: the scaler, 64-word bursts in the bottom 2 MB (words 0..0FFFFF)
+      i_scaler : entity work.avm_master_model
+         generic map (G_NAME => G_NAME & "/scaler", G_SEED => G_SEED * 5 + 2, G_BURST => 64,
+                      G_ADDR_LO => 0, G_ADDR_HI => 16#0FFFFF#, G_IDLE_MIN => 0, G_IDLE_MAX => 200)
+         port map (clk_i => hr_clk_i, rst_i => hr_rst,
+                   avm_write_o => sc_write, avm_read_o => sc_read, avm_address_o => sc_address,
+                   avm_writedata_o => sc_writedata, avm_byteenable_o => sc_byteenable, avm_burstcount_o => sc_burstcount,
+                   avm_readdata_i => sc_readdata, avm_readdatavalid_i => sc_readdatavalid, avm_waitrequest_i => sc_waitrequest,
+                   errors_o => sc_errors, reads_o => sc_reads, beats_o => sc_beats);
+
+      -- slot 0: QNICE, the odd single access in words 1F0000..1FFFFF
+      i_qnice : entity work.avm_master_model
+         generic map (G_NAME => G_NAME & "/qnice", G_SEED => G_SEED * 7 + 4, G_BURST => 1,
+                      G_ADDR_LO => 16#1F0000#, G_ADDR_HI => 16#1FFFFF#, G_IDLE_MIN => 300, G_IDLE_MAX => 3000)
+         port map (clk_i => hr_clk_i, rst_i => hr_rst,
+                   avm_write_o => qn_write, avm_read_o => qn_read, avm_address_o => qn_address,
+                   avm_writedata_o => qn_writedata, avm_byteenable_o => qn_byteenable, avm_burstcount_o => qn_burstcount,
+                   avm_readdata_i => qn_readdata, avm_readdatavalid_i => qn_readdatavalid, avm_waitrequest_i => qn_waitrequest,
+                   errors_o => qn_errors, reads_o => qn_reads, beats_o => qn_beats);
+
+      i_arb : entity work.avm_arbit_general
+         generic map (G_NUM_SLAVES => 3, G_FREQ_HZ => 100_000_000, G_ADDRESS_SIZE => 32, G_DATA_SIZE => 16)
+         port map (
+            clk_i                 => hr_clk_i,
+            rst_i                 => hr_rst,
+            s_avm_write_i         => sc_write      & hr_write      & qn_write,
+            s_avm_read_i          => sc_read       & hr_read       & qn_read,
+            s_avm_address_i       => sc_address    & hr_address    & qn_address,
+            s_avm_writedata_i     => sc_writedata  & hr_writedata  & qn_writedata,
+            s_avm_byteenable_i    => sc_byteenable & hr_byteenable & qn_byteenable,
+            s_avm_burstcount_i    => sc_burstcount & hr_burstcount & qn_burstcount,
+            s_avm_readdata_o(3*16-1 downto 2*16) => sc_readdata,
+            s_avm_readdata_o(2*16-1 downto 1*16) => hr_readdata,
+            s_avm_readdata_o(1*16-1 downto 0*16) => qn_readdata,
+            s_avm_readdatavalid_o(2) => sc_readdatavalid,
+            s_avm_readdatavalid_o(1) => hr_readdatavalid,
+            s_avm_readdatavalid_o(0) => qn_readdatavalid,
+            s_avm_waitrequest_o(2)   => sc_waitrequest,
+            s_avm_waitrequest_o(1)   => hr_waitrequest,
+            s_avm_waitrequest_o(0)   => qn_waitrequest,
+            m_avm_write_o         => ar_write,
+            m_avm_read_o          => ar_read,
+            m_avm_address_o       => ar_address,
+            m_avm_writedata_o     => ar_writedata,
+            m_avm_byteenable_o    => ar_byteenable,
+            m_avm_burstcount_o    => ar_burstcount,
+            m_avm_readdata_i      => ar_readdata,
+            m_avm_readdatavalid_i => ar_readdatavalid,
+            m_avm_waitrequest_i   => ar_waitrequest
+         );
+
+      i_errata : entity work.hyperram_errata
+         port map (
+            clk_i                 => hr_clk_i,
+            rst_i                 => hr_rst,
+            s_avm_waitrequest_o   => ar_waitrequest,
+            s_avm_write_i         => ar_write,
+            s_avm_read_i          => ar_read,
+            s_avm_address_i       => ar_address,
+            s_avm_writedata_i     => ar_writedata,
+            s_avm_byteenable_i    => ar_byteenable,
+            s_avm_burstcount_i    => ar_burstcount,
+            s_avm_readdata_o      => ar_readdata,
+            s_avm_readdatavalid_o => ar_readdatavalid,
+            m_avm_waitrequest_i   => er_waitrequest,
+            m_avm_write_o         => er_write,
+            m_avm_read_o          => er_read,
+            m_avm_address_o       => er_address,
+            m_avm_writedata_o     => er_writedata,
+            m_avm_byteenable_o    => er_byteenable,
+            m_avm_burstcount_o    => er_burstcount,
+            m_avm_readdata_i      => er_readdata,
+            m_avm_readdatavalid_i => er_readdatavalid
+         );
+
+      i_config : entity work.hyperram_config
+         generic map (G_LATENCY => 4)
+         port map (
+            clk_i                 => hr_clk_i,
+            rst_i                 => hr_rst,
+            s_avm_write_i         => er_write,
+            s_avm_read_i          => er_read,
+            s_avm_address_i       => er_address,
+            s_avm_writedata_i     => er_writedata,
+            s_avm_byteenable_i    => er_byteenable,
+            s_avm_burstcount_i    => er_burstcount,
+            s_avm_readdata_o      => er_readdata,
+            s_avm_readdatavalid_o => er_readdatavalid,
+            s_avm_waitrequest_o   => er_waitrequest,
+            m_avm_write_o         => cf_write,
+            m_avm_read_o          => cf_read,
+            m_avm_address_o       => cf_address,
+            m_avm_writedata_o     => cf_writedata,
+            m_avm_byteenable_o    => cf_byteenable,
+            m_avm_burstcount_o    => cf_burstcount,
+            m_avm_readdata_i      => cf_readdata,
+            m_avm_readdatavalid_i => cf_readdatavalid,
+            m_avm_waitrequest_i   => cf_waitrequest
+         );
+
+      i_ctrl : entity work.hyperram_ctrl
+         generic map (G_LATENCY => 4)
+         port map (
+            clk_i               => hr_clk_i,
+            rst_i               => hr_rst,
+            avm_waitrequest_o   => cf_waitrequest,
+            avm_write_i         => cf_write,
+            avm_read_i          => cf_read,
+            avm_address_i       => cf_address,
+            avm_writedata_i     => cf_writedata,
+            avm_byteenable_i    => cf_byteenable,
+            avm_burstcount_i    => cf_burstcount,
+            avm_readdata_o      => cf_readdata,
+            avm_readdatavalid_o => cf_readdatavalid,
+            count_long_o        => cnt_long,
+            count_short_o       => cnt_short,
+            hb_rstn_o           => hb_rstn,
+            hb_csn_o            => hb_csn,
+            hb_ck_ddr_o         => hb_ck_ddr,
+            hb_dq_ddr_in_i      => hb_dq_ddr_in,
+            hb_dq_ddr_out_o     => hb_dq_ddr_out,
+            hb_dq_oe_o          => hb_dq_oe,
+            hb_dq_ie_i          => hb_dq_ie,
+            hb_rwds_ddr_out_o   => hb_rwds_ddr_out,
+            hb_rwds_oe_o        => hb_rwds_oe,
+            hb_rwds_in_i        => hb_rwds_in,
+            hb_read_o           => hb_read
+         );
+
+      i_dev : entity work.hb_device
+         generic map (G_ADDR_BITS => C_MEM_BITS, G_SEED => G_SEED * 3 + 1, G_DELAY => 2)
+         port map (
+            clk_i             => hr_clk_i,
+            hb_csn_i          => hb_csn,
+            hb_ck_ddr_i       => hb_ck_ddr,
+            hb_dq_ddr_out_i   => hb_dq_ddr_out,
+            hb_dq_oe_i        => hb_dq_oe,
+            hb_rwds_ddr_out_i => hb_rwds_ddr_out,
+            hb_rwds_oe_i      => hb_rwds_oe,
+            hb_read_i         => hb_read,
+            hb_dq_ddr_in_o    => hb_dq_ddr_in,
+            hb_dq_ie_o        => hb_dq_ie,
+            hb_rwds_in_o      => hb_rwds_in,
+            words_read_o      => hb_words,
+            phase_o           => hr_state
+         );
+
+      -- hang report: the arbiter's grants and the HyperBus
+      p_dbg_real : process
+         alias g01_s0 is <<signal i_arb.i_avm_arbit_01.s0_active_grant : std_logic>>;   -- qnice
+         alias g01_s1 is <<signal i_arb.i_avm_arbit_01.s1_active_grant : std_logic>>;   -- the DUT
+         alias g01_lg is <<signal i_arb.i_avm_arbit_01.last_grant      : std_logic>>;
+         alias g01_bc is <<signal i_arb.i_avm_arbit_01.burstcount      : std_logic_vector(7 downto 0)>>;
+         alias gt_s0  is <<signal i_arb.i_avm_arbit.s0_active_grant    : std_logic>>;   -- qnice+DUT
+         alias gt_s1  is <<signal i_arb.i_avm_arbit.s1_active_grant    : std_logic>>;   -- scaler
+         alias gt_lg  is <<signal i_arb.i_avm_arbit.last_grant         : std_logic>>;
+         alias gt_bc  is <<signal i_arb.i_avm_arbit.burstcount         : std_logic_vector(7 downto 0)>>;
+      begin
+         wait on dump_trig;
+         report "MBT [" & G_NAME & "] HANG arbiter: arbit_01 grants qnice=" & to_string(g01_s0) & " dut=" & to_string(g01_s1) &
+                " last_grant=" & to_string(g01_lg) & " burstcount=" & to_hstring(g01_bc) &
+                " | top grants lower=" & to_string(gt_s0) & " scaler=" & to_string(gt_s1) & " last_grant=" & to_string(gt_lg) &
+                " burstcount=" & to_hstring(gt_bc) & " | errata->config: write=" & to_string(er_write) & " read=" &
+                to_string(er_read) & " waitrequest=" & to_string(er_waitrequest) & " | ctrl: waitrequest=" &
+                to_string(cf_waitrequest) & " csn=" & to_string(hb_csn) & " hb_read=" & to_string(hb_read) &
+                " device phase=" & integer'image(hr_state) & " words=" & integer'image(hb_words) &
+                " | scaler reads=" & integer'image(sc_reads) & " beats=" & integer'image(sc_beats) &
+                " qnice reads=" & integer'image(qn_reads) & " beats=" & integer'image(qn_beats)
+                severity note;
+      end process;
+   end generate gen_real;
 
    p_mon : process (hr_clk_i)
    begin
@@ -414,6 +924,26 @@ begin
       end if;
    end process;
 
+   -- balance at the FIFO's HyperRAM-side port (the cache's slave port when G_CACHE)
+   p_balance : process (hr_clk_i)
+      alias b_m_read  is <<signal i_dut.m_read          : std_logic>>;
+      alias b_m_wait  is <<signal i_dut.m_waitrequest   : std_logic>>;
+      alias b_m_rdv   is <<signal i_dut.m_readdatavalid : std_logic>>;
+      alias b_f_rdv   is <<signal i_dut.f_readdatavalid : std_logic>>;
+   begin
+      if rising_edge(hr_clk_i) then
+         if b_m_read = '1' and b_m_wait = '0' then
+            hs_reads <= hs_reads + 1;
+         end if;
+         if b_m_rdv = '1' then
+            hs_valids <= hs_valids + 1;
+         end if;
+         if b_m_rdv = '1' and b_f_rdv = '0' then
+            hs_dropped <= hs_dropped + 1;
+         end if;
+      end if;
+   end process;
+
    ---------------------------------------------------------------------------
    -- hang report: the cache's registers (only exist with G_CACHE)
    ---------------------------------------------------------------------------
@@ -428,7 +958,6 @@ begin
          variable guess : string(1 to 10);
       begin
          wait on dump_trig;
-         -- the cache's m_avm_read_o / m_avm_write_o are the harness's hr_read / hr_write
          if c_count = 8 then
             guess := "IDLE_ST   ";
          elsif c_burst /= x"00" or (c_count > 0 and c_count < 8) or hr_read = '1' then
@@ -534,7 +1063,9 @@ begin
       variable seed1          : positive := G_SEED;
       variable seed2          : positive := G_SEED * 7919 + 13;
       variable hyper_writes   : natural := 0;
-      variable hyper_reads    : natural := 0;
+      variable hyper_reads    : natural := 0;   -- HyperRAM reads accepted on the byte side
+      variable bs_valids      : natural := 0;   -- readdatavalids out of the FIFO on the byte side
+      variable bal_hr, bal_bv, bal_sr, bal_sv, bal_sce, bal_qne : natural := 0;
       variable r              : real;
       variable n, k, a, d     : natural;
       variable idx0, idx1     : natural;
@@ -571,6 +1102,9 @@ begin
       begin
          wait until rising_edge(clk_i);
          cyc := cyc + 1;
+         if d_s_rdv = '1' then
+            bs_valids := bs_valids + 1;
+         end if;
          if avm_readdatavalid = '1' then
             if exp_tail = exp_head then
                check(false, "readdatavalid with no read outstanding, data " & to_hstring(avm_readdata));
@@ -610,6 +1144,31 @@ begin
          end loop;
       end procedure;
 
+      -- response balance: baseline and check
+      procedure balance_start is
+      begin
+         bal_hr  := hyper_reads;
+         bal_bv  := bs_valids;
+         bal_sr  := hs_reads;
+         bal_sv  := hs_valids;
+         bal_sce := sc_errors;
+         bal_qne := qn_errors;
+      end procedure;
+
+      procedure balance_check(what : string) is
+      begin
+         idle(20);   -- let the last response cross the FIFO
+         check(hyper_reads - bal_hr = bs_valids - bal_bv, what & ": byte side: " & integer'image(hyper_reads - bal_hr) &
+               " HyperRAM reads accepted but " & integer'image(bs_valids - bal_bv) & " readdatavalids returned");
+         check(hs_reads - bal_sr = hs_valids - bal_sv, what & ": HyperRAM side: the cache/path accepted " &
+               integer'image(hs_reads - bal_sr) & " reads and produced " & integer'image(hs_valids - bal_sv) & " readdatavalids");
+         if G_REAL_PATH then
+            check(sc_errors = bal_sce and qn_errors = bal_qne, what & ": the other masters saw " &
+                  integer'image(sc_errors - bal_sce + qn_errors - bal_qne) & " stray/missing beats");
+         end if;
+         balance_start;
+      end procedure;
+
       -- the state of everything at the moment of a hang
       procedure hang_dump(why : string) is
       begin
@@ -623,10 +1182,13 @@ begin
              to_string(d_fifo_s_ready) & " s_readdatavalid=" & to_string(d_s_rdv) &
              " | hr side: fifo m_valid=" & to_string(d_fifo_m_valid) & " m_ready=" & to_string(d_fifo_m_ready) &
              " m_read=" & to_string(d_m_read) & " m_write=" & to_string(d_m_write) & " m_waitrequest=" &
-             to_string(d_m_wait) & " m_readdatavalid=" & to_string(d_m_rdv));
+             to_string(d_m_wait) & " m_readdatavalid=" & to_string(d_m_rdv) &
+             " | balance since test start: byte reads " & integer'image(hyper_reads - bal_hr) & " valids " &
+             integer'image(bs_valids - bal_bv) & ", hr-side reads " & integer'image(hs_reads - bal_sr) & " valids " &
+             integer'image(hs_valids - bal_sv));
          msg("HANG HyperRAM port: hr_read=" & to_string(hr_read) & " hr_write=" & to_string(hr_write) &
              " hr_waitrequest=" & to_string(hr_waitrequest) & " hr_burstcount=" & to_hstring(hr_burstcount) &
-             " model state=" & integer'image(hr_state) & " (0 init 1 idle 2 hold 3 latency 4 rd 5 wr 6 recovery)" &
+             " model/device state=" & integer'image(hr_state) &
              " reads accepted=" & integer'image(mon_rd_count) & " beats returned=" & integer'image(mon_beats) &
              " writes accepted=" & integer'image(mon_wr_count));
          dump_trig <= not dump_trig;
@@ -648,7 +1210,8 @@ begin
          wr_seen      := mon_wr_count;
          rd_seen      := mon_rd_count;
          hyper_writes := mon_wr_count;   -- accesses still in the FIFO were lost with the reset
-         hyper_reads  := mon_rd_count;
+         hyper_reads  := bs_valids;      -- every read that was answered was accepted; the rest are gone
+         balance_start;
       end procedure;
 
       -- present a write; returns after the edge that accepted it
@@ -762,7 +1325,7 @@ begin
          end if;
       end procedure;
 
-      -- the newest hyper write must show up on the HyperRAM bus as word a/2 with the right byteenable
+      -- the newest hyper write must show up on the HyperRAM bus as word base + a/2 with the right byteenable
       procedure hr_check_write(a : natural; d : natural) is
          variable w : natural := 0;
       begin
@@ -770,7 +1333,7 @@ begin
          while mon_wr_count < wr_seen loop
             tick;
             w := w + 1;
-            if w > 1500 then
+            if w > 3000 then
                check(false, "write " & hx(a, 6) & " never reached the HyperRAM bus");
                hang_dump("write " & hx(a, 6) & " never reached the HyperRAM bus");
                return;
@@ -778,8 +1341,8 @@ begin
          end loop;
          check(mon_wr_count = wr_seen, "write " & hx(a, 6) & ": unexpected extra HyperRAM writes (" &
                integer'image(mon_wr_count) & " vs " & integer'image(wr_seen) & ")");
-         check(unsigned(mon_wr_addr) = a / 2, "write " & hx(a, 6) & ": HyperRAM word address " &
-               to_hstring(mon_wr_addr) & " expected " & hx(a / 2, 8));
+         check(unsigned(mon_wr_addr) = C_HR_BASE + a / 2, "write " & hx(a, 6) & ": HyperRAM word address " &
+               to_hstring(mon_wr_addr) & " expected " & hx(C_HR_BASE + a / 2, 8));
          check(mon_wr_burst = x"01", "write " & hx(a, 6) & ": burstcount " & to_hstring(mon_wr_burst));
          if a mod 2 = 1 then
             check(mon_wr_be = "10", "write " & hx(a, 6) & ": byteenable " & to_string(mon_wr_be) & " expected 10");
@@ -803,14 +1366,14 @@ begin
          while mon_rd_count < rd_seen loop
             tick;
             w := w + 1;
-            if w > 1500 then
+            if w > 3000 then
                check(false, "read " & hx(a, 6) & " never reached the HyperRAM bus");
                return;
             end if;
          end loop;
          check(mon_rd_count = rd_seen, "read " & hx(a, 6) & ": unexpected extra HyperRAM reads");
-         check(unsigned(mon_rd_addr) = a / 2, "read " & hx(a, 6) & ": HyperRAM word address " &
-               to_hstring(mon_rd_addr) & " expected " & hx(a / 2, 8));
+         check(unsigned(mon_rd_addr) = C_HR_BASE + a / 2, "read " & hx(a, 6) & ": HyperRAM word address " &
+               to_hstring(mon_rd_addr) & " expected " & hx(C_HR_BASE + a / 2, 8));
          check(mon_rd_burst = x"01", "read " & hx(a, 6) & ": burstcount " & to_hstring(mon_rd_burst));
       end procedure;
 
@@ -855,14 +1418,20 @@ begin
          end if;
       end loop;
 
-      msg("start, G_CACHE=" & boolean'image(G_CACHE) & ", model: init hold " & integer'image(G_INIT_HOLD) &
-          ", latency " & integer'image(G_LAT_MIN) & ".." & integer'image(G_LAT_MAX) & ", holds up to " &
-          integer'image(G_HOLD_MAX) & " hr clocks");
+      if G_REAL_PATH then
+         msg("start, G_CACHE=" & boolean'image(G_CACHE) & ", framework arbiter/errata/config/ctrl + HyperBus device, " &
+             "G_HR_BASE=" & hx(C_HR_BASE, 8) & ", scaler bursts of 64 and QNICE accesses on the other slots");
+      else
+         msg("start, G_CACHE=" & boolean'image(G_CACHE) & ", hr_model: init hold " & integer'image(G_INIT_HOLD) &
+             ", latency " & integer'image(G_LAT_MIN) & ".." & integer'image(G_LAT_MAX) & ", holds up to " &
+             integer'image(G_HOLD_MAX) & " hr clocks");
+      end if;
 
       ------------------------------------------------------------------------
       -- 0. reset ordering between rst_i (byte side) and hr_rst_i (HyperRAM side)
       ------------------------------------------------------------------------
       msg("T0 reset ordering");
+      balance_start;
       -- (i) byte side out of reset, HyperRAM side still in reset for 200 hr clocks, a write and a read queued
       rst    <= '1';
       hr_rst <= '1';
@@ -896,6 +1465,7 @@ begin
          bus_read(16#00300# + k);
          wait_done;
       end loop;
+      balance_check("T0 i/ii");
       -- (iii) HyperRAM side reset while a read is in flight, byte side not reset (reset button:
       -- hr_rst_i follows reset_core_n, rst_i only follows the clock lock); the read can never be
       -- answered, but afterwards the backend must serve the (also reset) CPU again
@@ -909,8 +1479,9 @@ begin
       read_wait(16#F0000#);          -- ROM read: held for ever if out_count still counts the lost read
       read_wait(16#00400#);
       check(exp_head = exp_tail, "(iii) reads outstanding after the HyperRAM-side reset");
-      hyper_reads  := mon_rd_count;  -- the in-flight read was dropped on purpose: resync the bus counters
+      hyper_reads  := bs_valids;     -- the in-flight read was dropped on purpose: resync the bus counters
       hyper_writes := mon_wr_count;
+      balance_start;
 
       ------------------------------------------------------------------------
       -- 1. ROM port and ROM windows
@@ -995,6 +1566,7 @@ begin
       -- ROM read latency is one clock
       read_wait(16#F0000#);
       check(last_done_edge - last_accept = 1, "ROM read latency " & integer'image(last_done_edge - last_accept) & " expected 1");
+      balance_check("T1");
 
       ------------------------------------------------------------------------
       -- 2. HyperRAM regions
@@ -1046,6 +1618,7 @@ begin
       read_wait(16#0C4000#);
       idle(10);
       check(mon_bad_hi = 0, "HyperRAM address bits above the model set " & integer'image(mon_bad_hi) & " times");
+      balance_check("T2");
 
       ------------------------------------------------------------------------
       -- 3. ordering
@@ -1160,6 +1733,7 @@ begin
       check(accepted and exp_head = exp_tail - 1 and last_done_edge < last_accept,
             "(d) unmapped read accepted @" & integer'image(last_accept) & " before the HyperRAM read issued @" & integer'image(e0) & " answered");
       wait_done;
+      balance_check("T3");
 
       ------------------------------------------------------------------------
       -- 4. sequential fetch, latency
@@ -1202,6 +1776,7 @@ begin
       for b in 0 to 31 loop
          read_wait(16#0C3FF0# + b);
       end loop;
+      balance_check("T4");
 
       ------------------------------------------------------------------------
       -- 5. random traffic against the reference array
@@ -1273,6 +1848,10 @@ begin
             rnd(20, 60, n);
          end if;
          idle(n);
+         if op mod 500 = 0 then
+            wait_done;
+            balance_check("T5 op " & integer'image(op));
+         end if;
       end loop;
       wait_done;
       idle(400);
@@ -1282,6 +1861,16 @@ begin
       check(mon_both = 0, "HyperRAM read and write asserted together " & integer'image(mon_both) & " times");
       check(hr_viol = 0, "HyperRAM model saw " & integer'image(hr_viol) & " Avalon rule violations");
       check(exp_head = exp_tail, "reads still outstanding at the end");
+      balance_check("T5 end");
+      if G_REAL_PATH then
+         msg("other masters: scaler " & integer'image(sc_reads) & " read bursts / " & integer'image(sc_beats) &
+             " beats, qnice " & integer'image(qn_reads) & " reads / " & integer'image(qn_beats) & " beats, " &
+             integer'image(sc_errors + qn_errors) & " stray or missing beats");
+      end if;
+      msg("totals: byte side " & integer'image(hyper_reads) & " HyperRAM reads accepted / " & integer'image(bs_valids) &
+          " readdatavalids; HyperRAM side " & integer'image(hs_reads) & " reads accepted by the cache/path / " &
+          integer'image(hs_valids) & " readdatavalids, " & integer'image(hs_dropped) & " not forwarded as surplus");
+      check(hs_dropped = 0, "the backend had to drop " & integer'image(hs_dropped) & " surplus readdatavalids");
 
       -- pass on the totals
       msg("done: " & integer'image(checks) & " checks, " & integer'image(errors) & " errors, " &
@@ -1306,7 +1895,8 @@ use std.env.all;
 
 entity mem_backend_tb is
    generic (
-      G_SEED : positive := 1        -- xelab -generic_top "G_SEED=n" for another random run
+      G_SEED      : positive := 1;       -- xelab -generic_top "G_SEED=n" for another random run
+      G_REAL_PATH : boolean  := true     -- false: the compact hr_model instead of the framework RTL
    );
 end entity mem_backend_tb;
 
@@ -1335,6 +1925,11 @@ architecture sim of mem_backend_tb is
          return integer'image(i / 100) & "." & integer'image(i mod 100);
       end if;
    end function;
+
+   function init_hold(real_path : boolean) return natural is
+   begin
+      if real_path then return 15000; else return 300; end if;
+   end function;
 begin
 
    clk <= not clk after 10 ns;              -- 50 MHz byte bus
@@ -1351,12 +1946,14 @@ begin
    end process;
 
    i_cache : entity work.mem_backend_harness
-      generic map (G_NAME => "cache", G_CACHE => true, G_SEED => 11 * G_SEED)
+      generic map (G_NAME => "cache", G_CACHE => true, G_SEED => 11 * G_SEED,
+                   G_REAL_PATH => G_REAL_PATH, G_INIT_HOLD => init_hold(G_REAL_PATH))
       port map (clk_i => clk, hr_clk_i => hr_clk, done_o => done_c, checks_o => checks_c, errors_o => errors_c,
                 hangs_o => hangs_c, seq_lat_o => lat_c, seq_min_o => min_c, seq_max_o => max_c);
 
    i_nocache : entity work.mem_backend_harness
-      generic map (G_NAME => "nocache", G_CACHE => false, G_SEED => 23 * G_SEED)
+      generic map (G_NAME => "nocache", G_CACHE => false, G_SEED => 23 * G_SEED,
+                   G_REAL_PATH => G_REAL_PATH, G_INIT_HOLD => init_hold(G_REAL_PATH))
       port map (clk_i => clk, hr_clk_i => hr_clk, done_o => done_n, checks_o => checks_n, errors_o => errors_n,
                 hangs_o => hangs_n, seq_lat_o => lat_n, seq_min_o => min_n, seq_max_o => max_n);
 
@@ -1381,7 +1978,7 @@ begin
 
    p_watchdog : process
    begin
-      wait for 400 ms;
+      wait for 2 sec;
       report "MBT RESULT: FAIL watchdog: simulation did not finish (cache done=" & boolean'image(done_c) &
              ", nocache done=" & boolean'image(done_n) & ")" severity note;
       finish;
