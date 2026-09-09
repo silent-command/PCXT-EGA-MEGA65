@@ -303,12 +303,7 @@ signal main_dbg_flags         : std_logic_vector(7 downto 0);
 
 begin
 
-   hr_core_write_o      <= '0';
-   hr_core_read_o       <= '0';
-   hr_core_address_o    <= (others => '0');
-   hr_core_writedata_o  <= (others => '0');
-   hr_core_byteenable_o <= (others => '0');
-   hr_core_burstcount_o <= (others => '0');
+   -- HyperRAM is driven by main.vhd's memory backend (see mem_backend.vhd)
 
    -- Tristate all expansion port drivers that we can directly control
    -- @TODO: As soon as we support modules that can act as busmaster, we need to become more flexible here
@@ -451,6 +446,17 @@ begin
 
          -- virtual drives: floppy A, floppy B, hard disk
          clk_qnice_i          => qnice_clk_i,
+         hr_clk_i             => hr_clk_i,
+         hr_rst_i             => hr_rst_i,
+         hr_write_o           => hr_core_write_o,
+         hr_read_o            => hr_core_read_o,
+         hr_address_o         => hr_core_address_o,
+         hr_writedata_o       => hr_core_writedata_o,
+         hr_byteenable_o      => hr_core_byteenable_o,
+         hr_burstcount_o      => hr_core_burstcount_o,
+         hr_readdata_i        => hr_core_readdata_i,
+         hr_readdatavalid_i   => hr_core_readdatavalid_i,
+         hr_waitrequest_i     => hr_core_waitrequest_i,
          img_mounted_i        => main_img_mounted,
          img_readonly_i       => main_img_readonly,
          img_size_i           => main_img_size,

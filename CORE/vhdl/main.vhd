@@ -85,6 +85,19 @@ entity main is
       -- Virtual drives (framework vdrives): 0 = floppy A, 1 = floppy B, 2 = hard disk.
       -- img_* and drive_mounted_i are in the clk_main_i domain, sd_* in the QNICE domain.
       clk_qnice_i             : in  std_logic;
+
+      -- HyperRAM (framework hr_core_* Avalon master, hr_clk_i domain): conventional RAM, UMB, EMS
+      hr_clk_i                : in  std_logic;
+      hr_rst_i                : in  std_logic;
+      hr_write_o              : out std_logic;
+      hr_read_o               : out std_logic;
+      hr_address_o            : out std_logic_vector(31 downto 0);
+      hr_writedata_o          : out std_logic_vector(15 downto 0);
+      hr_byteenable_o         : out std_logic_vector(1 downto 0);
+      hr_burstcount_o         : out std_logic_vector(7 downto 0);
+      hr_readdata_i           : in  std_logic_vector(15 downto 0);
+      hr_readdatavalid_i      : in  std_logic;
+      hr_waitrequest_i        : in  std_logic;
       img_mounted_i           : in  std_logic_vector(2 downto 0);
       img_readonly_i          : in  std_logic;
       img_size_i              : in  std_logic_vector(31 downto 0);
@@ -430,8 +443,8 @@ begin
          osm_display_i             => "000",
          osm_vga13_tv_i            => '0',
          osm_monitor_i             => "00",
-         osm_ems_disable_i         => '1',                  -- no EMS backend in the BRAM build
-         osm_umb_disable_i         => '0',                  -- UMB C4000-CFFFF backed by mem_bram (the FreeDOS image expects it)
+         osm_ems_disable_i         => '0',                  -- 2 MB EMS, page frame D000, pages in HyperRAM
+         osm_umb_disable_i         => '0',                  -- UMB C4000-CFFFF (HyperRAM)
          osm_joy1_i                => "00",
          osm_joy2_i                => "00",
          osm_joy_sync_i            => '0',
@@ -639,7 +652,7 @@ begin
    avm_write      <= not sdram_nwe;
    sdram_dq_in    <= "000000" & avm_readdatavalid & avm_waitrequest & avm_readdata;
 
-   i_mem : entity work.mem_bram
+   i_mem : entity work.mem_backend
       port map (
          clk_i               => clk_main_i,
          rst_i               => reset_cold,
@@ -653,7 +666,18 @@ begin
          rom_wr_i            => rom_wr_i,
          rom_index_i         => rom_index_i,
          rom_addr_i          => rom_addr_i,
-         rom_data_i          => rom_data_i
+         rom_data_i          => rom_data_i,
+         hr_clk_i            => hr_clk_i,
+         hr_rst_i            => hr_rst_i,
+         hr_write_o          => hr_write_o,
+         hr_read_o           => hr_read_o,
+         hr_address_o        => hr_address_o,
+         hr_writedata_o      => hr_writedata_o,
+         hr_byteenable_o     => hr_byteenable_o,
+         hr_burstcount_o     => hr_burstcount_o,
+         hr_readdata_i       => hr_readdata_i,
+         hr_readdatavalid_i  => hr_readdatavalid_i,
+         hr_waitrequest_i    => hr_waitrequest_i
       ); -- i_mem
 
 end architecture synthesis;

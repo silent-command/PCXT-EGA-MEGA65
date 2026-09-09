@@ -40,3 +40,7 @@ set_clock_groups -asynchronous \
     -group [get_clocks {clk_100 clk_50}] \
     -group [get_clocks {clk_28 clk_57 clk_57_ps clk_14}] \
     -group [get_clocks {clk_25}]
+
+# The memory backend crosses into the framework's HyperRAM clock through the
+# framework's avm_fifo (xpm async FIFO); no timed paths between the two.
+set_clock_groups -asynchronous -group [get_clocks {clk_100 clk_50}] -group [get_clocks {hr_clk hr_clk_del}]
