@@ -654,6 +654,9 @@ begin
    sdram_dq_in    <= "000000" & avm_readdatavalid & avm_waitrequest & avm_readdata;
 
    i_mem : entity work.mem_backend
+      generic map (
+         G_CACHE => false            -- the framework avm_cache returned more responses than reads on hardware
+      )
       port map (
          clk_i               => clk_main_i,
          rst_i               => reset_cold,
