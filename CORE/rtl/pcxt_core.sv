@@ -2165,28 +2165,16 @@ module pcxt_core
     // READ-start diagnosis: latch the four hang conditions and key values at
     // each cmd_read_write_start pulse (why floppy.v refuses to begin a read)
     wire       fr_start = u_CHIPSET.u_PERIPHERALS.floppy.cmd_read_write_start;
-    wire       fr_motor = u_CHIPSET.u_PERIPHERALS.floppy.motor_enable[0];
-    wire       fr_media = u_CHIPSET.u_PERIPHERALS.floppy.media_present[0];
-    wire [7:0] fr_ncode = u_CHIPSET.u_PERIPHERALS.floppy.command[23:16];
-    wire [7:0] fr_cyl   = u_CHIPSET.u_PERIPHERALS.floppy.command[47:40];
-    wire [7:0] fr_mcyl  = u_CHIPSET.u_PERIPHERALS.floppy.media_cylinders[0];
-    reg [7:0] p_dor, p_rwstart, p_last_n, p_last_cyl, p_mcyl;
-    reg [3:0] p_hang;
-    reg       p_motor_ever;
+    wire       fr_wr    = u_CHIPSET.u_PERIPHERALS.floppy.cmd_write_normal_start;  // WRITE DATA start
+    reg [7:0] p_dor, p_rwstart, p_wrstart;
     always @(posedge clk_chipset) begin
         if (fdc_iowr && fdc_ioad == 3'd2) p_dor <= p_dor + 8'd1;
-        if (fr_motor) p_motor_ever <= 1'b1;
-        if (fr_start) begin
-            p_rwstart  <= p_rwstart + 8'd1;
-            p_last_n   <= fr_ncode;
-            p_last_cyl <= fr_cyl;
-            p_mcyl     <= fr_mcyl;
-            p_hang     <= {~fr_motor, ~fr_media, (fr_ncode != 8'h02), (fr_cyl >= fr_mcyl)};
-        end
-        if (reset) begin p_dor<=0; p_rwstart<=0; p_last_n<=0; p_last_cyl<=0; p_mcyl<=0; p_hang<=0; p_motor_ever<=0; end
+        if (fr_start) p_rwstart <= p_rwstart + 8'd1;
+        if (fr_wr)    p_wrstart <= p_wrstart + 8'd1;
+        if (reset) begin p_dor<=0; p_rwstart<=0; p_wrstart<=0; end
     end
-    assign dbg_fdc0_o = {p_mcyl, p_last_n};                          // dor= : {media_cylinders, last READ N}
-    assign dbg_fdc1_o = {p_last_cyl, 3'd0, p_motor_ever, p_hang};    // mtr= : {last READ cyl, motor_ever, hang{mot,med,N,cyl}}
-    assign dbg_fdc2_o = {p_rwstart, p_dor};                          // int= : {read-start count, DOR writes}
+    assign dbg_fdc0_o = {p_wrstart, p_rwstart};   // dor= : {WRITE-DATA starts, read+write starts}
+    assign dbg_fdc1_o = 16'd0;                    // (main.vhd overrides reg7/reg8 with bridge-side counts)
+    assign dbg_fdc2_o = {p_rwstart, p_dor};       // (unused; main.vhd overrides)
 
 endmodule

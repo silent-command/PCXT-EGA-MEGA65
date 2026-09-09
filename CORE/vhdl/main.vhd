@@ -337,6 +337,8 @@ architecture synthesis of main is
    signal fdd_reqs            : unsigned(15 downto 0) := (others => '0');
    signal fdd_req_q           : std_logic := '0';
    signal fdc0, fdc1, fdc2    : std_logic_vector(15 downto 0);
+   signal mreq7_q, mreq6_q, blkwr_q, blkack_q : std_logic := '0';
+   signal wr_req_cnt, rd_req_cnt, blk_wr_cnt, blk_ack_cnt : unsigned(7 downto 0) := (others => '0');
    signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
    signal ce_per_frame        : std_logic_vector(15 downto 0) := (others => '0');
    signal vs_q                : std_logic := '0';
@@ -584,9 +586,21 @@ begin
          end if;
       end if;
    end process;
-   dbg_bus_reads_o <= fdc0;   -- {fdd_interrupt edges, DOR 0x3F2 writes}
-   dbg_vsync_o     <= fdc1;   -- {media0, motor0, FDC data-port 0x3F5 writes}
-   dbg_keys_o      <= fdc2;   -- {INTR-to-CPU edges, DACK2 pulses}
+   dbg_bus_reads_o <= fdc0;                                   -- dor= : {FDC WRITE-DATA starts, read+write starts}
+   dbg_vsync_o     <= std_logic_vector(wr_req_cnt) & std_logic_vector(rd_req_cnt);  -- mtr= : {FDD write reqs, FDD read reqs}
+   dbg_keys_o      <= std_logic_vector(blk_ack_cnt) & std_logic_vector(blk_wr_cnt); -- int= : {blk_ack (drive A), blk_wr issued (drive A)}
+
+   p_dbg_wr : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         mreq7_q <= mgmt_req(7); mreq6_q <= mgmt_req(6);
+         blkwr_q <= blk_wr(0);   blkack_q <= blk_ack(0);
+         if mgmt_req(7) = '1' and mreq7_q = '0' then wr_req_cnt <= wr_req_cnt + 1; end if;
+         if mgmt_req(6) = '1' and mreq6_q = '0' then rd_req_cnt <= rd_req_cnt + 1; end if;
+         if blk_wr(0)   = '1' and blkwr_q = '0' then blk_wr_cnt <= blk_wr_cnt + 1; end if;
+         if blk_ack(0)  = '1' and blkack_q = '0' then blk_ack_cnt <= blk_ack_cnt + 1; end if;
+      end if;
+   end process;
 
    p_dbg_fdd : process (clk_main_i)
    begin

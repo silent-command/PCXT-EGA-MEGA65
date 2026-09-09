@@ -37,3 +37,26 @@ checks) still passes 2016 checks.
 This is a real floppy.v + edge-PIC + no-sense-interrupt-BIOS interaction.
 Whether to push it upstream (MiSTer PCXT-EGA) depends on whether the same
 BIOS combination is expected there; on MiSTer the floppy is ARM-served.
+
+## Update: floppy WRITE partially works (2026-09-09)
+
+With the IRQ re-arm fix, floppy READ works fully on hardware (`dir a:`,
+`type`). Floppy WRITE partially works and then stalls. On-chip probes during
+`copy a:hello.txt a:copy.txt` (status line wrs/req/blk):
+- `wrs=02` : the FDC started 2 WRITE DATA commands (write path reached).
+- `req=03 0E` : 3 FDD write requests (mgmt_req[7]) and 14 read requests raised.
+- `blk=10 02` : the bridge issued 2 blk_wr (drive A) and saw 16 blk_ack
+  (14 reads + 2 writes) — so 2 sectors were written to the SD image and
+  acknowledged.
+
+So DMA read-from-memory, the FDC write FSM, the bridge drain and the
+SD-direct firmware write all function; two sectors reach the card. The
+operation stalls after ~2 sectors (a `copy` of 1309 bytes needs more sector
+writes than that), so DOS reports "drive not ready". Remaining suspects:
+the synchronous SD-direct write latency (the bridge waits for blk_ack, which
+waits for f32_fwrite+f32_fflush) exceeding the BIOS per-operation timeout on
+a later sector, or a multi-sector (EOT>1) write edge case where the 3rd
+write request does not produce a blk_wr. The proper cure is the M2M-standard
+cached/background-flush write instead of the write-through SD-direct path,
+or splitting the FDC completion from the SD commit. Floppy write is the one
+open item; everything else in Phases 0-6 works on hardware.
