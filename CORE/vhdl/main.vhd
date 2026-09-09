@@ -248,7 +248,10 @@ architecture synthesis of main is
          led_disk_o                : out std_logic;
          dbg_de_o                  : out std_logic;
          dbg_hb_o                  : out std_logic;
-         dbg_vb_o                  : out std_logic
+         dbg_vb_o                  : out std_logic;
+         dbg_fdc0_o                : out std_logic_vector(15 downto 0);
+         dbg_fdc1_o                : out std_logic_vector(15 downto 0);
+         dbg_fdc2_o                : out std_logic_vector(15 downto 0)
       );
    end component pcxt_core;
 
@@ -333,6 +336,7 @@ architecture synthesis of main is
    signal f2_last             : std_logic_vector(15 downto 0) := (others => '0');
    signal fdd_reqs            : unsigned(15 downto 0) := (others => '0');
    signal fdd_req_q           : std_logic := '0';
+   signal fdc0, fdc1, fdc2    : std_logic_vector(15 downto 0);
    signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
    signal ce_per_frame        : std_logic_vector(15 downto 0) := (others => '0');
    signal vs_q                : std_logic := '0';
@@ -496,7 +500,10 @@ begin
          led_disk_o                => led_disk_o,
          dbg_de_o                  => raw_de,
          dbg_hb_o                  => raw_hb,
-         dbg_vb_o                  => raw_vb
+         dbg_vb_o                  => raw_vb,
+         dbg_fdc0_o                => fdc0,
+         dbg_fdc1_o                => fdc1,
+         dbg_fdc2_o                => fdc2
       ); -- i_pcxt_core
 
    ---------------------------------------------------------------------------
@@ -577,9 +584,9 @@ begin
          end if;
       end if;
    end process;
-   dbg_bus_reads_o <= std_logic_vector(f2_writes);   -- bridge writes to mgmt page F2 (floppy)
-   dbg_vsync_o     <= f2_last;                        -- {last F2 reg index & drive, last value written to F200 reg 0}
-   dbg_keys_o      <= std_logic_vector(fdd_reqs);     -- FDD read requests (mgmt_req(6) rising edges)
+   dbg_bus_reads_o <= fdc0;   -- {fdd_interrupt edges, DOR 0x3F2 writes}
+   dbg_vsync_o     <= fdc1;   -- {media0, motor0, FDC data-port 0x3F5 writes}
+   dbg_keys_o      <= fdc2;   -- {INTR-to-CPU edges, DACK2 pulses}
 
    p_dbg_fdd : process (clk_main_i)
    begin

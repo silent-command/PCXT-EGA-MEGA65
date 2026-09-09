@@ -202,9 +202,9 @@ DBG_STR_2       .ASCII_W " drop="
 DBG_STR_3       .ASCII_W " sum0="
 DBG_STR_4       .ASCII_W " sum3="
 DBG_STR_5       .ASCII_W " sum2="
-DBG_STR_6       .ASCII_W " f2w="
-DBG_STR_7       .ASCII_W " f2v="
-DBG_STR_8       .ASCII_W " fdr="
+DBG_STR_6       .ASCII_W " dor="
+DBG_STR_7       .ASCII_W " mtr="
+DBG_STR_8       .ASCII_W " int="
 DBG_STRS        .DW DBG_STR_0, DBG_STR_1, DBG_STR_2, DBG_STR_3
                 .DW DBG_STR_4, DBG_STR_5, DBG_STR_6, DBG_STR_7
                 .DW DBG_STR_8
