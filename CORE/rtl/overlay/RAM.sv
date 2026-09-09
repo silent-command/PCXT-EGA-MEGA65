@@ -499,6 +499,22 @@ module RAM (
                 sdram_ldqm      = 1'b1;
                 sdram_udqm      = 1'b1;
             end
+            // MEGA65 overlay: the enum has 7 states in 3 bits, so without a default
+            // arm Vivado infers a latch for the 8th encoding on every output here
+            // (Synth 8-327). The latch gate is decoded from the state bits and has
+            // no clock, so all 33 paths through it into KFSDRAM (address, data,
+            // requests, dqm) were untimed and placement-dependent: one build booted,
+            // the next did not detect the IDE drive. A default arm makes this a
+            // plain, fully timed mux. Unreachable in practice.
+            default: begin
+                access_address  = 24'h000000;
+                access_num      = 9'h001;
+                access_data_in  = 16'h0000;
+                write_request   = 1'b0;
+                read_request    = 1'b0;
+                sdram_ldqm      = 1'b0;
+                sdram_udqm      = 1'b0;
+            end
         endcase
     end
 
