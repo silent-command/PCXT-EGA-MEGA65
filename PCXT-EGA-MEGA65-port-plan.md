@@ -32,3 +32,13 @@ Three floppy fixes on the way, all with benches:
 
 Debug probes (rom_loader regs 6/7/8, status line) to be removed for the
 release build. Next: Phase 7 polish.
+
+### Release status line (kept after the probe cleanup)
+
+The hierarchical debug taps into the chipset were removed from pcxt_core.sv.
+The firmware still prints one status line at start and on every menu
+selection: `flags= ok= drop= sum0= sum3= sum2=` (ROM load health, expected
+ok=A000 sum0=107E sum3=3E46) plus `bist=` (HyperRAM self test: 8000 = done
+with 0 mismatches), `req=` ({floppy write requests, floppy read requests})
+and `blk=` ({block acks, block writes} for drive A). Cheap, bridge-side only,
+and useful for a first look at any future report.
