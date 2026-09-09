@@ -65,7 +65,7 @@ module mgmt_bridge #(
     input  wire [7:0]  mgmt_req,       // level: [2:0] IDE (110 reset, 100 command, 101 data), [6] FDD read, [7] FDD write/format; [5:3] = 0 (no IDE1)
     /* verilator lint_on UNUSEDSIGNAL */
     // virtual drives (framework): 0 = floppy A, 1 = floppy B, 2 = hard disk (ATA unit 0)
-    input  wire [2:0]  img_mounted,    // one-clock strobe; img_size / img_readonly valid then
+    input  wire [2:0]  img_mounted,    // strobe of any width (M2M vdrives: tens of clocks); the rising edge counts, img_size / img_readonly valid then
     input  wire [31:0] img_size,       // bytes; 0 = unmount
     input  wire        img_readonly,
     input  wire [2:0]  drive_mounted,  // level
@@ -287,8 +287,15 @@ module mgmt_bridge #(
     logic        fd_idx;              // drive being (un)mounted
     logic        fd_is_wr, fd_drv;
     logic [14:0] fd_lba;
+    // mount strobes: the framework holds img_mounted for as long as the QNICE
+    // firmware takes between its set and clear register writes, so only the
+    // rising edge is a mount; a level would otherwise re-arm the mount on
+    // every clock (a second eject/insert per mount, or with a stuck strobe an
+    // endless eject/insert loop that leaves media_present at 0 almost always)
+    logic [2:0]  img_mounted_q;
 
     // ------------------------------------------------------------------ combinational
+    wire  [2:0] img_mount_edge = img_mounted & ~img_mounted_q;
     wire        ide_lba   = ide_drv[6];
     wire [7:0]  rp_sector = ide_lba ? rep_lba[7:0]   : rep_s;
     wire [15:0] rp_cyl    = ide_lba ? rep_lba[23:8]  : rep_c;
@@ -393,11 +400,13 @@ module mgmt_bridge #(
             fd_is_wr  <= 1'b0;
             fd_drv    <= 1'b0;
             fd_lba    <= 15'd0;
+            img_mounted_q <= 3'b000;
         end else begin
             // defaults: strobes are one clock wide
             mgmt_wr <= 1'b0;
             mgmt_rd <= 1'b0;
             buf_we  <= 1'b0;
+            img_mounted_q <= img_mounted;
             if (fd_timer0 != 24'd0) fd_timer0 <= fd_timer0 - 24'd1;
             if (fd_timer1 != 24'd0) fd_timer1 <= fd_timer1 - 24'd1;
 
@@ -1012,19 +1021,19 @@ module mgmt_bridge #(
             default: state <= S_IDLE;
             endcase
 
-            // Mount strobes, after the case so a strobe landing on the clock a
-            // pending flag is consumed still registers.
-            if (img_mounted[2]) begin
+            // Mount strobes (rising edge only), after the case so an edge landing
+            // on the clock a pending flag is consumed still registers.
+            if (img_mount_edge[2]) begin
                 hd_mount_pend <= 1'b1;
                 hd_size_lat   <= img_size;
                 hd_ro_lat     <= img_readonly;
             end
-            if (img_mounted[0]) begin
+            if (img_mount_edge[0]) begin
                 fd_pend[0] <= 1'b1;
                 fd_size0   <= img_size[31:9];
                 fd_ro_lat0 <= img_readonly;
             end
-            if (img_mounted[1]) begin
+            if (img_mount_edge[1]) begin
                 fd_pend[1] <= 1'b1;
                 fd_size1   <= img_size[31:9];
                 fd_ro_lat1 <= img_readonly;

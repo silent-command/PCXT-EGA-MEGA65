@@ -10,8 +10,11 @@
 //   * the MEGA65 framework: mount strobes, a 1 MB HDD image (mounted with
 //     its real size, or with the FreeDOS test image's 87,227-sector size and
 //     an MBR in block 0 for the geometry tests; blocks past 1 MB read as
-//     zeros), a 360 KB floppy A image, the 512-byte shared buffer and
-//     blk_rd/blk_wr/blk_ack with a random acknowledge latency.
+//     zeros), a floppy A image (mounted as 1.44 MB, later as 360 KB), the
+//     512-byte shared buffer and blk_rd/blk_wr/blk_ack with a random
+//     acknowledge latency.  Mount strobes are one clock wide or, like the
+//     M2M vdrives strobe that the QNICE firmware sets and clears with two
+//     register writes, ~30 clocks wide.
 //
 // Prints RESULT: PASS or RESULT: FAIL.  Build/run: run_mgmt_bridge_tb.sh.
 
@@ -205,7 +208,8 @@ module mgmt_bridge_tb;
     end
 
     localparam integer HD_BYTES = 1048576;       // 2048 sectors
-    localparam integer FA_BYTES = 368640;        // 720 sectors = 360 KB
+    localparam integer FA_BYTES = 1474560;       // 2880 sectors = 1.44 MB (the 360 KB mount uses the first 720)
+    localparam integer FA_360K  = 368640;
     reg [7:0] hd_img [0:HD_BYTES-1];
     reg [7:0] fa_img [0:FA_BYTES-1];
 
@@ -278,17 +282,84 @@ module mgmt_bridge_tb;
         if (mgmt_wr && mgmt_rd) check(0, "mgmt_wr and mgmt_rd together");
     end
 
+    // free-running clock count for cycle-level checks
+    integer cyc = 0;
+    always @(posedge clk) cyc = cyc + 1;
+
+    // recorder: every bridge write to mgmt page F2 (floppy.v), as main.vhd's
+    // f2_writes / f2_last counters see it on hardware
+    integer    f2_n = 0;
+    reg [15:0] f2_addr [0:63];
+    reg [15:0] f2_data [0:63];
+    integer    f2_cyc  [0:63];
+    always @(posedge clk) begin
+        if (mgmt_wr && fdd_cs && f2_n < 64) begin
+            f2_addr[f2_n] = mgmt_addr;
+            f2_data[f2_n] = mgmt_dout;
+            f2_cyc[f2_n]  = cyc;
+            f2_n = f2_n + 1;
+        end
+    end
+
+    // rising edges of the floppy read request, like main.vhd's fdd_reqs
+    integer fdd_reqs = 0;
+    reg     req6_q = 1'b0;
+    always @(posedge clk) begin
+        req6_q <= mgmt_req[6];
+        if (mgmt_req[6] && !req6_q) fdd_reqs = fdd_reqs + 1;
+    end
+
     // ------------------------------------------------------------------ helpers
-    task mount(input integer drv, input [31:0] size, input ro);
+    // img_mounted strobe of nclk clocks (1 = the port comment, ~30 = M2M vdrives)
+    task mount_n(input integer drv, input [31:0] size, input ro, input integer nclk);
     begin
         @(posedge clk);
         img_size <= size;
         img_readonly <= ro;
         img_mounted <= (3'b001 << drv);
         drive_mounted[drv] <= (size != 0);
-        @(posedge clk);
+        repeat (nclk) @(posedge clk);
         img_mounted <= 3'b000;
         @(posedge clk);
+    end
+    endtask
+
+    task mount(input integer drv, input [31:0] size, input ro);
+    begin
+        mount_n(drv, size, ro, 1);
+    end
+    endtask
+
+    task dump_f2;
+        integer i;
+    begin
+        for (i = 0; i < f2_n; i = i + 1)
+            $display("  F2 write %0d: clock %0d (+%0d)  %04x <- %04x", i, f2_cyc[i],
+                     (i == 0) ? 0 : f2_cyc[i] - f2_cyc[i - 1], f2_addr[i], f2_data[i]);
+    end
+    endtask
+
+    // one floppy (un)mount as the bridge must issue it (ARM 4.4 / MGMT 3.6):
+    // record i0 = B+0 <- 0 (eject), then after >= FDD_EJECT_CYCLES the six
+    // registers B+0..5 in order, each write at least 2 clocks after the last
+    task check_fdd_mount_writes(input integer i0, input [15:0] base, input present, input wp,
+                                input [7:0] cyl, input [7:0] spt, input [15:0] total, input [1:0] heads,
+                                input string what);
+        integer k;
+    begin
+        check(f2_n >= i0 + 7, {what, ": at least 7 writes to page F2"});
+        if (f2_n >= i0 + 7) begin
+            check(f2_addr[i0] == base && f2_data[i0] == 16'h0000, {what, ": write 1 = eject, B+0 <- 0"});
+            check(f2_cyc[i0 + 1] - f2_cyc[i0] >= 200, {what, ": eject -> insert gap >= FDD_EJECT_CYCLES"});
+            check(f2_addr[i0 + 1] == base + 16'd0 && f2_data[i0 + 1] == {15'd0, present}, {what, ": B+0 <- present"});
+            check(f2_addr[i0 + 2] == base + 16'd1 && f2_data[i0 + 2] == {15'd0, wp},      {what, ": B+1 <- write protect"});
+            check(f2_addr[i0 + 3] == base + 16'd2 && f2_data[i0 + 3] == {8'd0, cyl},      {what, ": B+2 <- cylinders"});
+            check(f2_addr[i0 + 4] == base + 16'd3 && f2_data[i0 + 4] == {8'd0, spt},      {what, ": B+3 <- sectors per track"});
+            check(f2_addr[i0 + 5] == base + 16'd4 && f2_data[i0 + 5] == total,            {what, ": B+4 <- total sectors"});
+            check(f2_addr[i0 + 6] == base + 16'd5 && f2_data[i0 + 6] == {14'd0, heads},   {what, ": B+5 <- heads"});
+            for (k = 1; k < 6; k = k + 1)
+                check(f2_cyc[i0 + k + 1] - f2_cyc[i0 + k] >= 2, {what, ": insert writes spaced >= 2 clocks"});
+        end
     end
     endtask
 
@@ -497,6 +568,105 @@ module mgmt_bridge_tb;
     end
     endtask
 
+    // ---- the XT BIOS INT 13h building blocks on floppy.v
+    task fdc_specify(input [7:0] srt_hut, input [7:0] hlt_nd);
+    begin
+        fdc_wr(3'd5, 8'h03);
+        fdc_wr(3'd5, srt_hut);
+        fdc_wr(3'd5, hlt_nd);                    // bit 0 = 0: DMA mode
+    end
+    endtask
+
+    task fdc_recalibrate(input drv);
+    begin
+        fdc_wr(3'd5, 8'h07);
+        fdc_wr(3'd5, {7'd0, drv});
+    end
+    endtask
+
+    task fdc_seek(input drv, input hd, input [7:0] c);
+    begin
+        fdc_wr(3'd5, 8'h0F);
+        fdc_wr(3'd5, {5'd0, hd, 1'b0, drv});
+        fdc_wr(3'd5, c);
+    end
+    endtask
+
+    // SENSE INTERRUPT STATUS: ST0 and PCN
+    task fdc_sense_int(output [7:0] st0, output [7:0] pcn);
+    begin
+        fdc_wr(3'd5, 8'h08);
+        fdc_rd(3'd5, st0);
+        fdc_rd(3'd5, pcn);
+    end
+    endtask
+
+    // wait up to max clocks for IRQ 6; got = 1 if it came, clocks = how long it took
+    task fdc_wait_irq_max(input integer max, output got, output integer clocks);
+        integer n;
+    begin
+        n = 0;
+        @(negedge clk);
+        while (!fdd_irq && n < max) begin
+            @(negedge clk);
+            n = n + 1;
+        end
+        got = fdd_irq;
+        clocks = n;
+    end
+    endtask
+
+    // watch for max clocks: did a DMA request, a mgmt read/write request or IRQ 6 appear?
+    task fdc_probe(input integer max, output got_dma, output got_req, output got_irq);
+        integer n;
+    begin
+        got_dma = 0; got_req = 0; got_irq = 0;
+        for (n = 0; n < max; n = n + 1) begin
+            @(negedge clk);
+            if (fdd_dma_req)  got_dma = 1;
+            if (|fdd_req)     got_req = 1;
+            if (fdd_irq)      got_irq = 1;
+        end
+    end
+    endtask
+
+    // the BIOS's error path: FDC reset through the DOR (bit 2 low, then high),
+    // then SENSE INTERRUPT STATUS four times (ST0 = 0xC0 | drive)
+    task fdc_reset_recover;
+        integer k;
+        reg got;
+        integer n;
+        reg [7:0] s, p;
+    begin
+        fdc_wr(3'd2, 8'h18);                     // reset asserted, motor A on
+        fdc_wr(3'd2, 8'h1C);                     // reset released
+        fdc_wait_irq_max(100, got, n);
+        check(got, "DOR reset: IRQ after the reset");
+        for (k = 0; k < 4; k = k + 1) begin
+            fdc_sense_int(s, p);
+            check(s == (8'hC0 | k[7:0]), "DOR reset: SENSE INTERRUPT x4 -> 0xC0 | drive");
+        end
+    end
+    endtask
+
+    // 512 DMA bytes out of the FDC into dma_buf, TC on the last one
+    task fdc_dma_in;
+        integer i;
+    begin
+        for (i = 0; i < 512; i = i + 1) begin
+            fdc_wait_dma_req();
+            @(posedge clk);
+            fdd_dma_ack <= 1'b1;
+            fdd_dma_tc  <= (i == 511);
+            @(negedge clk);
+            dma_buf[i] = fdd_dma_wr;
+            @(posedge clk);
+            fdd_dma_ack <= 1'b0;
+            fdd_dma_tc  <= 1'b0;
+        end
+    end
+    endtask
+
     // MBR helpers for the geometry tests: entry e (0-3) of the partition table
     // at 0x1BE, classic layout {boot, start CHS, type, end CHS, start LBA, length}
     task set_mbr_entry(input integer e, input [7:0] typ,
@@ -554,9 +724,10 @@ module mgmt_bridge_tb;
     reg [7:0]   dma_buf [0:511];
 
     initial begin : main
-        integer i, k, bad, n0;
+        integer i, k, bad, n0, n1;
         reg [31:0] v;
         reg [7:0]  st, b;
+        reg got, got_dma, got_req, got_irq;
 
 `ifdef DUMP
         $dumpfile("mgmt_bridge_tb.vcd");
@@ -584,10 +755,133 @@ module mgmt_bridge_tb;
         repeat (50) @(posedge clk);
         check(ide_req == 3'b000, "no drive: command write raises no request");
 
-        // ============================================================ 2. mount the HDD
-        $display("[2] mount 1 MB HDD");
-        mount(2, HD_BYTES, 1'b0);
+        // ============================================================ 1a. floppy.v with nothing mounted, driven like the XT BIOS
+        // INT 13h: DOR <- 0x1C (motor A on, DMA/IRQ enable, not reset, drive 0),
+        // SPECIFY 0xDF 0x02 (SRT 13, HLT 1, DMA), RECALIBRATE, IRQ 6, SENSE
+        // INTERRUPT STATUS, SEEK, then READ DATA C/H/R with N=2, EOT from the DPT.
+        $display("[1a] floppy.v with no media: RECALIBRATE / SEEK answers, READ DATA hangs (BIOS timeout)");
+        fdc_wr(3'd2, 8'h1C);
+        fdc_specify(8'hDF, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(3_000_000, got, n1);
+        check(got, "no media: RECALIBRATE raises IRQ 6");
+        // floppy.v: SRT + 1 = 14 units of clock_rate/500 = 100,002 clocks each (28 ms at 50 MHz)
+        check(n1 >= 14 * 100_000 - 100 && n1 <= 14 * 100_010, "no media: RECALIBRATE IRQ after 14 x 100,002 clocks (SRT 13)");
+        $display("  RECALIBRATE (SRT 13): IRQ after %0d clocks", n1);
+        fdc_sense_int(st, b);
+        check(st == 8'h20 && b == 8'd0, "no media: SENSE INTERRUPT after RECALIBRATE -> ST0 0x20 (seek end), PCN 0");
+        fdc_specify(8'h1F, 8'h02);               // SRT 1 from here on (timing is not the question)
+        fdc_seek(1'b0, 1'b0, 8'd0);
+        fdc_wait_irq_max(300_000, got, n1);
+        check(got, "no media: SEEK raises IRQ 6");
+        fdc_sense_int(st, b);
+        check(st == 8'h20 && b == 8'd0, "no media: SENSE INTERRUPT after SEEK -> ST0 0x20, PCN 0");
+        n0 = fdd_reqs;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd1, 8'd9);
+        fdc_probe(20000, got_dma, got_req, got_irq);
+        check(!got_dma && !got_req && !got_irq, "no media: READ DATA raises no DMA request, no mgmt request, no IRQ");
+        check(fdd_reqs == n0, "no media: mgmt_req[6] never rose");
+        fdc_rd(3'd4, b);
+        // MSR: RQM=1, DIO=0, NDMA=0, busy=1; bit 0 is floppy.v's seek-mode bit, which
+        // it never clears after a seek (a real 8272 clears it on SENSE INTERRUPT)
+        $display("  hung READ DATA: MSR = %02x", b);
+        check(b[7:4] == 4'h9, "no media: MSR busy + RQM: the BIOS's IRQ wait times out, AH = 80h, DOS 'not ready'");
+        check(u_fdd.busy && u_fdd.state == 4'd0 && u_fdd.pending_command == 8'd0, "no media: floppy.v stuck busy in S_IDLE, nothing pending");
+        fdc_reset_recover();
+        fdc_rd(3'd4, b);
+        check(b == 8'h80, "no media: MSR 0x80 (RQM, not busy) after the DOR reset");
+        // motor off: RECALIBRATE / SEEK still answer, READ DATA hangs the same way
+        fdc_wr(3'd2, 8'h0C);                     // motor off, drive 0, DMA/IRQ enabled
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        check(got, "motor off: RECALIBRATE raises IRQ 6");
+        fdc_sense_int(st, b);
+        check(st == 8'h70 && b == 8'd0, "motor off: SENSE INTERRUPT -> ST0 0x70 (abnormal termination, seek end, equipment check)");
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd1, 8'd9);
+        fdc_probe(20000, got_dma, got_req, got_irq);
+        check(!got_dma && !got_req && !got_irq, "motor off: READ DATA raises nothing");
+        fdc_rd(3'd4, b);
+        check(b[7:4] == 4'h9, "motor off: MSR busy + RQM, same hang");
+        fdc_reset_recover();
+
+        // ============================================================ 1b. long idle, then the 1.44 MB image mounted on A
+        // The hardware sequence: bridge reset, IDE reset served, nothing on A,
+        // the machine idles well past the eject gap, then the M2M vdrives strobe
+        // (set and cleared by two QNICE register writes: tens of core clocks).
+        $display("[1b] idle, then 1.44 MB image on A with a 30-clock img_mounted strobe");
+        repeat (3000) @(posedge clk);
+        check(u_dut.state == 0 && u_dut.fd_pend == 2'b00 && u_dut.fd_wait == 2'b00 &&
+              u_dut.fd_timer0 == 24'd0 && mgmt_req == 8'h00, "idle: bridge in S_IDLE, no floppy timer, no request");
+        check(u_fdd.media_present[0] !== 1'b1, "idle: no media on A before the mount");
+        f2_n = 0;
+        k = cyc;
+        mount_n(0, 32'd1474560, 1'b0, 30);
         wait_bridge_idle();
+        dump_f2();
+        check(f2_n == 7, "1.44M mount (30-clock strobe): exactly 7 writes to page F2, one eject and one insert");
+        check_fdd_mount_writes(0, 16'hF200, 1'b1, 1'b0, 8'd80, 8'd18, 16'd2880, 2'd2, "1.44M mount");
+        check(f2_cyc[0] - k <= 8, "1.44M mount: eject written within 8 clocks of the strobe");
+        check(u_dut.fd_mounted[0] == 1'b1 && u_dut.fd_total[0] == 16'd2880 && u_dut.fd_ro[0] == 1'b0, "1.44M mount: bridge fd_mounted/fd_total/fd_ro");
+        check(u_fdd.media_present[0] == 1'b1, "1.44M mount: floppy.v media_present[0] = 1");
+        check(u_fdd.wp_sys[0] == 1'b0, "1.44M mount: not write protected");
+        check(u_fdd.media_cylinders[0] == 8'd80 && u_fdd.media_sectors_per_track[0] == 8'd18 &&
+              u_fdd.media_sector_count[0] == 16'd2880 && u_fdd.media_heads[0] == 2'd2, "1.44M mount: geometry 80/18/2880/2");
+        check(u_fdd.media_present[1] !== 1'b1, "1.44M mount: drive B untouched");
+        check(u_fdd.change[0] == 1'b1, "1.44M mount: change line set until a successful access");
+
+        // ============================================================ 1c. the BIOS read after the mount
+        $display("[1c] XT BIOS INT 13h read of C=0 H=0 R=1 (LBA 0) after the mount");
+        fdc_wr(3'd2, 8'h1C);
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        check(got, "mounted: RECALIBRATE raises IRQ 6");
+        fdc_sense_int(st, b);
+        check(st == 8'h20 && b == 8'd0, "mounted: RECALIBRATE -> ST0 0x20, PCN 0");
+        fdc_seek(1'b0, 1'b0, 8'd0);
+        fdc_wait_irq_max(300_000, got, n1);
+        check(got, "mounted: SEEK raises IRQ 6");
+        fdc_sense_int(st, b);
+        check(st == 8'h20 && b == 8'd0, "mounted: SEEK -> ST0 0x20, PCN 0");
+        n0 = blk_count;
+        n1 = fdd_reqs;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd1, 8'd9);
+        fdc_dma_in();
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1) if (dma_buf[i] !== fa_img[i]) bad = bad + 1;
+        check(bad == 0, "mounted read: 512 DMA bytes = image sector 0");
+        check(fdd_reqs == n1 + 1, "mounted read: floppy.v raised mgmt_req[6] once");
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd0 && last_blk_drv == 0 && !last_blk_wr, "mounted read: bridge fetched LBA 0 of drive A");
+        fdc_wait_irq();
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "mounted read: ST0 normal termination");
+        check(u_fdd.change[0] == 1'b0, "mounted read: change line cleared");
+        wait_bridge_idle();
+
+        // ============================================================ 1d. unmount and remount with 1-clock strobes
+        $display("[1d] A unmount and 1.44 MB remount with 1-clock strobes");
+        f2_n = 0;
+        mount(0, 32'd0, 1'b0);
+        wait_bridge_idle();
+        dump_f2();
+        check(f2_n == 7, "A unmount: exactly 7 writes");
+        check_fdd_mount_writes(0, 16'hF200, 1'b0, 1'b1, 8'd80, 8'd18, 16'd2880, 2'd2, "A unmount");
+        check(u_fdd.media_present[0] == 1'b0 && u_fdd.wp_sys[0] == 1'b1 && u_fdd.change[0] == 1'b1, "A unmount: no media, write protected, change set");
+        f2_n = 0;
+        mount(0, 32'd1474560, 1'b0);
+        wait_bridge_idle();
+        dump_f2();
+        check(f2_n == 7, "1.44M remount (1-clock strobe): exactly 7 writes");
+        check_fdd_mount_writes(0, 16'hF200, 1'b1, 1'b0, 8'd80, 8'd18, 16'd2880, 2'd2, "1.44M remount");
+        check(u_fdd.media_present[0] == 1'b1 && u_fdd.media_sector_count[0] == 16'd2880, "1.44M remount: present, 2880 sectors");
+
+        // ============================================================ 2. mount the HDD
+        $display("[2] mount 1 MB HDD (30-clock strobe)");
+        n0 = blk_count;
+        mount_n(2, HD_BYTES, 1'b0, 30);
+        wait_bridge_idle();
+        check(blk_count == n0 + 1, "mount (30-clock strobe): exactly one block-0 read, i.e. one mount");
         check(u_ide.present == 2'b01, "mount: unit 0 present, unit 1 absent");
         check(u_ide.hob_ena == 2'b00, "mount: hob_ena 0");
         check(u_ide.use_wait == 1'b0, "mount: use_wait 0");
@@ -597,12 +891,24 @@ module mgmt_bridge_tb;
         check(u_dut.hd_total == 23'd2048, "mount: 2048 sectors");
 
         // ============================================================ 3. SRST
-        $display("[3] software reset");
+        $display("[3] software reset, floppy mount strobed while the IDE reset request is held");
         ide_wr8(4'd14, 8'h04);
         repeat (40) @(posedge clk);
         check(ide_req == 3'b110, "SRST: request 110 while asserted");
+        // the bridge loops on the reset service while 110 is held (ide.v re-asserts
+        // it every clock); a floppy mount arriving now must be kept, not lost
+        f2_n = 0;
+        mount_n(0, 32'd1474560, 1'b0, 30);
+        repeat (600) @(posedge clk);             // > FDD_EJECT_CYCLES with SRST still held
+        check(ide_req == 3'b110 && f2_n == 0, "SRST held: floppy mount deferred behind the IDE reset service");
+        check(u_dut.fd_pend[0] == 1'b1, "SRST held: mount still pending");
         ide_wr8(4'd14, 8'h00);
         ide_wait_req_clear();
+        wait_bridge_idle();
+        dump_f2();
+        check(f2_n == 7, "SRST released: the deferred mount runs once");
+        check_fdd_mount_writes(0, 16'hF200, 1'b1, 1'b0, 8'd80, 8'd18, 16'd2880, 2'd2, "mount after SRST");
+        check(u_fdd.media_present[0] == 1'b1, "mount after SRST: media present");
         ide_wait_ready(st);
         check(st == 8'h50, "SRST: status 0x50");
         ide_rd(4'd2, v); check(v[7:0] == 8'h01, "SRST: count 1");
@@ -969,7 +1275,7 @@ module mgmt_bridge_tb;
 
         // ============================================================ 11. floppy A mount
         $display("[11] floppy A mount (360 KB)");
-        mount(0, FA_BYTES, 1'b0);
+        mount(0, FA_360K, 1'b0);
         // eject first: media_present must go 0 before the geometry is written
         n0 = 0;
         while (u_dut.fd_wait[0] == 1'b0 && n0 < 10000) begin @(posedge clk); n0 = n0 + 1; end
@@ -1074,7 +1380,7 @@ module mgmt_bridge_tb;
 
     // watchdog
     initial begin
-        #100_000_000;                            // 100 ms
+        #400_000_000;                            // 400 ms
         $display("TIMEOUT");
         $display("RESULT: FAIL");
         $finish;

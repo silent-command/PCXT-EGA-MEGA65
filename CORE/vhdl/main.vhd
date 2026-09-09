@@ -329,6 +329,10 @@ architecture synthesis of main is
    signal f_writes            : unsigned(17 downto 0) := (others => '0');
    signal c_reads             : unsigned(17 downto 0) := (others => '0');
    signal dbg_hrd, dbg_hrv, dbg_hwr : std_logic_vector(15 downto 0);
+   signal f2_writes           : unsigned(15 downto 0) := (others => '0');
+   signal f2_last             : std_logic_vector(15 downto 0) := (others => '0');
+   signal fdd_reqs            : unsigned(15 downto 0) := (others => '0');
+   signal fdd_req_q           : std_logic := '0';
    signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
    signal ce_per_frame        : std_logic_vector(15 downto 0) := (others => '0');
    signal vs_q                : std_logic := '0';
@@ -573,9 +577,26 @@ begin
          end if;
       end if;
    end process;
-   dbg_bus_reads_o <= dbg_hrd;   -- HyperRAM reads accepted
-   dbg_vsync_o     <= dbg_hrv;   -- HyperRAM read data returned
-   dbg_keys_o      <= dbg_hwr;   -- HyperRAM writes accepted
+   dbg_bus_reads_o <= std_logic_vector(f2_writes);   -- bridge writes to mgmt page F2 (floppy)
+   dbg_vsync_o     <= f2_last;                        -- {last F2 reg index & drive, last value written to F200 reg 0}
+   dbg_keys_o      <= std_logic_vector(fdd_reqs);     -- FDD read requests (mgmt_req(6) rising edges)
+
+   p_dbg_fdd : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if mgmt_wr = '1' and mgmt_addr(15 downto 8) = x"F2" then
+            f2_writes <= f2_writes + 1;
+            f2_last(15 downto 8) <= mgmt_addr(7) & "000" & mgmt_addr(3 downto 0);
+            if mgmt_addr(7 downto 0) = x"00" then
+               f2_last(7 downto 0) <= mgmt_dout(7 downto 0);
+            end if;
+         end if;
+         fdd_req_q <= mgmt_req(6);
+         if mgmt_req(6) = '1' and fdd_req_q = '0' then
+            fdd_reqs <= fdd_reqs + 1;
+         end if;
+      end if;
+   end process;
 
    p_dbg_mem : process (clk_main_i)
    begin
