@@ -44,3 +44,65 @@ set_clock_groups -asynchronous \
 # The memory backend crosses into the framework's HyperRAM clock through the
 # framework's avm_fifo (xpm async FIFO); no timed paths between the two.
 set_clock_groups -asynchronous -group [get_clocks {clk_100 clk_50}] -group [get_clocks {hr_clk hr_clk_del}]
+
+## Chipset read-data mux -> CPU input register (clk_50 -> clk_100)
+##
+## The worst path in the routed design is the 8237 register-read mux:
+##   u_KF8288/machine_cycle_reg[0] -> io_write_n/io_read_n -> dma_chip_select_n
+##   -> KF8237 read_address_or_count -> data_bus_out -> internal_data_bus
+##   -> B1/u_biu_core/ad_in_int_reg[*]/D
+## (12 logic levels, ~9.7 ns against a 10 ns single-cycle requirement,
+## slack -0.19 ns).  The same cone launched from
+## u_KF8237/u_Timing_And_Control/dma_acknowledge_ff_reg[2] was at +0.06 ns in
+## the previous build and from u_KF8288/strobed_*_status_reg at +0.03 ns.
+##
+## All of these launch registers are provably multicycle into ad_in_int_reg:
+##
+## * ad_in_int <= AD_IN on every clk_100 (mcl86_biu_max.sv:517) but the value
+##   is consumed exactly once per bus cycle, in state 0x06 on the clk_100 cycle
+##   in which clk_posedge/clk_negedge is high (mcl86_biu_max.sv:867-872).
+##   clk_posedge/negedge are edge-detects of clk_d1/clk_d2 (:392-393), a
+##   resync of cpu_clk_pin, which XT_CE_Generator registers in clk_50
+##   (XT_CE_Generator.sv:118-127) at the same edge as cpu_ce_posedge/negedge.
+##   With the CLK-pin toggle at clk_50 edge E: clk_d1 flips at E+10, clk_d2 at
+##   E+20, so the BIU acts at E+20 on the ad_in_int captured at E+10.  The
+##   consumed sample of AD_IN is therefore always taken at E+10 ns, E being the
+##   clk_50 edge that toggled the CLK pin (rise when shift_read_timing=0 at
+##   4.77/7.16 MHz, fall when shift_read_timing=1 at 9.54 MHz/Max).
+##
+## * Every chipset register gated by cpu_ce_* updates at (CLK toggle)+20 ns.
+##   machine_cycle and strobed_*_status (KF8288.sv, "Generate machine cycle"
+##   and "Strobe processor status" blocks) and dma_acknowledge_ff
+##   (KF8237_Timing_And_Control.sv:413-427) update ONLY on cpu_ce_negedge,
+##   i.e. at F+20 where F is a clk_50 edge at which the CLK pin FELL.
+##   (master_clear and reset only clear dma_acknowledge_ff; it is non-zero
+##   only while the 8237 owns the bus, when the CPU is stalled on READY in
+##   state 0x04/0x05 and never reaches the sample in 0x06, so those clears are
+##   never a transition in the sample window.)
+##
+## * Distance from the last such update to the consumed sample, per speed
+##   (XT_CE_Generator ratios: 21/110, 63/220, 21/55, 1/1 -> minimum CLK
+##   half-period 5, 3, 2, 1 clk_50 cycles):
+##     4.77 MHz  sample at R+10 (R = next rise, R-F >= 100)    -> >= 90 ns
+##     7.16 MHz  sample at R+10 (R-F >= 60)                    -> >= 50 ns
+##     9.54 MHz  sample at F'+10 (F' = next fall, F'-F >= 100) -> >= 90 ns
+##     Max       sample at F'+10 (F'-F = 40)                    ->    30 ns
+##   The intervening clk_50 edges carry only cpu_ce_posedge, which none of
+##   these launch registers use.  So a 20 ns (2 x clk_100) setup requirement
+##   leaves a full clk_100 cycle of margin even at Max.  Hold stays the
+##   ordinary same-edge check (-hold 1 -end brings the hold capture edge back
+##   to the launch edge, requirement 0 ns).
+##
+## Only these launch cells are relaxed: other clk_50 sources into
+## ad_in_int_reg (cpu_ce_posedge-gated registers such as address_enable_n,
+## and the peripherals' own registers) keep the single-cycle requirement.
+## READY_IN is a different destination and is NOT covered: processor_ready
+## updates at F+20 and is sampled by state 0x05 at F+30, a genuine 10 ns path.
+##
+## Validated on the routed R6 checkpoint (read_xdc + report_timing): the
+## machine_cycle path went from -0.186 ns to +9.8 ns (20 ns requirement);
+## hold on the same paths +0.40 ns at the 0 ns requirement.
+set xt_rd_launch [get_cells {CORE/i_main/i_pcxt_core/u_CHIPSET/u_BUS_ARBITER/u_KF8288/machine_cycle_reg[*] CORE/i_main/i_pcxt_core/u_CHIPSET/u_BUS_ARBITER/u_KF8288/strobed_*_status_reg CORE/i_main/i_pcxt_core/u_CHIPSET/u_BUS_ARBITER/u_KF8237/u_Timing_And_Control/dma_acknowledge_ff_reg[*]}]
+set xt_rd_capture [get_cells {CORE/i_main/i_pcxt_core/B1/u_biu_core/ad_in_int_reg[*]}]
+set_multicycle_path 2 -setup      -from $xt_rd_launch -to $xt_rd_capture
+set_multicycle_path 1 -hold  -end -from $xt_rd_launch -to $xt_rd_capture
