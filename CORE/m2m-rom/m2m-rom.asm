@@ -267,7 +267,7 @@ MENU_HEAP_SIZE  .EQU 2048                       ; 82-line menu with submenus nee
 ; this needs to be the last variable before the monitor variables as it is
 ; only defined as "BLOCK 1" to avoid a large amount of null-values in
 ; the ROM file
-HEAP_SIZE       .EQU 6144                       ; 7168 - 1024 = 6144
+HEAP_SIZE       .EQU 5120                       ; 7168 - 2048 = 5120
 HEAP            .BLOCK 1
 
 ; in RELEASE mode: 28k of heap which leads to a better user experience when

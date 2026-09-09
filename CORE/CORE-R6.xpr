@@ -1680,6 +1680,14 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
+      <File Path="$PPRDIR/PCXT-EGA_MiSTer/rtl/common/ram.v">
+        <FileInfo SFType="SVerilog">
+          <Attr Name="AutoDisabled" Val="1"/>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/vhdl/mem_bram.vhd">
         <FileInfo SFType="VHDL2008">
           <Attr Name="AutoDisabled" Val="1"/>
@@ -1747,14 +1755,6 @@
         </FileInfo>
       </File>
       <File Path="$PPRDIR/PCXT-EGA_MiSTer/rtl/common/bios.v">
-        <FileInfo SFType="SVerilog">
-          <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="UsedIn" Val="synthesis"/>
-          <Attr Name="UsedIn" Val="implementation"/>
-          <Attr Name="UsedIn" Val="simulation"/>
-        </FileInfo>
-      </File>
-      <File Path="$PPRDIR/PCXT-EGA_MiSTer/rtl/common/ram.v">
         <FileInfo SFType="SVerilog">
           <Attr Name="AutoDisabled" Val="1"/>
           <Attr Name="UsedIn" Val="synthesis"/>
