@@ -228,6 +228,16 @@ module mgmt_bridge_tb;
     reg  [31:0] last_blk_lba = 32'hFFFFFFFF;
     integer     last_blk_drv = -1;
     reg         last_blk_wr = 1'b0;
+    // extra ack latency added to WRITE blocks, to model the QNICE/SD-card write
+    // (f32_fwrite + f32_fflush) being far slower than the FDC's per-sector
+    // inter-transfer time.  On hardware a floppy-sector SD write takes far
+    // longer than the FDC needs to DMA-refill its FIFO for the next sector, so
+    // the next sector's mgmt request rises while the bridge is still storing
+    // this one.  Default 0 keeps every existing test's timing unchanged.
+    integer     blk_wr_extra = 0;
+    // record of every completed drive-A (floppy) block write, in order
+    integer     fa_wr_n = 0;
+    reg  [31:0] fa_wr_lba [0:63];
 
     initial begin : blk_server
         integer d, i, lat;
@@ -241,7 +251,7 @@ module mgmt_bridge_tb;
                 lba = blk_lba;
                 check((blk_rd | blk_wr) == (3'b001 << d), "only one block transfer in flight");
                 check(!(blk_rd[d] & blk_wr[d]), "blk_rd and blk_wr not both set");
-                lat = $urandom_range(1, 24);
+                lat = $urandom_range(1, 24) + (is_wr ? blk_wr_extra : 0);
                 repeat (lat) @(posedge clk);
                 check(blk_rd[d] | blk_wr[d], "blk request held until ack rises");
                 blk_ack[d] <= 1'b1;
@@ -267,6 +277,10 @@ module mgmt_bridge_tb;
                 last_blk_lba = lba;
                 last_blk_drv = d;
                 last_blk_wr = is_wr;
+                if (is_wr && d == 0 && fa_wr_n < 64) begin
+                    fa_wr_lba[fa_wr_n] = lba;
+                    fa_wr_n = fa_wr_n + 1;
+                end
                 repeat (2) @(posedge clk);
             end
         end
@@ -660,6 +674,29 @@ module mgmt_bridge_tb;
             fdd_dma_tc  <= (i == 511);
             @(negedge clk);
             dma_buf[i] = fdd_dma_wr;
+            @(posedge clk);
+            fdd_dma_ack <= 1'b0;
+            fdd_dma_tc  <= 1'b0;
+        end
+    end
+    endtask
+
+    // Feed nsec*512 DMA bytes INTO the FDC (write direction), TC on the very
+    // last byte only, so floppy.v treats it as one multi-sector WRITE DATA
+    // transfer of nsec consecutive sectors.  Byte b of the whole transfer is
+    // wpat(b), so sector s holds wpat(s*512 .. s*512+511).  Runs as its own
+    // process (fork) so it can keep refilling the FDC's FIFO for later sectors
+    // while the bridge is still busy storing an earlier sector to the SD model.
+    task fdc_dma_out_multi(input integer nsec);
+        integer i, tot;
+    begin
+        tot = nsec * 512;
+        for (i = 0; i < tot; i = i + 1) begin
+            fdc_wait_dma_req();
+            @(posedge clk);
+            fdd_dma_rd  <= wpat(i);
+            fdd_dma_ack <= 1'b1;
+            fdd_dma_tc  <= (i == tot - 1);
             @(posedge clk);
             fdd_dma_ack <= 1'b0;
             fdd_dma_tc  <= 1'b0;
@@ -1339,6 +1376,69 @@ module mgmt_bridge_tb;
         bad = 0;
         for (i = 0; i < 512; i = i + 1) if (fa_img[i] !== wpat(i)) bad = bad + 1;
         check(bad == 0, "fdd write: image sector 0 holds the DMA data");
+
+        // ============================================================ 13b. multi-sector WRITE DATA with a slow SD write (the DOS "copy" bug)
+        // A DOS file write issues an 8272 WRITE DATA that spans several
+        // consecutive sectors (file data + FAT + directory).  floppy.v raises
+        // mgmt_req[7] once per sector with an incrementing LBA; the bridge must
+        // service every one.  With the SD write modelled as slow (blk_wr_extra),
+        // the NEXT sector's request rises while the bridge is still storing the
+        // current sector, exactly as on hardware.  Before the fix the bridge
+        // parks in S_FDD_WAIT waiting for mgmt_req to fall to 0 - but it never
+        // does, because the next sector already re-raised it - so the transfer
+        // stalls and DOS reports "drive not ready".
+        $display("[13b] 8272 WRITE DATA C=0 H=0 R=1 EOT=9, 3 sectors (LBA 0,1,2), slow SD write");
+        for (i = 0; i < 3 * 512; i = i + 1) fa_img[i] = 8'h00;   // clear the target sectors first
+        n0 = blk_count;
+        fa_wr_n = 0;
+        blk_wr_extra = 15000;                    // model the QNICE/SD-card write latency
+        fdc_cmd_rw(1'b1, 8'd0, 1'b0, 8'd1, 8'd9);
+        fdc_dma_out_multi(3);
+        fdc_wait_irq_max(2_000_000, got, n1);
+        check(got, "multi-sector write: IRQ 6 at the end (no stall)");
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "multi-sector write: ST0 normal termination");
+        wait_bridge_idle();
+        blk_wr_extra = 0;
+        check(blk_count == n0 + 3, "multi-sector write: three sectors produced three blk_wr");
+        check(fa_wr_n == 3, "multi-sector write: three drive-A block writes recorded");
+        if (fa_wr_n == 3)
+            check(fa_wr_lba[0] == 32'd0 && fa_wr_lba[1] == 32'd1 && fa_wr_lba[2] == 32'd2,
+                  "multi-sector write: blk_wr LBAs increment 0,1,2");
+        bad = 0;
+        for (i = 0; i < 3 * 512; i = i + 1) if (fa_img[i] !== wpat(i)) bad = bad + 1;
+        check(bad == 0, "multi-sector write: image sectors 0,1,2 hold the DMA data");
+
+        // ============================================================ 13c. two back-to-back multi-sector WRITE DATA commands, slow SD
+        // Mirrors the failing DOS "copy": two separate WRITE DATA commands, the
+        // second spanning two sectors, so the third sector-request overall is
+        // the one that used to be dropped.
+        $display("[13c] two WRITE DATA commands (1 sector at LBA 4, then 2 sectors at LBA 5,6), slow SD");
+        for (i = 4 * 512; i < 7 * 512; i = i + 1) fa_img[i] = 8'h00;
+        n0 = blk_count;
+        fa_wr_n = 0;
+        blk_wr_extra = 15000;
+        fdc_cmd_rw(1'b1, 8'd0, 1'b0, 8'd5, 8'd9);   // R=5 -> LBA 4, single sector
+        fdc_dma_out_multi(1);
+        fdc_wait_irq_max(2_000_000, got, n1);
+        check(got, "13c cmd1: IRQ 6");
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "13c cmd1: ST0 normal termination");
+        fdc_cmd_rw(1'b1, 8'd0, 1'b0, 8'd6, 8'd9);   // R=6 -> LBA 5, two sectors (5,6)
+        fdc_dma_out_multi(2);
+        fdc_wait_irq_max(2_000_000, got, n1);
+        check(got, "13c cmd2: IRQ 6 at the end (no stall on the 3rd request)");
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "13c cmd2: ST0 normal termination");
+        wait_bridge_idle();
+        blk_wr_extra = 0;
+        check(blk_count == n0 + 3, "13c: three sectors total produced three blk_wr");
+        check(fa_wr_n == 3 && fa_wr_lba[0] == 32'd4 && fa_wr_lba[1] == 32'd5 && fa_wr_lba[2] == 32'd6,
+              "13c: blk_wr LBAs 4, then 5,6");
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1)      if (fa_img[4 * 512 + i] !== wpat(i))       bad = bad + 1;
+        for (i = 0; i < 2 * 512; i = i + 1)  if (fa_img[5 * 512 + i] !== wpat(i))       bad = bad + 1;
+        check(bad == 0, "13c: image sectors 4,5,6 hold the DMA data");
 
         // ============================================================ 14. floppy B mount, read-only remount, unmount
         $display("[14] floppy B mount (1.44 MB), A read-only, A unmount");

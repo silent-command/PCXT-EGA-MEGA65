@@ -1006,16 +1006,34 @@ module mgmt_bridge #(
                 state   <= S_TX_A;
             end
             S_FDD_WR_STORE: begin
-                seq_ret <= S_FDD_WAIT;
+                // mgmt_req[7] for THIS sector already fell while S_RX drained
+                // floppy.v's 512-byte FIFO (that is what floppy.v waits on to
+                // leave S_SD_WRITE_WAIT_FOR_EMPTY_FIFO), hundreds of clocks
+                // before this block write even starts. For a multi-sector
+                // WRITE DATA, floppy.v then DMA-refills its FIFO and re-raises
+                // mgmt_req[7] for the NEXT sector - and because the framework's
+                // SD-card block write is far slower than that refill, the next
+                // request is already high again by the time this block write
+                // finishes. So the write path must NOT return through
+                // S_FDD_WAIT (which waits for mgmt_req to reach 0): it would
+                // never see 0 and would park forever, dropping every sector
+                // after the first (on hardware: 2 sectors written, then DOS
+                // "drive not ready"). Return straight to S_IDLE instead, where
+                // the next sector's request is dispatched cleanly. The just-
+                // serviced request cannot be re-dispatched: floppy.v released
+                // it long before this block write completed, and only ever
+                // re-raises it after advancing sd_sector to the next LBA.
                 if (fd_ok && !fd_ro[fd_drv]) begin
-                    blk_wr <= fd_drv ? 3'b010 : 3'b001;
-                    state  <= S_BLK_ACK_HI;
+                    blk_wr  <= fd_drv ? 3'b010 : 3'b001;
+                    seq_ret <= S_IDLE;
+                    state   <= S_BLK_ACK_HI;
                 end else begin
-                    state  <= S_FDD_WAIT;          // read-only / no media: discarded
+                    seq_ret <= S_FDD_WAIT;
+                    state   <= S_FDD_WAIT;          // read-only / no media: nothing stored (no slow block follows)
                 end
             end
-            S_FDD_WAIT: begin                      // MGMT 5.3 step 6: the bit drops on the 512th transfer
-                if (mgmt_req[7:6] == 2'b00) state <= S_IDLE;
+            S_FDD_WAIT: begin                      // read path (and the discarded-write path): the request
+                if (mgmt_req[7:6] == 2'b00) state <= S_IDLE;   // bit fell on the 512th transfer just performed (MGMT 5.3 step 6)
             end
 
             default: state <= S_IDLE;
