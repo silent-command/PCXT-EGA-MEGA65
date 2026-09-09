@@ -183,12 +183,31 @@ architecture rtl of mem_backend is
    signal hr_rst_sync    : std_logic := '1';
    signal rst_all        : std_logic;
 
-   -- one read at a time into the cache (G_CACHE only, see g_cache)
+   -- one read at a time into the cache (G_CACHE only, see gen_cache)
    signal c_read         : std_logic;
    signal c_waitrequest  : std_logic;
    signal c_pending      : std_logic := '0';
+   signal f_readdatavalid: std_logic;     -- what the FIFO's read side takes back
 
    signal hyper_accept   : std_logic;
+
+   -- built-in self test of the HyperRAM path, runs once after reset while the
+   -- machine is still held: 3 x 64 bytes at 0x001000 (conventional), 0x0C4000
+   -- (UMB) and 0x200000 (EMS page 0), written then read back one at a time.
+   type bist_state_t is (B_WAIT, B_WRITE, B_WR_GAP, B_READ, B_RD_WAIT, B_DONE);
+   signal bist_state     : bist_state_t := B_WAIT;
+   signal bist_wait      : unsigned(15 downto 0) := (others => '0');
+   signal bist_idx       : unsigned(7 downto 0) := (others => '0');
+   signal bist_addr      : unsigned(21 downto 0);
+   signal bist_data      : std_logic_vector(7 downto 0);
+   signal bist_got       : std_logic_vector(7 downto 0);
+   signal bist_err       : unsigned(14 downto 0) := (others => '0');
+   signal bist_first     : std_logic_vector(15 downto 0) := (others => '0');   -- {expected, got}
+   signal bist_fadr      : std_logic_vector(15 downto 0) := (others => '0');   -- byte address bits 15..0
+   signal bist_active    : std_logic;
+   signal bist_done      : std_logic;
+   signal bist_write     : std_logic;
+   signal bist_read      : std_logic;
    signal dbg_hrd, dbg_hrv, dbg_hwr : unsigned(15 downto 0) := (others => '0');
    signal rom_accept     : std_logic;
    signal none_accept    : std_logic;
@@ -224,12 +243,12 @@ begin
 
    -- acceptance: ROM/unmapped accesses wait while HyperRAM reads are outstanding,
    -- nothing is accepted while either side is in reset
-   rom_accept   <= (avm_read_i or avm_write_i) and sel_rom  and not hyper_busy and not rst_all;
-   none_accept  <= (avm_read_i or avm_write_i) and sel_none and not hyper_busy and not rst_all;
-   hyper_accept <= (avm_read_i or avm_write_i) and sel_hyper and not s_waitrequest and not rst_all;
+   rom_accept   <= (avm_read_i or avm_write_i) and sel_rom  and not hyper_busy and not rst_all and not bist_active;
+   none_accept  <= (avm_read_i or avm_write_i) and sel_none and not hyper_busy and not rst_all and not bist_active;
+   hyper_accept <= (avm_read_i or avm_write_i) and sel_hyper and not s_waitrequest and not rst_all and not bist_active;
 
    avm_waitrequest_o <= '0'            when (avm_read_i or avm_write_i) = '0' else
-                        '1'            when rst_all = '1' else
+                        '1'            when rst_all = '1' or bist_active = '1' else
                         s_waitrequest  when sel_hyper = '1' else
                         hyper_busy;
 
@@ -307,11 +326,81 @@ begin
    ---------------------------------------------------------------------------
    -- HyperRAM requests and the outstanding-read queue
    ---------------------------------------------------------------------------
-   s_write      <= avm_write_i and sel_hyper;
-   s_read       <= avm_read_i  and sel_hyper;
-   s_address    <= std_logic_vector(G_HR_BASE + resize(addr(21 downto 1), 32));
-   s_writedata  <= avm_writedata_i & avm_writedata_i;
-   s_byteenable <= "10" when addr(0) = '1' else "01";
+   s_write      <= bist_write when bist_active = '1' else avm_write_i and sel_hyper;
+   s_read       <= bist_read  when bist_active = '1' else avm_read_i  and sel_hyper;
+   s_address    <= std_logic_vector(G_HR_BASE + resize(bist_addr(21 downto 1), 32)) when bist_active = '1' else
+                   std_logic_vector(G_HR_BASE + resize(addr(21 downto 1), 32));
+   s_writedata  <= bist_data & bist_data when bist_active = '1' else avm_writedata_i & avm_writedata_i;
+   s_byteenable <= "10" when (bist_active = '1' and bist_addr(0) = '1') or (bist_active = '0' and addr(0) = '1') else "01";
+
+   ---------------------------------------------------------------------------
+   -- self test
+   ---------------------------------------------------------------------------
+   bist_active <= '0' when bist_state = B_DONE else '1';
+   bist_done   <= not bist_active;
+   bist_write  <= '1' when bist_state = B_WRITE else '0';
+   bist_read   <= '1' when bist_state = B_READ  else '0';
+   bist_addr   <= "0000000001" & "000000" & bist_idx(5 downto 0) when bist_idx(7 downto 6) = "00" else   -- 0x001000 + i
+                  "0011000100" & "000000" & bist_idx(5 downto 0) when bist_idx(7 downto 6) = "01" else   -- 0x0C4000 + i
+                  "1000000000" & "000000" & bist_idx(5 downto 0);                                    -- 0x200000 + i
+   bist_data   <= std_logic_vector(bist_idx xor x"5A");
+   bist_got    <= s_readdata(15 downto 8) when bist_addr(0) = '1' else s_readdata(7 downto 0);
+
+   p_bist : process (clk_i)
+   begin
+      if rising_edge(clk_i) then
+         case bist_state is
+            when B_WAIT =>
+               bist_wait <= bist_wait + 1;
+               if bist_wait = x"FFFF" and s_waitrequest = '0' then
+                  bist_idx   <= (others => '0');
+                  bist_state <= B_WRITE;
+               end if;
+            when B_WRITE =>
+               if s_waitrequest = '0' then
+                  if bist_idx = 191 then
+                     bist_wait  <= (others => '0');
+                     bist_state <= B_WR_GAP;
+                  else
+                     bist_idx <= bist_idx + 1;
+                  end if;
+               end if;
+            when B_WR_GAP =>
+               bist_wait <= bist_wait + 1;
+               if bist_wait = x"0FFF" then
+                  bist_idx   <= (others => '0');
+                  bist_state <= B_READ;
+               end if;
+            when B_READ =>
+               if s_waitrequest = '0' then
+                  bist_state <= B_RD_WAIT;
+               end if;
+            when B_RD_WAIT =>
+               if s_readdatavalid = '1' then
+                  if bist_got /= bist_data then
+                     if bist_err = 0 then
+                        bist_first <= bist_data & bist_got;
+                        bist_fadr  <= std_logic_vector(bist_addr(15 downto 0));
+                     end if;
+                     bist_err <= bist_err + 1;
+                  end if;
+                  if bist_idx = 191 then
+                     bist_state <= B_DONE;
+                  else
+                     bist_idx   <= bist_idx + 1;
+                     bist_state <= B_READ;
+                  end if;
+               end if;
+            when B_DONE =>
+               null;
+         end case;
+         if rst_all = '1' then
+            bist_state <= B_WAIT;
+            bist_wait  <= (others => '0');
+            bist_err   <= (others => '0');
+         end if;
+      end if;
+   end process;
 
    p_out : process (clk_i)
       variable v_push : boolean;
@@ -319,7 +408,7 @@ begin
    begin
       if rising_edge(clk_i) then
          v_push := (hyper_accept and avm_read_i) = '1';
-         v_pop  := s_readdatavalid = '1';
+         v_pop  := s_readdatavalid = '1' and bist_active = '0';
          if v_push then
             out_lsb <= out_lsb(C_OUT_MAX-2 downto 0) & addr(0);
          end if;
@@ -344,12 +433,12 @@ begin
       end if;
    end process;
 
-   dbg_hrd_o <= std_logic_vector(dbg_hrd);
-   dbg_hrv_o <= std_logic_vector(dbg_hrv);
-   dbg_hwr_o <= std_logic_vector(dbg_hwr);
+   dbg_hrd_o <= bist_done & std_logic_vector(bist_err);   -- bit 15 = self test finished, 14..0 = mismatches of 192
+   dbg_hrv_o <= bist_first;                               -- first mismatch: expected & got
+   dbg_hwr_o <= bist_fadr;                                -- first mismatch: byte address (15..0)
 
    -- the oldest outstanding read is at index out_count-1 (shift register)
-   avm_readdatavalid_o <= rom_valid_q or none_q or s_readdatavalid;
+   avm_readdatavalid_o <= rom_valid_q or none_q or (s_readdatavalid and not bist_active);
    avm_readdata_o <= q_ega   when rom_valid_q = '1' and sel_q(0) = '1' else
                      q_xtide when rom_valid_q = '1' and sel_q(1) = '1' else
                      q_bios  when rom_valid_q = '1' and sel_q(2) = '1' else
@@ -390,7 +479,7 @@ begin
          m_avm_byteenable_o    => m_byteenable,
          m_avm_burstcount_o    => m_burstcount,
          m_avm_readdata_i      => m_readdata,
-         m_avm_readdatavalid_i => m_readdatavalid
+         m_avm_readdatavalid_i => f_readdatavalid
       );
 
    gen_cache : if G_CACHE generate
@@ -405,12 +494,18 @@ begin
       c_read        <= m_read and not c_pending;
       m_waitrequest <= c_waitrequest or (m_read and c_pending) or hr_rst_i;
 
+      -- With one read outstanding at a time, exactly one readdatavalid per read
+      -- is legitimate: the first one after acceptance. Anything the cache
+      -- produces while no read is pending would be a surplus response that
+      -- the overlay would attribute to its next read, so it is not forwarded.
+      f_readdatavalid <= m_readdatavalid and c_pending;
+
       p_pending : process (hr_clk_i)
       begin
          if rising_edge(hr_clk_i) then
             if c_read = '1' and c_waitrequest = '0' then
                c_pending <= '1';
-            elsif m_readdatavalid = '1' then
+            elsif f_readdatavalid = '1' then
                c_pending <= '0';
             end if;
             if hr_rst_i = '1' then
@@ -458,6 +553,7 @@ begin
       hr_burstcount_o <= m_burstcount;
       m_readdata      <= hr_readdata_i;
       m_readdatavalid <= hr_readdatavalid_i;
+      f_readdatavalid <= m_readdatavalid;
       m_waitrequest   <= hr_waitrequest_i;
    end generate gen_nocache;
 
