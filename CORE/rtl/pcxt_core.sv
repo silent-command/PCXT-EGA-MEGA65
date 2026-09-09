@@ -193,7 +193,11 @@ module pcxt_core
     // 3.10 debug: raw chipset video signals before the mixer/retime stages
     output wire        dbg_de_o,
     output wire        dbg_hb_o,
-    output wire        dbg_vb_o
+    output wire        dbg_vb_o,
+        // floppy CPU<->FDC path probes
+    output wire [15:0] dbg_fdc0_o,
+    output wire [15:0] dbg_fdc1_o,
+    output wire [15:0] dbg_fdc2_o
     );
 
     ///////// MEGA65: MiSTer framework signals the body still refers to /////////
@@ -2154,5 +2158,27 @@ module pcxt_core
     assign dbg_de_o      = de_o;
     assign dbg_hb_o      = HBlank;
     assign dbg_vb_o      = VBlank;
+
+    // floppy CPU<->FDC path probes (hierarchical taps; no submodule edit)
+    wire fdc_iowr   = u_CHIPSET.u_PERIPHERALS.fdd_io_write;
+    wire [2:0] fdc_ioad = u_CHIPSET.u_PERIPHERALS.fdd_io_address;
+    wire fdc_irq    = u_CHIPSET.u_PERIPHERALS.fdd_interrupt;
+    wire fdc_motor0 = u_CHIPSET.u_PERIPHERALS.floppy.motor_enable[0];
+    wire fdc_media0 = u_CHIPSET.u_PERIPHERALS.floppy.media_present[0];
+    wire fdc_dack2  = ~u_CHIPSET.u_BUS_ARBITER.dma_acknowledge_n[2];
+    reg [7:0] p_dor, p_cmd, p_irq, p_intr, p_dack;
+    reg fdc_irq_q, intr_q, dack_q;
+    always @(posedge clk_chipset) begin
+        fdc_irq_q <= fdc_irq; intr_q <= interrupt_to_cpu; dack_q <= fdc_dack2;
+        if (fdc_iowr && fdc_ioad == 3'd2) p_dor  <= p_dor + 8'd1;
+        if (fdc_iowr && fdc_ioad == 3'd5) p_cmd  <= p_cmd + 8'd1;
+        if (fdc_irq && ~fdc_irq_q)        p_irq  <= p_irq + 8'd1;
+        if (interrupt_to_cpu && ~intr_q)  p_intr <= p_intr + 8'd1;
+        if (fdc_dack2 && ~dack_q)         p_dack <= p_dack + 8'd1;
+        if (reset) begin p_dor<=0; p_cmd<=0; p_irq<=0; p_intr<=0; p_dack<=0; end
+    end
+    assign dbg_fdc0_o = {p_irq, p_dor};
+    assign dbg_fdc1_o = {6'd0, fdc_media0, fdc_motor0, p_cmd};
+    assign dbg_fdc2_o = {p_intr, p_dack};
 
 endmodule
