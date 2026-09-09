@@ -42,3 +42,11 @@ ok=A000 sum0=107E sum3=3E46) plus `bist=` (HyperRAM self test: 8000 = done
 with 0 mismatches), `req=` ({floppy write requests, floppy read requests})
 and `blk=` ({block acks, block writes} for drive A). Cheap, bridge-side only,
 and useful for a first look at any future report.
+
+### Regression after the probe cleanup (2026-09-09) - resolved
+
+The cleanup build stopped detecting the IDE drive although its logic was
+identical. Cause: inferred latches in upstream RAM.sv (no default arm in a
+casez over a 3-bit enum) left the whole memory command path untimed, so it
+was a placement lottery on every build so far. Fixed in the RAM.sv overlay
+(7b60691). See docs/ram-inferred-latches.md.
