@@ -688,9 +688,14 @@ ROSM_SAVE       SYSCALL(enter, 1)
                 MOVE    R8, R0                  ; R0: amount of vdrives
                 XOR     R8, R8                  ; vdrive id
 _ROSMS_0        MOVE    VD_CACHE_DIRTY, R9
+                MOVE    R8, R1                  ; R1: current drive; VD_DRV_READ returns the
+                                                ; flag in R8 and would lose the drive number:
+                                                ; with >= 2 vdrives and nothing dirty the loop
+                                                ; below never reached R0 (MEGA65 port fix)
                 RSUB    VD_DRV_READ, 1          ; get dirty flag for curr. drv
                 CMP     0, R8                   ; dirty?
                 RBRA    _ROSMS_NOWR, !Z         ; yes: do not save
+                MOVE    R1, R8                  ; restore drive number
                 ADD     1, R8                   ; no: check next vdrive
                 CMP     R0, R8                  ; done?
                 RBRA    _ROSMS_0, !Z            ; no: next iteration

@@ -39,3 +39,15 @@ cd M2M/tools && ./make_config.sh <path>/m2m/m2mcfg 82
 
 The firmware prints "Config file not found" or "corrupt config file" in the
 serial log when it falls back to defaults.
+
+## Framework fix: settings save hung with more than one virtual drive
+
+`M2M/rom/options.asm` `ROSM_SAVE` loops over the virtual drives to check
+their dirty flags before writing the settings file. `VD_DRV_READ` returns
+the flag in R8, the same register that held the drive number, so with no
+drive dirty R8 became 1 after every iteration and the loop never reached
+the drive count of 3: the firmware spun forever at the first menu close
+once `/m2m/m2mcfg` existed (Help dead, no log line, disk requests unserved,
+XTIDE "Error 80h"). Cores with a single drive never hit it. The port keeps
+the drive number in R1 across the call. Upstream master (checked
+2026-09-09) still has the clobber; report it.
