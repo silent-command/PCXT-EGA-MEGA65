@@ -32,3 +32,4 @@ M2M/rom/*.rom
 M2M/video_filters/*.out
 CORE/ooc/
 CORE/build-r6.stdout
+/release/

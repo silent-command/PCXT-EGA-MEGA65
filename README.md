@@ -1,67 +1,45 @@
-MiSTer2MEGA65
-=============
+# PCXT-EGA for MEGA65
 
-MiSTer2MEGA65 is a framework to simplify porting MiSTer cores to the MEGA65.
+Port of [MiSTer-devel/PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer),
+an IBM PC/XT with an EGA card, to the MEGA65 R6 using the
+[MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65) framework (V2.0.1).
 
-![Title Image](doc/wiki/assets/MiSTer2MEGA65-Title.png)
+Status: boots FreeDOS from an SD-card hard disk image with 640 KB
+conventional memory, UMB and 2 MB EMS in HyperRAM; floppy images read and
+write; keyboard, joysticks, Adlib / Sound Blaster / Tandy / speaker sound;
+options menu with settings persistence. See `docs/release/README.md` for the
+user-facing description and `PCXT-EGA-MEGA65-port-plan.md` (next to this
+repo) for the phase history.
 
-Learn more by
-[watching this YouTube video](https://youtu.be/9Ib7z64z9N4)
-and get started by reading the
-[MiSTer2MEGA65 Wiki](https://github.com/sy2002/MiSTer2MEGA65/wiki).
+## Layout
 
-TL;DR
------
+- `CORE/rtl/pcxt_core.sv` — the core wrapper (MiSTer top level minus the HPS)
+- `CORE/rtl/overlay/` — upstream files replaced by basename (RAM.sv READY and
+  latch fixes, KFSDRAM byte bus, floppy IRQ re-arm, bram wrapper)
+- `CORE/rtl/mgmt_bridge.sv` — emulates MiSTer's ARM side of the floppy/IDE
+  management bus against the framework's virtual drives
+- `CORE/vhdl/` — main.vhd (wrapper, option decode), mem_backend.vhd
+  (HyperRAM byte bus with ROM windows and self test), vd_glue.vhd (clock
+  crossing to the virtual drives), keyboard.vhd, config.vhd (menu, help)
+- `CORE/rtl/tb/` — benches (Icarus and xsim); `docs/` — design notes and
+  the root causes of every hardware bug found on the way
+- `M2M/rom/` — framework firmware with the port's SD-direct image I/O and
+  the settings-save fix
+- `tools/` — build, JTAG load, serial log, `make_release.py`
 
-1. Scroll up and press the "Use this template" button to start a new
-   MiSTer2MEGA65 project. Then fork the MiSTer core you want to port
-   and make it a Git submodule of your newly created project.
+## Build
 
-2. Wrap the MiSTer core inside `CORE/vhdl/main.vhd` while
-   adjusting the clocks in `CORE/vhdl/clk.vhd`. Provide RAMs, ROMs and other
-   devices in `CORE/vhdl/mega65.vhd` and wire everything correctly.
+Vivado 2026.1 on Windows with WSL (the QNICE firmware assembles via WSL):
 
-3. Configure your core's behavior, including how the start screen looks like,
-   what ROMs should be loaded (and where to), the abilities of the
-   <kbd>Help</kbd> menu and more in `CORE/vhdl/config.vhd` and in
-   `CORE/vhdl/globals.vhd`.
+```
+cd CORE
+vivado.bat -mode batch -source build-r6.tcl
+```
 
-**DONE** your core is ported to MEGA65! :-)
+Outputs land in `CORE/CORE-R6.runs/impl_1/`; `tools/make-cor.sh` packages
+the `.cor`; `python3 tools/make_release.py --with-hd-image` (run under WSL,
+like the firmware assembly) builds the release folder and zip.
 
-*Obviously, this is a shameless exaggeration of how easy it is to work with
-MiSTer2MEGA65, but you get the gist of it.*
+## License
 
-Getting started, detailed documentation and support
----------------------------------------------------
-
-1. You might want to start your journey
-  [here](https://github.com/sy2002/MiSTer2MEGA65/wiki/1.-What-is-MiSTer2MEGA65)
-  and then follow the reading track that is pointed out in the
-  respective chapters.
-
-2. Run through this tutorial: https://files.mega65.org?ar=898d573b-d30d-4438-8893-09455bd16400
-
-3. Choose the MiSTer core you want to port here: https://mister-devel.github.io/MkDocs_MiSTer/
-
-4. Use [The Ultimate MiSTer2MEGA65 Porting Guide](https://github.com/sy2002/MiSTer2MEGA65/wiki/The-Ultimate-MiSTer2MEGA65-Porting-Guide) to do the actual work. The guide contains all steps "From Zero to Hero".
-
-Status of the framework
------------------------
-
-**The MiSTer2MEGA (M2M) framework is stable and ready for being used.**
-The reference implementation of the M2M framework is the
-[Commodore 64 for MEGA65](https://github.com/MJoergen/C64MEGA65).
-Additionally there is already
-[a decent amount of cores](https://cores.mega65.org)
-that are based on the M2M framework. Head to the
-[Alternate MEGA65 cores](https://sy2002.github.io/m65cores/)
-website to learn more.
-
-[The Ultimate MiSTer2MEGA65 Porting Guide](https://github.com/sy2002/MiSTer2MEGA65/wiki/The-Ultimate-MiSTer2MEGA65-Porting-Guide)
-is very comprehensive - if you miss something or have questions, contact us on Discord.
-
-The [Commodore 64 for MEGA65](https://github.com/MJoergen/C64MEGA65) is the reference implementation
-of the M2M framework and [The Ultimate MiSTer2MEGA65 Porting Guide](https://github.com/sy2002/MiSTer2MEGA65/wiki/The-Ultimate-MiSTer2MEGA65-Porting-Guide) uses it heavily to provide you with examples. Don't hesitate to take code snippets from the
-[Commodore 64 for MEGA65](https://github.com/MJoergen/C64MEGA65) for your own projects.
-nd join the
-[friendly MEGA65 community on Discord](https://discord.com/channels/719326990221574164/1177364456896999485).
+GPL v3 (see LICENSE), as upstream and the framework.
