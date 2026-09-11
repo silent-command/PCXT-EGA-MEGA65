@@ -106,3 +106,9 @@ set xt_rd_launch [get_cells {CORE/i_main/i_pcxt_core/u_CHIPSET/u_BUS_ARBITER/u_K
 set xt_rd_capture [get_cells {CORE/i_main/i_pcxt_core/B1/u_biu_core/ad_in_int_reg[*]}]
 set_multicycle_path 2 -setup      -from $xt_rd_launch -to $xt_rd_capture
 set_multicycle_path 1 -hold  -end -from $xt_rd_launch -to $xt_rd_capture
+
+## analog_video_ctl: the core's mode-13h flag lives in the muxed video clock and
+## enters a two-flop ASYNC_REG synchroniser in qnice_clk. The two clocks share
+## the board's 100 MHz primary, so Vivado would time the crossing as a related
+## path with a sub-nanosecond requirement; it is a level crossing.
+set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode13_meta_reg/D}]
