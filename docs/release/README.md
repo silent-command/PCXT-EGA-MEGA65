@@ -22,8 +22,10 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
    mount your hard disk image under "Hard Disk", close the menu, press
    **Ctrl+Alt+Del**. XTIDE lists the drive and boots it.
 
-Floppy images (`.img`, 160 KB to 1.44 MB raw) mount under "Drive A" and
-"Drive B" at any time, also while DOS is running.
+Floppy images (`.img` or `.ima`, 160 KB to 1.44 MB raw) mount under "Drive A"
+and "Drive B" at any time, also while DOS is running. A bootable floppy image
+in Drive A boots with Ctrl+Alt+Del when no hard disk is mounted, or from the
+XTIDE boot menu (F2) otherwise.
 
 ## The menu (Help key)
 
