@@ -339,7 +339,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 86;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 90;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -359,20 +359,21 @@ constant OPTM_DY           : natural := 19;
 --  53..55 monitor 5154 / 5153 / 5151   57..60 tint full / green / amber / b&w
 --  62..64 VGA 31 kHz / 15 kHz / 15 kHz + csync
 --  70 joystick 1   71 joystick 2   72 swap   74 write-protect A   75 write-protect B
---  79 CRT emulation   80 zoom   81 audio improvements
+--  77..79 mouse off / C1351 / Amiga (port 1)
+--  83 CRT emulation   84 zoom   85 audio improvements
 constant OPTM_ITEMS        : string :=
 
-   " PCXT-EGA\n"            &    --   0
-   "\n"                     &    --   1
-   " Drive A:%s\n"          &    --   2
-   " Drive B:%s\n"          &    --   3
-   " Hard Disk:%s\n"        &    --   4
-   "\n"                     &    --   5
+   " PCXT-EGA\n"            &    --    0
+   "\n"                     &    --    1
+   " Drive A:%s\n"          &    --    2
+   " Drive B:%s\n"          &    --    3
+   " Hard Disk:%s\n"        &    --    4
+   "\n"                     &    --    5
 
-   " CPU: %s\n"             &    --   6  CPU submenu
-   " CPU Settings\n"        &    --   7
-   "\n"                     &    --   8
-   " 4.77 MHz\n"            &    --   9
+   " CPU: %s\n"             &    --    6  CPU submenu
+   " CPU Settings\n"        &    --    7
+   "\n"                     &    --    8
+   " 4.77 MHz\n"            &    --    9
    " 7.16 MHz\n"            &    -- 10
    " 9.54 MHz\n"            &    -- 11
    " Max\n"                 &    -- 12
@@ -444,16 +445,20 @@ constant OPTM_ITEMS        : string :=
    " Write-protect A:\n"    &    -- 74
    " Write-protect B:\n"    &    -- 75
    "\n"                     &    -- 76
-   " Back to main menu\n"   &    -- 77
+   " Mouse: Off\n"          &    -- 77  port 1
+   " Mouse: C1351\n"        &    -- 78  Commodore 1351 (proportional mode)
+   " Mouse: Amiga\n"        &    -- 79  Amiga / Atari ST mouse
+   "\n"                     &    -- 80
+   " Back to main menu\n"   &    -- 81
 
-   "\n"                     &    -- 78
-   " HDMI: CRT emulation\n" &    -- 79
-   " HDMI: Zoom-in\n"       &    -- 80
-   " Audio improvements\n"  &    -- 81
    "\n"                     &    -- 82
-   " Help\n"                &    -- 83
-   "\n"                     &    -- 84
-   " Close Menu\n";              -- 85
+   " HDMI: CRT emulation\n" &    -- 83
+   " HDMI: Zoom-in\n"       &    -- 84
+   " Audio improvements\n"  &    -- 85
+   "\n"                     &    -- 86
+   " Help\n"                &    -- 87
+   "\n"                     &    -- 88
+   " Close Menu\n";              -- 89
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -480,10 +485,11 @@ constant OPTM_G_JOY2       : integer := 17;
 constant OPTM_G_JOY_SWAP   : integer := 18;
 constant OPTM_G_WP_A       : integer := 19;
 constant OPTM_G_WP_B       : integer := 20;
-constant OPTM_G_CRT        : integer := 21;
-constant OPTM_G_Zoom       : integer := 22;
-constant OPTM_G_Audio      : integer := 23;
-constant OPTM_G_HELP_ITEM  : integer := 24;
+constant OPTM_G_MOUSE      : integer := 21;
+constant OPTM_G_CRT        : integer := 22;
+constant OPTM_G_Zoom       : integer := 23;
+constant OPTM_G_Audio      : integer := 24;
+constant OPTM_G_HELP_ITEM  : integer := 25;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -491,17 +497,17 @@ type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC-
 -- define your menu groups: which menu items are belonging together to form a group?
 -- where are separator lines? which items should be selected by default?
 -- make sure that you have exactly the same amount of entries here than in OPTM_ITEMS and defined by OPTM_SIZE
-constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            --   0 Headline "PCXT-EGA"
-                                             OPTM_G_LINE,                              --   1
-                                             OPTM_G_DRIVE_A + OPTM_G_MOUNT_DRV + OPTM_G_START, --   2 Drive A, cursor start
-                                             OPTM_G_DRIVE_B + OPTM_G_MOUNT_DRV,        --   3 Drive B
-                                             OPTM_G_HDD     + OPTM_G_MOUNT_DRV,        --   4 Hard Disk
-                                             OPTM_G_LINE,                              --   5
+constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            --    0 Headline "PCXT-EGA"
+                                             OPTM_G_LINE,                              --    1
+                                             OPTM_G_DRIVE_A + OPTM_G_MOUNT_DRV + OPTM_G_START, --    2 Drive A, cursor start
+                                             OPTM_G_DRIVE_B + OPTM_G_MOUNT_DRV,        --    3 Drive B
+                                             OPTM_G_HDD     + OPTM_G_MOUNT_DRV,        --    4 Hard Disk
+                                             OPTM_G_LINE,                              --    5
 
-                                             OPTM_G_SUBMENU,                           --   6 CPU submenu: START "CPU: %s"
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --   7 Headline "CPU Settings"
-                                             OPTM_G_LINE,                              --   8
-                                             OPTM_G_CPU_SPEED + OPTM_G_STDSEL,         --   9 4.77 MHz (default)
+                                             OPTM_G_SUBMENU,                           --    6 CPU submenu: START "CPU: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --    7 Headline "CPU Settings"
+                                             OPTM_G_LINE,                              --    8
+                                             OPTM_G_CPU_SPEED + OPTM_G_STDSEL,         --    9 4.77 MHz (default)
                                              OPTM_G_CPU_SPEED,                         -- 10 7.16 MHz
                                              OPTM_G_CPU_SPEED,                         -- 11 9.54 MHz
                                              OPTM_G_CPU_SPEED,                         -- 12 Max
@@ -573,16 +579,20 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_WP_A + OPTM_G_SINGLESEL,           -- 74 Write-protect A: toggle
                                              OPTM_G_WP_B + OPTM_G_SINGLESEL,           -- 75 Write-protect B: toggle
                                              OPTM_G_LINE,                              -- 76
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 77 Back; Input submenu: END
+                                             OPTM_G_MOUSE + OPTM_G_STDSEL,             -- 77 Mouse: Off (default)
+                                             OPTM_G_MOUSE,                             -- 78 Mouse: C1351
+                                             OPTM_G_MOUSE,                             -- 79 Mouse: Amiga
+                                             OPTM_G_LINE,                              -- 80
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 81 Back; Input submenu: END
 
-                                             OPTM_G_LINE,                              -- 78
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 79 On/Off toggle
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 80 On/Off toggle
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 81 On/Off toggle
                                              OPTM_G_LINE,                              -- 82
-                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 83 Help screens (WHS 1)
-                                             OPTM_G_LINE,                              -- 84
-                                             OPTM_G_CLOSE                              -- 85 Close Menu
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 83 On/Off toggle
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 84 On/Off toggle
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 85 On/Off toggle
+                                             OPTM_G_LINE,                              -- 86
+                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 87 Help screens (WHS 1)
+                                             OPTM_G_LINE,                              -- 88
+                                             OPTM_G_CLOSE                              -- 89 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

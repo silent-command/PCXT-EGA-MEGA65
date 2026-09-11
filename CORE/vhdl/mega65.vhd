@@ -272,9 +272,9 @@ constant C_MENU_HDMI_720_5994  : natural := 26;
 constant C_MENU_SVGA_800_60    : natural := 27;
 constant C_MENU_VGA_15KHZ      : natural := 63;
 constant C_MENU_VGA_15KHZ_CS   : natural := 64;
-constant C_MENU_CRT_EMULATION  : natural := 79;
-constant C_MENU_HDMI_ZOOM      : natural := 80;
-constant C_MENU_IMPROVE_AUDIO  : natural := 81;
+constant C_MENU_CRT_EMULATION  : natural := 83;
+constant C_MENU_HDMI_ZOOM      : natural := 84;
+constant C_MENU_IMPROVE_AUDIO  : natural := 85;
 
 -- analog VGA modes (docs/analog-video.md)
 signal main_video_mode13       : std_logic;   -- core's private 31.5 kHz raster active (async)

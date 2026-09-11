@@ -33,8 +33,8 @@ Floppy images (`.img`, 160 KB to 1.44 MB raw) mount under "Drive A" and
 | CPU | 4.77 / 7.16 / 9.54 MHz / Max; 8086 CPU (takes effect at the next reset); 286 speedup |
 | HDMI | output mode: 720p 50/60, 576p, 640x480, 720x480, 800x600 |
 | Sound | Adlib / Sound Blaster FM / none; Tandy sound; Sound Blaster on IRQ 7 (default IRQ 5); PC speaker volume; boost |
-| Display | monitor the EGA card drives (5154 EGA, 5153 CGA, 5151 mono; at reset); tint (color, green, amber, black and white) |
-| Input | joystick 1 and 2 (MEGA65 ports, digital), swap; write-protect A: / B: |
+| Display | monitor the EGA card drives (5154 EGA, 5153 CGA, 5151 mono; at reset); tint (color, green, amber, black and white); VGA connector: 31 kHz for VGA monitors, 15 kHz or 15 kHz + composite sync for CRTs and SCART |
+| Input | joystick 1 and 2 (MEGA65 ports, digital), swap; write-protect A: / B:; mouse off / 1351 / Amiga (port 1) |
 | HDMI: CRT emulation, Zoom-in, Audio improvements | framework video and audio options |
 
 Settings are saved when the menu closes, if `/m2m/m2mcfg` exists.
@@ -62,7 +62,9 @@ lacks:
 - The Turbo XT BIOS has no high-density floppy support: 1.44 MB and 1.2 MB
   images mount but DOS reports "drive not ready" on them. Use 360 KB or
   720 KB images, or a BIOS with high-density support.
-- Mouse: not yet (a serial mouse on COM1 is planned).
+- Mouse: a Commodore 1351 or an Amiga mouse in joystick port 1 appears as a
+  Microsoft serial mouse on COM1 when enabled in Input Settings; load a
+  serial mouse driver such as CTMOUSE in DOS. USB mice are not supported.
 - One hard disk image at a time; the second SD card slot is not used.
 - The optional `/pcxt/xtide.rom` is not needed: XTIDE is inside `pcxt.rom`.
   The startup log line "LOADING ROM #0002: FAILED" refers to it and is harmless.

@@ -1,6 +1,6 @@
 # Options menu (Help key)
 
-Main menu: Drive A, Drive B, Hard Disk, four submenus, the framework's HDMI
+Main menu: Drive A, Drive B, Hard Disk, five submenus, the framework's HDMI
 toggles, Help, Close. Menu line numbers are the option bits decoded in
 `CORE/vhdl/main.vhd` (core options) and `CORE/vhdl/mega65.vhd` (framework
 options, `C_MENU_*`). Change `config.vhd` and both decoders together.
@@ -22,6 +22,7 @@ options, `C_MENU_*`). Change `config.vhd` and both decoders together.
 | Input | Joystick 1 / Joystick 2 | `osm_joy1_i` / `osm_joy2_i` | MEGA65 ports 1 and 2 on the game port at 201h, digital mode |
 | Input | Swap joysticks | `osm_joy_swap_i` | |
 | Input | Write-protect A: / B: | `osm_floppy_wp_i` | in addition to a read-only image |
+| Input | Mouse: Off / C1351 / Amiga | `m65_mouse_ps2` -> core PS/2 mouse -> serial mouse on COM1 | a Commodore 1351 (proportional mode) or an Amiga/Atari ST mouse in joystick port 1; use CTMOUSE or another serial mouse driver in DOS |
 
 Sound Blaster (DSP at 220h, DMA 1) is always present; "Sound Blaster FM"
 only chooses where the FM chip answers. Game Blaster (C/MS) is not exposed.
