@@ -26,8 +26,16 @@ if (-not (Test-Path (Join-Path $sub 'rtl\KFPC-XT\HDL\XT_CE_Generator.sv'))) {
     }
     $sub = Join-Path $d 'CORE\PCXT-EGA_MiSTer'
 }
-$hdl = Join-Path $sub 'rtl\KFPC-XT\HDL'
-$dma = Join-Path $hdl 'KF8237\HDL'
+$hdl     = Join-Path $sub 'rtl\KFPC-XT\HDL'
+$dma     = Join-Path $hdl 'KF8237\HDL'
+$overlay = Join-Path $core 'rtl\overlay'
+
+# Same rule as the build: a file in CORE/rtl/overlay replaces the upstream
+# file with the same basename.
+function Src([string]$dir, [string]$name) {
+    $o = Join-Path $overlay $name
+    if (Test-Path $o) { $o } else { Join-Path $dir $name }
+}
 
 $work = Join-Path $core 'ooc\fdc_dma_8237_tb'
 New-Item -ItemType Directory -Force $work | Out-Null
@@ -35,12 +43,12 @@ Set-Location $work
 
 & "$bin\xvlog.bat" -sv -i $dma `
     "$here\fdc_dma_8237_tb.sv" `
-    "$hdl\XT_CE_Generator.sv" `
-    "$dma\KF8237.sv" `
-    "$dma\KF8237_Bus_Control_Logic.sv" `
-    "$dma\KF8237_Priority_Encoder.sv" `
-    "$dma\KF8237_Address_And_Count_Registers.sv" `
-    "$dma\KF8237_Timing_And_Control.sv" 2>&1 | Select-String -Pattern 'ERROR' | ForEach-Object { $_.Line }
+    (Src $hdl 'XT_CE_Generator.sv') `
+    (Src $dma 'KF8237.sv') `
+    (Src $dma 'KF8237_Bus_Control_Logic.sv') `
+    (Src $dma 'KF8237_Priority_Encoder.sv') `
+    (Src $dma 'KF8237_Address_And_Count_Registers.sv') `
+    (Src $dma 'KF8237_Timing_And_Control.sv') 2>&1 | Select-String -Pattern 'ERROR' | ForEach-Object { $_.Line }
 if ($LASTEXITCODE -ne 0) { Write-Output "RESULT: FAIL (bench does not compile)"; exit 1 }
 
 & "$bin\xelab.bat" -debug off work.fdc_dma_8237_tb -s fdc_dma_8237_sim 2>&1 | Select-String -Pattern 'ERROR' | ForEach-Object { $_.Line }
