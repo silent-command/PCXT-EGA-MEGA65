@@ -110,16 +110,14 @@ constant HELP_1 : string :=
    " MEGA65 port by silent-command, 2026.\n" &
    " Powered by MiSTer2MEGA65.\n\n" &
 
-   " 640 KB, upper memory and 2 MB EMS live\n" &
-   " in HyperRAM. Floppy images (A: and B:)\n" &
-   " and a hard disk image mount from the\n" &
-   " menu; boot from C: with Ctrl+Alt+Del.\n\n" &
-
-   " Submenus: CPU (speed, type), HDMI, Sound\n" &
-   " (Adlib, SB FM, Tandy, speaker), Display\n" &
-   " (monitor, tint), Input (joysticks, write\n" &
-   " protect). Settings are remembered when\n" &
-   " /m2m/m2mcfg exists on the SD card.\n\n" &
+   " 640 KB, upper memory and 2 MB EMS live in\n" &
+   " HyperRAM. Mount a hard disk image under\n" &
+   " Hard Disk, close the menu and press\n" &
+   " Ctrl+Alt+Del (CTRL + MEGA + INS/DEL) to\n" &
+   " boot it. Floppy images mount under Drive\n" &
+   " A and B at any time. Settings are saved\n" &
+   " when the menu closes if /m2m/m2mcfg\n" &
+   " exists on the SD card.\n\n" &
 
    " Cursor right to learn more.       (1 of 3)\n" &
    " Press Space to close the help screen.";
@@ -147,15 +145,19 @@ constant HELP_2 : string :=
 
 constant HELP_3 : string :=
 
-   "\n Files on the SD card\n\n" &
+   "\n Menu and SD card\n\n" &
 
-   " /pcxt/pcxt.rom      PC/XT BIOS (64 KB)\n" &
-   " /pcxt/ega_bios.rom  EGA BIOS   (16 KB)\n" &
-   " /pcxt/xtide.rom     XT-IDE BIOS, optional\n\n" &
+   " CPU: speed, 8086, 286 speedup.\n" &
+   " Sound: Adlib / SB FM, Tandy, SB IRQ 7,\n" &
+   "   speaker volume, boost.\n" &
+   " Display: EGA/CGA/mono monitor, tint.\n" &
+   " Input: joysticks (ports 1 and 2), swap,\n" &
+   "   write-protect A: and B:.\n\n" &
 
-   " Both BIOS files are loaded by the core\n" &
-   " at startup; without them it will not\n" &
-   " start.\n\n\n\n" &
+   " /pcxt/pcxt.rom      PC/XT BIOS with XTIDE\n" &
+   " /pcxt/ega_bios.rom  EGA BIOS (required)\n" &
+   " /pcxt/*.vhd *.img   disk images\n" &
+   " /m2m/m2mcfg         saved settings\n\n" &
 
    " Cursor left to go back.           (3 of 3)\n" &
    " Press Space to close the help screen.";
