@@ -46,7 +46,7 @@ entity main is
 
       -- Video output, clk_video_out_ps_i domain
       video_ce_o              : out std_logic;
-      video_ce_ovl_o          : out std_logic;
+      video_mode13_o          : out std_logic;              -- private 31.5 kHz raster active (clk_card_video, async)
       video_red_o             : out std_logic_vector(7 downto 0);
       video_green_o           : out std_logic_vector(7 downto 0);
       video_blue_o            : out std_logic_vector(7 downto 0);
@@ -259,6 +259,7 @@ architecture synthesis of main is
    signal core_audio_left     : std_logic_vector(15 downto 0);
    signal osm_opl2, osm_speaker, osm_boost, osm_monitor, osm_joy1, osm_joy2, osm_floppy_wp : std_logic_vector(1 downto 0);
    signal osm_display         : std_logic_vector(2 downto 0);
+   signal osm_vga13_tv        : std_logic;
    signal joy0_vec, joy1_vec  : std_logic_vector(13 downto 0);
    signal core_audio_right    : std_logic_vector(15 downto 0);
 
@@ -391,12 +392,16 @@ begin
                     "010" when osm_control_i(59) = '1' else
                     "001" when osm_control_i(58) = '1' else
                     "000";
-   -- Joysticks: lines 66/67 toggles. The MEGA65 sticks are digital, so "on"
+   -- Joysticks: lines 70/71 toggles. The MEGA65 sticks are digital, so "on"
    -- selects the core's digital mode ([0]) and "off" disables the port ([1]).
-   osm_joy1      <= "01" when osm_control_i(66) = '1' else "10";
-   osm_joy2      <= "01" when osm_control_i(67) = '1' else "10";
+   osm_joy1      <= "01" when osm_control_i(70) = '1' else "10";
+   osm_joy2      <= "01" when osm_control_i(71) = '1' else "10";
    -- Floppy write protect: lines 70 (A:) and 71 (B:), status[20:19] = {B, A}
-   osm_floppy_wp <= osm_control_i(71) & osm_control_i(70);
+   osm_floppy_wp <= osm_control_i(75) & osm_control_i(74);
+   -- VGA: lines 62..64 (31 kHz / 15 kHz / 15 kHz + csync). The 15 kHz items also
+   -- select the core's 60 Hz TV raster for mode 13h (status[10]); the analog
+   -- pipeline controls live in mega65.vhd (analog_video_ctl).
+   osm_vga13_tv  <= osm_control_i(63) or osm_control_i(64);
 
    -- MEGA65 joystick ports -> game port: [0] right [1] left [2] down [3] up [4] fire
    joy0_vec <= "000000000" & (not joy_1_fire_n_i) & (not joy_1_up_n_i) & (not joy_1_down_n_i)
@@ -436,7 +441,7 @@ begin
          video_hblank_o            => core_video_hblank,
          video_vblank_o            => core_video_vblank,
          video_de_o                => core_video_de,
-         video_mode13_o            => open,
+         video_mode13_o            => video_mode13_o,
          video_mode13_native_clk_o => open,
          video_mode350_o           => open,
          video_active_dots_o       => open,
@@ -482,14 +487,14 @@ begin
          osm_scandoubler_fx_i      => "00",
          osm_aspect_i              => "00",
          osm_display_i             => osm_display,
-         osm_vga13_tv_i            => '0',
+         osm_vga13_tv_i            => osm_vga13_tv,
          osm_monitor_i             => osm_monitor,
          osm_ems_disable_i         => '0',                  -- 2 MB EMS, page frame D000, pages in HyperRAM
          osm_umb_disable_i         => '0',                  -- UMB C4000-CFFFF (HyperRAM)
          osm_joy1_i                => osm_joy1,
          osm_joy2_i                => osm_joy2,
          osm_joy_sync_i            => '0',
-         osm_joy_swap_i            => osm_control_i(68),
+         osm_joy_swap_i            => osm_control_i(72),
          osm_sb_irq7_i             => osm_control_i(38),
          osm_mpu401_disable_i      => '1',                  -- nothing behind the MPU-401
          osm_floppy_wp_i           => osm_floppy_wp,
@@ -672,9 +677,7 @@ begin
    video_hblank_o <= not core_video_de;
    video_vblank_o <= core_video_vblank;
 
-   -- The framework samples the overlay with video_ce_ovl_o; the core's pixel
-   -- clock enable is the natural choice until the analog path is tuned.
-   video_ce_ovl_o <= video_ce_o;
+   -- video_ce_ovl is produced by analog_video_ctl in mega65.vhd (2x pixel enable).
 
    ---------------------------------------------------------------------------
    -- Keyboard

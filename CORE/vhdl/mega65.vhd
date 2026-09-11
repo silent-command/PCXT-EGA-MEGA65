@@ -270,9 +270,15 @@ constant C_MENU_HDMI_5_4_50    : natural := 24;
 constant C_MENU_HDMI_640_60    : natural := 25;
 constant C_MENU_HDMI_720_5994  : natural := 26;
 constant C_MENU_SVGA_800_60    : natural := 27;
-constant C_MENU_CRT_EMULATION  : natural := 75;
-constant C_MENU_HDMI_ZOOM      : natural := 76;
-constant C_MENU_IMPROVE_AUDIO  : natural := 77;
+constant C_MENU_VGA_15KHZ      : natural := 63;
+constant C_MENU_VGA_15KHZ_CS   : natural := 64;
+constant C_MENU_CRT_EMULATION  : natural := 79;
+constant C_MENU_HDMI_ZOOM      : natural := 80;
+constant C_MENU_IMPROVE_AUDIO  : natural := 81;
+
+-- analog VGA modes (docs/analog-video.md)
+signal main_video_mode13       : std_logic;   -- core's private 31.5 kHz raster active (async)
+signal qnice_vga_15khz         : std_logic;   -- either 15 kHz menu item
 
 -- QNICE clock domain
 signal qnice_demo_vd_data_o   : std_logic_vector(15 downto 0);
@@ -412,7 +418,7 @@ begin
          -- Video output
          -- Raw EGA/CGA/VGA rasters in the clk_57_ps domain, re-timed by the framework's scaler
          video_ce_o           => video_ce_o,
-         video_ce_ovl_o       => video_ce_ovl_o,
+         video_mode13_o       => main_video_mode13,
          video_red_o          => video_red_o,
          video_green_o        => video_green_o,
          video_blue_o         => video_blue_o,
@@ -505,7 +511,21 @@ begin
    -- while in the 4:3 mode we are outputting a 5:4 image. This is kind of odd, but it seemed that our 4/3 aspect ratio
    -- adjusted image looks best on a 5:4 monitor and the other way round.
    -- Not sure if this will stay forever or if we will come up with a better naming convention.
-   qnice_video_mode_o <= C_VIDEO_SVGA_800_60   when qnice_osm_control_i(C_MENU_SVGA_800_60)    = '1' else
+   i_analog_video_ctl : entity work.analog_video_ctl
+      port map (
+         qnice_clk_i         => qnice_clk_i,
+         qnice_vga_15khz_i   => qnice_vga_15khz,
+         qnice_vga_csync_i   => qnice_osm_control_i(C_MENU_VGA_15KHZ_CS),
+         qnice_scandoubler_o => qnice_scandoubler_o,
+         qnice_retro15khz_o  => qnice_retro15kHz_o,
+         qnice_csync_o       => qnice_csync_o,
+         video_clk_i         => clk_57_ps,
+         video_mode13_i      => main_video_mode13,
+         video_ce_ovl_o      => video_ce_ovl_o
+      ); -- i_analog_video_ctl
+   qnice_vga_15khz <= qnice_osm_control_i(C_MENU_VGA_15KHZ) or qnice_osm_control_i(C_MENU_VGA_15KHZ_CS);
+
+   when qnice_osm_control_i(C_MENU_SVGA_800_60)    = '1' else
                          C_VIDEO_HDMI_720_5994 when qnice_osm_control_i(C_MENU_HDMI_720_5994)  = '1' else
                          C_VIDEO_HDMI_640_60   when qnice_osm_control_i(C_MENU_HDMI_640_60)    = '1' else
                          C_VIDEO_HDMI_5_4_50   when qnice_osm_control_i(C_MENU_HDMI_5_4_50)    = '1' else
@@ -516,7 +536,6 @@ begin
    -- Use On-Screen-Menu selections to configure several audio and video settings
    -- Video and audio mode control
    qnice_dvi_o                <= '0';                                         -- 0=HDMI (with sound), 1=DVI (no sound)
-   qnice_scandoubler_o        <= '0';                                         -- no scandoubler
    qnice_audio_mute_o         <= '0';                                         -- audio is not muted
    qnice_audio_filter_o       <= qnice_osm_control_i(C_MENU_IMPROVE_AUDIO);   -- 0 = raw audio, 1 = use filters from globals.vhd
    qnice_zoom_crop_o          <= qnice_osm_control_i(C_MENU_HDMI_ZOOM);       -- 0 = no zoom/crop
@@ -527,8 +546,8 @@ begin
    --    "Standard VGA":                     qnice_retro15kHz_o=0 and qnice_csync_o=0
    --    "Retro 15 kHz with HSync and VSync" qnice_retro15kHz_o=1 and qnice_csync_o=0
    --    "Retro 15 kHz with CSync"           qnice_retro15kHz_o=1 and qnice_csync_o=1
-   qnice_retro15kHz_o         <= '0';
-   qnice_csync_o              <= '0';
+   -- qnice_scandoubler_o, qnice_retro15kHz_o, qnice_csync_o and video_ce_ovl_o
+   -- come from i_analog_video_ctl below (VGA menu group, docs/analog-video.md)
    qnice_osm_cfg_scaling_o    <= (others => '1');
 
    -- ascal filters that are applied while processing the input

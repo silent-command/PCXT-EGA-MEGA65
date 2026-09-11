@@ -18,6 +18,7 @@ options, `C_MENU_*`). Change `config.vhd` and both decoders together.
 | Sound | Boost: None / 2x / 4x | `osm_audio_boost_i` | overall gain |
 | Display | EGA 5154 / CGA 5153 / Mono 5151 | `osm_monitor_i` | monitor the EGA card thinks it drives; applied at reset |
 | Display | Full color / Green / Amber / Black and white | `osm_display_i` | tint |
+| Display | VGA: 31 kHz / 15 kHz / 15 kHz + CSync | framework analog pipeline via `analog_video_ctl` | 31 kHz scandoubles the 200-line modes for VGA monitors (off in mode 13h); 15 kHz is the native raster for CRTs and SCART, also selects the 60 Hz TV raster for mode 13h; 350-line EGA modes stay 21.8 kHz either way. See docs/analog-video.md |
 | Input | Joystick 1 / Joystick 2 | `osm_joy1_i` / `osm_joy2_i` | MEGA65 ports 1 and 2 on the game port at 201h, digital mode |
 | Input | Swap joysticks | `osm_joy_swap_i` | |
 | Input | Write-protect A: / B: | `osm_floppy_wp_i` | in addition to a read-only image |
@@ -28,13 +29,13 @@ only chooses where the FM chip answers. Game Blaster (C/MS) is not exposed.
 ## Remembering settings
 
 The framework saves menu choices to `/m2m/m2mcfg` on the SD card, but only
-if that file already exists and is exactly `OPTM_SIZE` (82) bytes. A file of
-82 bytes of 0xFF means "use the defaults". `sdcard/m2m/m2mcfg` in this repo
+if that file already exists and is exactly `OPTM_SIZE` bytes (see config.vhd;
+the release script generates it). A file of OPTM_SIZE bytes of 0xFF means "use the defaults". `sdcard/m2m/m2mcfg` in this repo
 is that file; copy the `m2m` folder next to `pcxt`. Regenerate it whenever
 the menu changes size:
 
 ```
-cd M2M/tools && ./make_config.sh <path>/m2m/m2mcfg 82
+cd M2M/tools && ./make_config.sh <path>/m2m/m2mcfg auto
 ```
 
 The firmware prints "Config file not found" or "corrupt config file" in the
