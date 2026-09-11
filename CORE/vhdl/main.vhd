@@ -738,7 +738,7 @@ begin
 
    i_mem : entity work.mem_backend
       generic map (
-         G_CACHE => false            -- the framework avm_cache returned more responses than reads on hardware
+         G_CACHE => true             -- framework avm_cache (one line, 8-word bursts); bench-balanced, ~2x read throughput
       )
       port map (
          clk_i               => clk_main_i,
