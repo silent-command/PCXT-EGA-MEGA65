@@ -4,6 +4,9 @@
 # The synth_1 pre-hook (m2m-rom/synth_pre.tcl) rebuilds the QNICE ROM via WSL.
 
 set proj_dir [file normalize [file dirname [info script]]]
+# Pick up sources added to core-files.tcl / add-core-sources.tcl since the last
+# build (idempotent; opens and closes the project itself).
+source [file join $proj_dir add-core-sources.tcl]
 open_project [file join $proj_dir CORE-R6.xpr]
 
 set jobs 16
