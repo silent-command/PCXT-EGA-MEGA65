@@ -525,7 +525,7 @@ begin
       ); -- i_analog_video_ctl
    qnice_vga_15khz <= qnice_osm_control_i(C_MENU_VGA_15KHZ) or qnice_osm_control_i(C_MENU_VGA_15KHZ_CS);
 
-   when qnice_osm_control_i(C_MENU_SVGA_800_60)    = '1' else
+   qnice_video_mode_o <= C_VIDEO_SVGA_800_60   when qnice_osm_control_i(C_MENU_SVGA_800_60)    = '1' else
                          C_VIDEO_HDMI_720_5994 when qnice_osm_control_i(C_MENU_HDMI_720_5994)  = '1' else
                          C_VIDEO_HDMI_640_60   when qnice_osm_control_i(C_MENU_HDMI_640_60)    = '1' else
                          C_VIDEO_HDMI_5_4_50   when qnice_osm_control_i(C_MENU_HDMI_5_4_50)    = '1' else
