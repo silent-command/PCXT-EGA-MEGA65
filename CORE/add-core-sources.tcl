@@ -21,9 +21,10 @@ proc add_if_missing {files} {
         set n [file normalize $f]
         # an overlay (same basename, other directory) replaces the upstream file
         foreach d [get_files -quiet "*/[file tail $n]"] {
-            if {[file normalize $d] ne $n} {
-                remove_files $d
-                puts "PROJECT: replaced [file normalize $d]"
+            set dn [file normalize $d]
+            if {$dn ne $n} {
+                puts "PROJECT: replacing $dn"
+                remove_files [get_files $dn]
             }
         }
         if {[llength [get_files -quiet $n]] == 0} {
