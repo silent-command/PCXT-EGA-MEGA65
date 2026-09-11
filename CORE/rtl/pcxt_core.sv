@@ -1210,7 +1210,10 @@ module pcxt_core
     // card, so track it: otherwise the equipment word claims CGA and software that
     // trusts it, such as Titus The Fox, picks the CGA path and renders nothing.
     assign  sw_base = {ega_video_switches, 4'b1101};
-    assign  sw_floppy = fdd_present[1] ? 2'b01 : 2'b00;
+    // MEGA65: always report two floppy drives. The BIOS reads the switches at
+    // POST only, so a Drive B image mounted later would otherwise become the
+    // single-drive "insert diskette in drive B" alias of A: (as on MiSTer).
+    assign  sw_floppy = 2'b01;
     assign  sw = {sw_floppy, sw_base}; // DIP switches (video adapter and floppy count)
     assign  port_c_in[3:0] = port_b_out[3] ? sw[7:4] : sw[3:0];
 
