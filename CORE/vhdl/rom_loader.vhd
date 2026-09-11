@@ -7,7 +7,12 @@
 -- writes the byte to 0x7000 + (byte_offset mod 4096). From the device's side
 -- that is one qnice_dev_we strobe per byte with the linear byte offset on
 -- qnice_dev_addr and the byte in the low half of qnice_dev_data. There is no
--- end-of-file signal.
+-- end-of-file signal and the auto-loader never tells the device the file
+-- size (the CSR protocol in 4k window 0xFFFF - status, file size - is only
+-- used for manually loaded ROMs, which this core has none of); writes into
+-- that window are ignored here so that they can never be mistaken for data.
+-- Any file size up to 32 MB streams through unchanged (25-bit byte offset);
+-- mem_backend.vhd decides where a 32/64/96/128 KB pcxt.rom lands.
 --
 -- The PCXT-EGA core's BIOS loader (kept unchanged inside pcxt_core.sv) wants
 -- the MiSTer hps_io ioctl protocol instead: 16-bit little-endian words, one
@@ -82,6 +87,7 @@ architecture rtl of rom_loader is
 
    -- QNICE side
    signal q_selected    : std_logic;
+   signal q_csr         : std_logic;                       -- access to the CRT/ROM control window (0xFFFF)
    signal q_index       : std_logic_vector(7 downto 0);
    signal q_low_byte    : std_logic_vector(7 downto 0);
    signal q_word        : std_logic_vector(15 downto 0);
@@ -121,6 +127,9 @@ begin
                  C_IDX_EGA   when qnice_dev_id_i = G_DEV_EGA   else
                  C_IDX_XTIDE;
 
+   -- M2M CRTROM_CSR_4KWIN: status / file size from the firmware, not ROM data
+   q_csr      <= '1' when qnice_dev_addr_i(27 downto 12) = x"FFFF" else '0';
+
    q_pending  <= q_req_toggle xor q_ack_toggle;
 
    -- Wait while a word is pending, whenever this device is selected (like the
@@ -131,7 +140,7 @@ begin
    p_qnice : process (qnice_clk_i)
    begin
       if rising_edge(qnice_clk_i) then
-         if q_selected = '1' and qnice_dev_ce_i = '1' and qnice_dev_we_i = '1' and q_pending = '0' then
+         if q_selected = '1' and q_csr = '0' and qnice_dev_ce_i = '1' and qnice_dev_we_i = '1' and q_pending = '0' then
             if qnice_dev_addr_i(0) = '0' then
                q_low_byte <= qnice_dev_data_i(7 downto 0);
             else
