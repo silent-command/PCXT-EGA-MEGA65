@@ -403,7 +403,8 @@ begin
    -- VGA: lines 62..64 (31 kHz / 15 kHz / 15 kHz + csync). The 15 kHz items also
    -- select the core's 60 Hz TV raster for mode 13h (status[10]); the analog
    -- pipeline controls live in mega65.vhd (analog_video_ctl).
-constant OPTM_GROUPS       : OPTM_GTYPE := (   -- Mouse: lines 77..79 (off / C1351 / Amiga) on joystick port 1
+   osm_vga13_tv  <= osm_control_i(63) or osm_control_i(64);
+   -- Mouse: lines 77..79 (off / C1351 / Amiga) on joystick port 1
    osm_mouse     <= "10" when osm_control_i(79) = '1' else
                     "01" when osm_control_i(78) = '1' else
                     "00";
