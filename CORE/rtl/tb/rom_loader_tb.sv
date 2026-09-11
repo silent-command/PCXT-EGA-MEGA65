@@ -4,8 +4,13 @@
 // consecutive addresses, ce/we held while wait is high, device id set before
 // the data write) and the core's ROM port (rom_wait: high for a few clocks
 // after rom_download rises, high for ~172 clocks after each accepted word).
-// Checks that every byte pair arrives once, in order, at the right word
-// address, and that the firmware side never stalls for long.
+// Checks that every byte pair arrives once, in order, with the right index,
+// word address and data, and that the firmware side never stalls for long.
+//
+// Streams: pcxt.rom segments at the start, across the 64 KB boundary and at
+// the end of a 128 KB file (word addresses up to 1FFFE), then the EGA and
+// XT-IDE devices, with M2M CRTROM CSR-window writes (status / file size in
+// 4k window 0xFFFF) sprinkled in, which must never produce a word.
 //
 // Run with run_rom_loader_tb.ps1 (xsim, mixed language).
 `timescale 1ns / 1ps
@@ -44,13 +49,20 @@ module rom_loader_tb;
     );
 
     //------------------------------------------------------------------------
+    // Expected words, in order (pushed by the stimulus when it writes the
+    // odd byte of a pair)
+    //------------------------------------------------------------------------
+    logic [7:0]  exp_idx_q[$];
+    logic [24:0] exp_addr_q[$];
+    logic [15:0] exp_data_q[$];
+    integer      words_sent = 0;
+
+    //------------------------------------------------------------------------
     // Core ROM port model (from the wrapper's loader FSM behaviour)
     //------------------------------------------------------------------------
     integer busy = 0;
     logic   download_d = 0;
     integer words_rx = 0, errors = 0;
-    logic [15:0] expect_word = 16'h0000;
-    logic [24:0] expect_addr = 25'd0;
 
     always @(posedge core_clk) begin
         download_d <= rom_download;
@@ -58,13 +70,20 @@ module rom_loader_tb;
         else if (rom_wr) begin
             busy <= 172;                                       // per-word write cycle
             words_rx <= words_rx + 1;
-            if (rom_addr !== expect_addr || rom_data !== expect_word) begin
+            if (exp_addr_q.size() == 0) begin
                 errors <= errors + 1;
-                $display("%0t ERROR word %0d: got addr=%0h data=%04h, expected addr=%0h data=%04h",
-                         $time, words_rx, rom_addr, rom_data, expect_addr, expect_word);
+                $display("%0t ERROR word %0d: unexpected word idx=%02h addr=%0h data=%04h (nothing pending)",
+                         $time, words_rx, rom_index, rom_addr, rom_data);
             end
-            expect_addr  <= expect_addr + 2;
-            expect_word  <= expect_word + 16'h0101;
+            else if (rom_index !== exp_idx_q[0] || rom_addr !== exp_addr_q[0] || rom_data !== exp_data_q[0]) begin
+                errors <= errors + 1;
+                $display("%0t ERROR word %0d: got idx=%02h addr=%0h data=%04h, expected idx=%02h addr=%0h data=%04h",
+                         $time, words_rx, rom_index, rom_addr, rom_data, exp_idx_q[0], exp_addr_q[0], exp_data_q[0]);
+                void'(exp_idx_q.pop_front()); void'(exp_addr_q.pop_front()); void'(exp_data_q.pop_front());
+            end
+            else begin
+                void'(exp_idx_q.pop_front()); void'(exp_addr_q.pop_front()); void'(exp_data_q.pop_front());
+            end
         end
         else if (busy > 0) busy <= busy - 1;
         rom_wait <= (busy > 0) || (rom_download & ~download_d);
@@ -97,23 +116,66 @@ module rom_loader_tb;
         end
     endtask
 
+    // deterministic file content: word at byte offset k (even) of device id
+    function automatic [15:0] pat(input [15:0] id, input [27:0] k);
+        pat = 16'h0101 * k[16:1] + {id[3:0], id[3:0], 8'h00} + {4'h0, k[24:17], 4'h0};
+    endfunction
+
+    // stream file bytes [first, last] of device id (both even/odd boundaries expected)
+    task automatic stream(input [15:0] id, input [7:0] idx, input [27:0] first, input [27:0] last);
+        logic [15:0] w;
+        for (int unsigned k = first; k <= last; k++) begin
+            w = pat(id, k & ~28'd1);
+            if (k & 1) begin
+                exp_idx_q.push_back(idx);
+                exp_addr_q.push_back(k & ~28'd1);
+                exp_data_q.push_back(w);
+                words_sent = words_sent + 1;
+                qnice_write(id, k, {8'h00, w[15:8]});
+            end
+            else
+                qnice_write(id, k, {8'h00, w[7:0]});
+        end
+    endtask
+
+    // M2M CRTROM_CSR_W: 4k window 0xFFFF, register offset, value
+    task automatic csr_write(input [15:0] id, input [11:0] reg_off, input [15:0] value);
+        qnice_write(id, {16'hFFFF, reg_off}, value);
+    endtask
+
+    integer rx_before;
+
     initial begin
         repeat (5) @(posedge qnice_clk);
         qnice_rst = 1'b0;
         core_rst  = 1'b0;
         repeat (20) @(posedge qnice_clk);
 
-        // 512 bytes of "ROM": byte k = low/high of word (k/2)*0x0101
-        for (int k = 0; k < 512; k++) begin
-            logic [15:0] w = 16'h0101 * (k / 2);
-            qnice_write(16'h0110, k, (k & 1) ? {8'h00, w[15:8]} : {8'h00, w[7:0]});
-        end
+        // the manual-load protocol writes "loading" first; must not become a low byte
+        csr_write(16'h0110, 12'h000, 16'h0001);
+
+        // pcxt.rom: 512 bytes at the start, 32 bytes across the 64 KB boundary,
+        // 512 bytes at the end of a 128 KB file
+        stream(16'h0110, 8'h00, 28'h00000, 28'h001FF);
+        stream(16'h0110, 8'h00, 28'h0FFF0, 28'h1000F);
+        stream(16'h0110, 8'h00, 28'h1FE00, 28'h1FFFF);
+
+        // file size + status OK (manual-load protocol): no words
+        rx_before = words_sent;
+        csr_write(16'h0110, 12'h001, 16'h0000);
+        csr_write(16'h0110, 12'h002, 16'h0002);
+        csr_write(16'h0110, 12'h000, 16'h0003);
+
+        // EGA and XT-IDE devices: index 3 and 2
+        stream(16'h0111, 8'h03, 28'h00000, 28'h0003F);
+        stream(16'h0112, 8'h02, 28'h00000, 28'h0003F);
+        csr_write(16'h0112, 12'h000, 16'h0003);
 
         // wait for the last word to be delivered
         repeat (1000) @(posedge core_clk);
-        $display("words delivered=%0d (expected 256), errors=%0d, max QNICE stall=%0d cycles, dropped=%0d, download=%0d",
-                 words_rx, errors, max_stall, dut.c_words_drop, rom_download);
-        if (words_rx == 256 && errors == 0 && dut.c_words_drop == 0) $display("RESULT: PASS");
+        $display("words delivered=%0d (expected %0d), errors=%0d, pending=%0d, max QNICE stall=%0d cycles, dropped=%0d, download=%0d",
+                 words_rx, words_sent, errors, exp_addr_q.size(), max_stall, dut.c_words_drop, rom_download);
+        if (words_rx == words_sent && errors == 0 && exp_addr_q.size() == 0 && dut.c_words_drop == 0) $display("RESULT: PASS");
         else $display("RESULT: FAIL");
         $finish;
     end

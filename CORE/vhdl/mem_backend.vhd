@@ -13,10 +13,27 @@
 --   0C4000-0CFFFF   48 KB UMB                   HyperRAM
 --   0D0000-0DFFFF   64 KB EMS page frame        (never presented: the chipset
 --                                               maps it to the pages below)
---   0EC000-0EFFFF   16 KB XT-IDE BIOS           block RAM, ROM-written
---   0F0000-0FFFFF   64 KB PC/XT BIOS            block RAM, ROM-written
+--   0E0000-0FFFFF  128 KB system BIOS window    block RAM, ROM-written (pcxt.rom)
+--   0EC000-0EFFFF   16 KB XT-IDE BIOS           block RAM, ROM-written (xtide.rom, if loaded:
+--                                               it wins over pcxt.rom in this range)
 --   200000-3FFFFF    2 MB EMS pages             HyperRAM
 --   anything else reads FF and ignores writes.
+--
+-- pcxt.rom placement: the image is stored by file offset (bios_ram(0) = file
+-- byte 0) and placed so that its last byte sits at FFFFF: a 64 KB file at
+-- F0000, 32 KB at F8000, 96 KB at E8000, 128 KB at E0000 (a longer file is
+-- cut to its first 128 KB). The firmware streams the file without telling the
+-- device its size, so the size is the highest word offset written so far plus
+-- one word; a write of word 0 starts a new image. One exception mirrors what
+-- MiSTer does with the 128 KB flash images of skiselev/8088_bios (XTIDE at
+-- offset 0, BIOS body at A000-FFFF, upper half all FF): a 128 KB image whose
+-- upper half holds nothing but FFFF words is treated as the 64 KB image in
+-- its lower half, i.e. file byte 0 lands at F0000 and E0000-EFFFF read FF.
+-- Bytes of the window below the image read FF. The window is read-only on
+-- the Avalon side: the core's loader FSM writes each word a second time at
+-- F0000 + file offset, which is the wrong place for anything but a 64 KB
+-- image, and the chipset (RAM.sv write_protect) never lets CPU writes through
+-- anyway. The EGA and XT-IDE windows keep accepting Avalon writes as before.
 --
 -- HyperRAM: word (16-bit) addressed, 4 M words. The framework's scaler owns
 -- the bottom (RAMBASE 0, 2 MB for 720x576), so the PC lives at word
@@ -39,7 +56,9 @@
 -- offered to the cache while hr_rst_i is high.
 --
 -- ROM port: as in mem_bram.vhd, the BIOS images are written here directly
--- from rom_loader.vhd (the core's own loader FSM drops the odd word).
+-- from rom_loader.vhd (the core's own loader FSM drops the odd word). Each
+-- window takes the first bytes of its file (128 KB / 16 KB / 16 KB); words
+-- beyond that are dropped instead of wrapping.
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 -------------------------------------------------------------------------------------------------------------
@@ -52,7 +71,8 @@ entity mem_backend is
    generic (
       G_HR_BASE           : unsigned(31 downto 0) := x"00200000";  -- HyperRAM word address of XT byte 0
       G_CACHE             : boolean := true;                     -- avm_cache line in front of the HyperRAM
-      G_CACHE_SIZE        : natural := 8                         -- words per line
+      G_CACHE_SIZE        : natural := 8;                        -- words per line
+      G_BIST              : boolean := true                      -- HyperRAM self test after reset (the bench turns it off)
    );
    port (
       clk_i               : in  std_logic;                       -- chipset clock, byte bus domain
@@ -67,8 +87,8 @@ entity mem_backend is
       avm_readdatavalid_o : out std_logic;
       avm_waitrequest_o   : out std_logic;
 
-      -- ROM download port (rom_loader.vhd, clk_i): index 0 = PC/XT BIOS at
-      -- F0000, 2 = XT-IDE at EC000, 3 = EGA BIOS at C0000
+      -- ROM download port (rom_loader.vhd, clk_i): index 0 = PC/XT BIOS
+      -- (E0000-FFFFF, top-aligned), 2 = XT-IDE at EC000, 3 = EGA BIOS at C0000
       rom_wr_i            : in  std_logic := '0';
       rom_index_i         : in  std_logic_vector(7 downto 0) := (others => '0');
       rom_addr_i          : in  std_logic_vector(24 downto 0) := (others => '0');
@@ -99,12 +119,12 @@ architecture rtl of mem_backend is
    ---------------------------------------------------------------------------
    -- ROM windows in block RAM
    ---------------------------------------------------------------------------
-   type ram64k_t  is array (0 to 65535)  of std_logic_vector(7 downto 0);
+   type ram128k_t is array (0 to 131071) of std_logic_vector(7 downto 0);
    type ram16k_t  is array (0 to 16383)  of std_logic_vector(7 downto 0);
 
    signal ega_ram   : ram16k_t;
    signal xtide_ram : ram16k_t;
-   signal bios_ram  : ram64k_t;
+   signal bios_ram  : ram128k_t;      -- pcxt.rom by file offset
 
    attribute ram_style : string;
    attribute ram_style of ega_ram   : signal is "block";
@@ -126,13 +146,24 @@ architecture rtl of mem_backend is
    signal none_q    : std_logic;
    signal rom_valid_q : std_logic;
 
+   -- pcxt.rom placement (see header): the image ends at FFFFF
+   signal pcxt_last  : unsigned(15 downto 0) := (others => '0');   -- highest word offset written since word 0
+   signal pcxt_top   : std_logic := '0';   -- a word other than FFFF was written at file offset >= 64 KB
+   signal pcxt_seen  : std_logic := '0';   -- some pcxt.rom word has been written
+   signal xtide_seen : std_logic := '0';   -- some xtide.rom word has been written: EC000-EFFFF is its window
+   signal bios_base  : unsigned(16 downto 0) := (others => '1');   -- window offset (from E0000) of file byte 0
+   signal bios_off   : unsigned(16 downto 0);   -- window offset - bios_base = file offset (read address)
+   signal bios_ok    : std_logic;               -- the byte is inside the image
+   signal bios_ok_q  : std_logic;
+
    -- ROM port: two byte writes per word
    signal rom_phase : std_logic_vector(1 downto 0) := "00";
-   signal rom_a     : unsigned(15 downto 0) := (others => '0');
+   signal rom_a     : unsigned(16 downto 0) := (others => '0');
    signal rom_d     : std_logic_vector(15 downto 0) := (others => '0');
    signal rom_idx   : std_logic_vector(7 downto 0) := (others => '0');
+   signal rom_fits  : std_logic;                -- the word is inside its window's file-size limit
    signal rom_we    : std_logic;
-   signal rom_wa    : unsigned(15 downto 0);
+   signal rom_wa    : unsigned(16 downto 0);
    signal rom_wd    : std_logic_vector(7 downto 0);
    signal rom_ega   : std_logic;
    signal rom_xtide : std_logic;
@@ -141,7 +172,7 @@ architecture rtl of mem_backend is
    signal we_ega, we_xtide, we_bios : std_logic;
    signal wa_ega    : unsigned(13 downto 0);
    signal wa_xtide  : unsigned(13 downto 0);
-   signal wa_bios   : unsigned(15 downto 0);
+   signal wa_bios   : unsigned(16 downto 0);
    signal wd_ega, wd_xtide, wd_bios : std_logic_vector(7 downto 0);
 
    ---------------------------------------------------------------------------
@@ -219,9 +250,13 @@ begin
    ---------------------------------------------------------------------------
    addr      <= unsigned(avm_address_i);
    sel_ega   <= '1' when addr(21 downto 14) = "00110000" else '0';   -- C0000-C3FFF
-   sel_xtide <= '1' when addr(21 downto 14) = "00111011" else '0';   -- EC000-EFFFF
-   sel_bios  <= '1' when addr(21 downto 16) = "001111"   else '0';   -- F0000-FFFFF
+   sel_xtide <= '1' when addr(21 downto 14) = "00111011" and xtide_seen = '1' else '0';   -- EC000-EFFFF, xtide.rom loaded
+   sel_bios  <= '1' when addr(21 downto 17) = "00111" and sel_xtide = '0' else '0';       -- E0000-FFFFF otherwise
    sel_rom   <= sel_ega or sel_xtide or sel_bios;
+
+   -- where in the image a BIOS-window byte is, and whether the image covers it
+   bios_off  <= addr(16 downto 0) - bios_base;
+   bios_ok   <= '1' when pcxt_seen = '1' and addr(16 downto 0) >= bios_base else '0';
    -- conventional (0-9FFFF), UMB (C4000-CFFFF), EMS pages (200000-3FFFFF)
    sel_hyper <= '1' when sel_rom = '0' and
                         (addr(21 downto 17) < "00101" or                       -- 000000-09FFFF
@@ -255,11 +290,17 @@ begin
    ---------------------------------------------------------------------------
    -- ROM port sequencer and block RAMs
    ---------------------------------------------------------------------------
+   -- words past a window's size (128 KB BIOS, 16 KB EGA / XT-IDE) are dropped
+   rom_fits  <= '1' when (rom_index_i(5 downto 0) = "000000" and rom_addr_i(24 downto 17) = "00000000") or
+                         (rom_index_i = x"02"                 and rom_addr_i(24 downto 14) = "00000000000") or
+                         (rom_index_i(5 downto 0) = "000011" and rom_addr_i(24 downto 14) = "00000000000")
+                else '0';
+
    p_rom : process (clk_i)
    begin
       if rising_edge(clk_i) then
-         if rom_wr_i = '1' then
-            rom_a     <= unsigned(rom_addr_i(15 downto 0));
+         if rom_wr_i = '1' and rom_fits = '1' then
+            rom_a     <= unsigned(rom_addr_i(16 downto 0));
             rom_d     <= rom_data_i;
             rom_idx   <= rom_index_i;
             rom_phase <= "01";
@@ -281,6 +322,42 @@ begin
    rom_xtide <= '1' when rom_idx = x"02" else '0';
    rom_ega   <= '1' when rom_idx(5 downto 0) = "000011" else '0';
 
+   -- pcxt.rom placement: size and "upper half blank" tracked per word as it
+   -- streams in, the window offset of file byte 0 derived from them. Word 0
+   -- starts a new image. Not reset: the image survives a core reset, so its
+   -- placement must too (rst_i is the cold reset, before any ROM is loaded).
+   p_place : process (clk_i)
+      variable v_word : unsigned(15 downto 0);
+   begin
+      if rising_edge(clk_i) then
+         if rom_wr_i = '1' and rom_index_i(5 downto 0) = "000000" and rom_addr_i(24 downto 17) = "00000000" then
+            v_word    := unsigned(rom_addr_i(16 downto 1));
+            pcxt_seen <= '1';
+            if v_word = 0 then
+               pcxt_last <= (others => '0');
+               pcxt_top  <= '0';
+            else
+               if v_word > pcxt_last then
+                  pcxt_last <= v_word;
+               end if;
+               if rom_addr_i(16) = '1' and rom_data_i /= x"FFFF" then
+                  pcxt_top <= '1';
+               end if;
+            end if;
+         end if;
+         if rom_wr_i = '1' and rom_index_i = x"02" then
+            xtide_seen <= '1';
+         end if;
+         -- base = 20000h - 2 * (pcxt_last + 1) = 2 * not pcxt_last; a 128 KB
+         -- image with a blank upper half is its lower 64 KB at F0000
+         if pcxt_last(15) = '1' and pcxt_top = '0' then
+            bios_base <= '1' & x"0000";
+         else
+            bios_base <= (not pcxt_last) & '0';
+         end if;
+      end if;
+   end process;
+
    we_ega   <= (rom_we and rom_ega)   or (rom_accept and avm_write_i and sel_ega);
    wa_ega   <= rom_wa(13 downto 0) when (rom_we and rom_ega) = '1' else addr(13 downto 0);
    wd_ega   <= rom_wd when (rom_we and rom_ega) = '1' else avm_writedata_i;
@@ -289,9 +366,10 @@ begin
    wa_xtide <= rom_wa(13 downto 0) when (rom_we and rom_xtide) = '1' else addr(13 downto 0);
    wd_xtide <= rom_wd when (rom_we and rom_xtide) = '1' else avm_writedata_i;
 
-   we_bios  <= (rom_we and rom_bios)  or (rom_accept and avm_write_i and sel_bios);
-   wa_bios  <= rom_wa when (rom_we and rom_bios) = '1' else addr(15 downto 0);
-   wd_bios  <= rom_wd when (rom_we and rom_bios) = '1' else avm_writedata_i;
+   -- BIOS window: ROM port only (Avalon writes are accepted and dropped, see header)
+   we_bios  <= rom_we and rom_bios;
+   wa_bios  <= rom_wa;
+   wd_bios  <= rom_wd;
 
    p_ega : process (clk_i)
    begin
@@ -319,7 +397,7 @@ begin
          if we_bios = '1' then
             bios_ram(to_integer(wa_bios)) <= wd_bios;
          end if;
-         q_bios <= bios_ram(to_integer(addr(15 downto 0)));
+         q_bios <= bios_ram(to_integer(bios_off));
       end if;
    end process;
 
@@ -395,7 +473,11 @@ begin
                null;
          end case;
          if rst_all = '1' then
-            bist_state <= B_WAIT;
+            if G_BIST then
+               bist_state <= B_WAIT;
+            else
+               bist_state <= B_DONE;
+            end if;
             bist_wait  <= (others => '0');
             bist_err   <= (others => '0');
          end if;
@@ -424,6 +506,7 @@ begin
          if s_readdatavalid = '1'                 then dbg_hrv <= dbg_hrv + 1; end if;
          none_q      <= none_accept and avm_read_i;
          sel_q       <= sel_bios & sel_xtide & sel_ega;
+         bios_ok_q   <= bios_ok;
 
          if rst_all = '1' then
             out_count   <= 0;
@@ -441,8 +524,8 @@ begin
    avm_readdatavalid_o <= rom_valid_q or none_q or (s_readdatavalid and not bist_active);
    avm_readdata_o <= q_ega   when rom_valid_q = '1' and sel_q(0) = '1' else
                      q_xtide when rom_valid_q = '1' and sel_q(1) = '1' else
-                     q_bios  when rom_valid_q = '1' and sel_q(2) = '1' else
-                     x"FF"   when none_q = '1' else
+                     q_bios  when rom_valid_q = '1' and sel_q(2) = '1' and bios_ok_q = '1' else
+                     x"FF"   when none_q = '1' or rom_valid_q = '1' else   -- window byte outside the image
                      s_readdata(15 downto 8) when out_count > 0 and out_lsb(out_count-1) = '1' else
                      s_readdata(7 downto 0);
 

@@ -13,8 +13,10 @@
 --
 -- Clocks: byte bus 50 MHz, HyperRAM side 100 MHz with an unrelated phase.
 --
--- Tests per copy: 0 reset ordering (hr_rst_i vs rst_i), 1 ROM port + ROM windows,
--- 2 HyperRAM regions, 3 ordering rules, 4 sequential fetch with latency measurement,
+-- Tests per copy: 0 reset ordering (hr_rst_i vs rst_i), 1a pcxt.rom placement in the
+-- E0000-FFFFF window (32/96/128 KB images, the blank-upper-half rule, xtide.rom precedence,
+-- Avalon writes dropped), 1 ROM port + ROM windows, 2 HyperRAM regions, 3 ordering rules,
+-- 4 sequential fetch with latency measurement,
 -- 5 random traffic against a reference array. After every test the response balance is
 -- checked: reads accepted on the byte side = readdatavalids from the FIFO, reads the
 -- cache accepted = readdatavalids it produced, and the other masters got exactly one beat
@@ -664,7 +666,8 @@ begin
       generic map (
          G_HR_BASE    => to_unsigned(C_HR_BASE, 32),
          G_CACHE      => G_CACHE,
-         G_CACHE_SIZE => 8
+         G_CACHE_SIZE => 8,
+         G_BIST       => false   -- the self test holds the bus for ~80k clocks after every reset (24ed65a); not under test here
       )
       port map (
          clk_i               => clk_i,
@@ -994,8 +997,7 @@ begin
       function is_rom(a : natural) return boolean is
       begin
          return (a >= 16#C0000# and a < 16#C4000#) or
-                (a >= 16#EC000# and a < 16#F0000#) or
-                (a >= 16#F0000# and a < 16#100000#);
+                (a >= 16#E0000# and a < 16#100000#);
       end function;
 
       function is_hyper(a : natural) return boolean is
@@ -1071,6 +1073,48 @@ begin
       variable idx0, idx1     : natural;
       variable c_w, c_r       : natural;
       variable e0             : natural;
+
+      -- pcxt.rom image model, mirroring the DUT's placement rule (mem_backend.vhd header):
+      -- stored by file offset, placed so that it ends at FFFFF, a 128 KB image with a blank
+      -- upper half is its lower 64 KB at F0000; a separate xtide.rom owns EC000-EFFFF once seen
+      type img_t is array (0 to 131071) of integer range -1 to 255;
+      variable img      : img_t := (others => -1);
+      variable img_last : natural := 0;       -- highest word offset since word 0
+      variable img_top  : boolean := false;   -- non-FFFF word at offset >= 64 KB
+      variable img_seen : boolean := false;
+      variable xt_seen  : boolean := false;
+
+      impure function img_base return natural is
+      begin
+         if img_last >= 16#8000# and not img_top then
+            return 16#10000#;
+         else
+            return 16#20000# - 2 * (img_last + 1);
+         end if;
+      end function;
+
+      impure function is_rom_writable(a : natural) return boolean is
+      begin
+         return (a >= 16#C0000# and a < 16#C4000#) or
+                (a >= 16#EC000# and a < 16#F0000# and xt_seen);
+      end function;
+
+      -- expected read data: the BIOS window is computed from the image model, the rest is ref
+      impure function expect(a : natural) return integer is
+         variable o : natural;
+      begin
+         if a >= 16#E0000# and a < 16#100000# and not (a >= 16#EC000# and a < 16#F0000# and xt_seen) then
+            if not img_seen then
+               return 16#FF#;
+            end if;
+            o := a - 16#E0000#;
+            if o < img_base then
+               return 16#FF#;
+            end if;
+            return img(o - img_base);
+         end if;
+         return ref(a);
+      end function;
 
       procedure msg(s : string) is
       begin
@@ -1239,7 +1283,7 @@ begin
          avm_write <= '0';
          if accepted then
             last_accept := cyc;
-            if is_hyper(a) or is_rom(a) then
+            if is_hyper(a) or is_rom_writable(a) then
                ref(a) := d;
             end if;
             if is_hyper(a) then
@@ -1278,7 +1322,7 @@ begin
                    " wait clocks, " & integer'image(exp_tail - exp_head) & " outstanding, hr_rd=" &
                    integer'image(mon_rd_count) & " beats=" & integer'image(mon_beats));
             end if;
-            exp_q(exp_tail mod 256) := (addr => a, data => ref(a), issue => cyc);
+            exp_q(exp_tail mod 256) := (addr => a, data => expect(a), issue => cyc);
             exp_tail := exp_tail + 1;
             if is_hyper(a) then
                hyper_reads := hyper_reads + 1;
@@ -1319,9 +1363,35 @@ begin
          tick;
          rom_wr    <= '0';
          idle(gap);
-         if rom_base(idx) < 16#100000# then
-            ref(rom_base(idx) + a)     := w mod 256;
-            ref(rom_base(idx) + a + 1) := w / 256;
+         -- model: the DUT keeps the first 128 KB / 16 KB / 16 KB of a file and drops the rest
+         if idx mod 64 = 0 then
+            if a < 16#20000# then
+               img(a)     := w mod 256;
+               img(a + 1) := w / 256;
+               img_seen   := true;
+               if a / 2 = 0 then
+                  img_last := 0;
+                  img_top  := false;
+               else
+                  if a / 2 > img_last then
+                     img_last := a / 2;
+                  end if;
+                  if a >= 16#10000# and w /= 16#FFFF# then
+                     img_top := true;
+                  end if;
+               end if;
+            end if;
+         elsif idx = 2 then
+            xt_seen := true;
+            if a < 16#4000# then
+               ref(16#EC000# + a)     := w mod 256;
+               ref(16#EC000# + a + 1) := w / 256;
+            end if;
+         elsif idx mod 64 = 3 then
+            if a < 16#4000# then
+               ref(16#C0000# + a)     := w mod 256;
+               ref(16#C0000# + a + 1) := w / 256;
+            end if;
          end if;
       end procedure;
 
@@ -1484,6 +1554,119 @@ begin
       balance_start;
 
       ------------------------------------------------------------------------
+      -- 1a. pcxt.rom placement in the E0000-FFFFF window. Runs before T1 loads
+      --     xtide.rom, which is sticky and owns EC000-EFFFF from then on.
+      ------------------------------------------------------------------------
+      msg("T1a BIOS image placement");
+      c_w := mon_wr_count;
+      c_r := mon_rd_count;
+      -- nothing loaded yet: the whole window reads FF
+      read_wait(16#E0000#);
+      read_wait(16#F0000#);
+      read_wait(16#FFFFF#);
+      -- (a) 32 KB image: top-aligned at F8000, below it FF
+      for w in 0 to 7 loop
+         rom_word(0, 2 * w, rom_pat(0, 2 * w));
+      end loop;
+      rom_word(0, 16#7FFE#, rom_pat(0, 16#7FFE#));
+      idle(4);
+      for b in 0 to 15 loop
+         bus_read(16#F8000# + b);
+      end loop;
+      bus_read(16#FFFFE#);
+      bus_read(16#FFFFF#);
+      bus_read(16#F7FFF#);
+      bus_read(16#F0000#);
+      bus_read(16#E0000#);
+      bus_read(16#EC000#);
+      wait_done;
+      -- Avalon writes into the BIOS window are dropped
+      bus_write(16#F8000#, 16#5A#);
+      bus_write(16#FFFFF#, 16#C3#);
+      read_wait(16#F8000#);
+      read_wait(16#FFFFF#);
+      -- (b) 128 KB image whose upper half is blank (skiselev 8088_bios flash layout): lower half at F0000
+      for w in 0 to 7 loop
+         rom_word(0, 2 * w, rom_pat(0, 2 * w));
+      end loop;
+      rom_word(0, 16#BFFE#, rom_pat(0, 16#BFFE#));
+      rom_word(0, 16#FFFE#, rom_pat(0, 16#FFFE#));
+      rom_word(0, 16#10000#, 16#FFFF#);
+      rom_word(0, 16#18000#, 16#FFFF#);
+      rom_word(0, 16#1FFFE#, 16#FFFF#);
+      idle(4);
+      for b in 0 to 15 loop
+         bus_read(16#F0000# + b);
+      end loop;
+      bus_read(16#FBFFE#);
+      bus_read(16#FFFFE#);
+      bus_read(16#FFFFF#);
+      bus_read(16#E0000#);
+      bus_read(16#EBFFF#);
+      bus_read(16#EC000#);
+      bus_read(16#EFFFF#);
+      wait_done;
+      -- (c) the upper half gets content: the image is 128 KB at E0000, EC000 comes from it (no xtide.rom)
+      rom_word(0, 16#1FFF0#, 16#1234#);
+      rom_word(0, 16#C000#, 16#55AA#);
+      idle(4);
+      for b in 0 to 15 loop
+         bus_read(16#E0000# + b);
+      end loop;
+      bus_read(16#EBFFE#);
+      bus_read(16#EBFFF#);
+      bus_read(16#EC000#);
+      bus_read(16#EC001#);
+      bus_read(16#EFFFE#);
+      bus_read(16#EFFFF#);
+      bus_read(16#F0000#);
+      bus_read(16#F0001#);
+      bus_read(16#FFFF0#);
+      bus_read(16#FFFF1#);
+      bus_read(16#FFFFF#);
+      wait_done;
+      -- words past 128 KB are dropped and do not disturb the placement
+      rom_word(0, 16#20000#, 16#DEAD#);
+      rom_word(0, 16#20002#, 16#DEAD#);
+      idle(4);
+      read_wait(16#E0000#);
+      read_wait(16#E0002#);
+      -- (d) a separate xtide.rom owns EC000-EFFFF from now on; its words past 16 KB are dropped
+      rom_word(2, 0, 16#BEEF#);
+      rom_word(2, 16#3FFE#, 16#CAFE#);
+      rom_word(2, 16#4000#, 16#DEAD#);
+      idle(4);
+      bus_read(16#EC000#);
+      bus_read(16#EC001#);
+      bus_read(16#EFFFE#);
+      bus_read(16#EFFFF#);
+      bus_read(16#EBFFF#);
+      bus_read(16#E0000#);
+      bus_read(16#F0000#);
+      wait_done;
+      bus_write(16#EC002#, 16#77#);   -- the XT-IDE window still takes Avalon writes
+      read_wait(16#EC002#);
+      -- (e) 96 KB image: top-aligned at E8000; EC000-EFFFF stays with xtide.rom
+      for w in 0 to 7 loop
+         rom_word(0, 2 * w, rom_pat(0, 2 * w));
+      end loop;
+      rom_word(0, 16#17FFE#, rom_pat(0, 16#17FFE#));
+      idle(4);
+      for b in 0 to 15 loop
+         bus_read(16#E8000# + b);
+      end loop;
+      bus_read(16#FFFFE#);
+      bus_read(16#FFFFF#);
+      bus_read(16#E7FFF#);
+      bus_read(16#E0000#);
+      bus_read(16#EC000#);
+      bus_read(16#EFFFF#);
+      wait_done;
+      idle(40);
+      check(mon_wr_count = c_w and mon_rd_count = c_r, "T1a: BIOS window accesses must not reach the HyperRAM bus");
+      balance_check("T1a");
+
+      ------------------------------------------------------------------------
       -- 1. ROM port and ROM windows
       ------------------------------------------------------------------------
       msg("T1 ROM port");
@@ -1544,16 +1727,17 @@ begin
       c_w := mon_wr_count;
       c_r := mon_rd_count;
 
-      -- Avalon writes into the ROM windows land (the chipset protects the ROMs, not the backend)
-      bus_write(16#F0010#, 16#5A#);
-      bus_write(16#F0011#, 16#A5#);
+      -- Avalon writes into the EGA and XT-IDE windows land (the chipset protects the ROMs, not the
+      -- backend); the BIOS window drops them (T1a) - F0000/F0001/FFFFF must keep their pattern
+      bus_write(16#F0000#, 16#5A#);
+      bus_write(16#F0001#, 16#A5#);
       bus_write(16#FFFFF#, 16#C3#);
       bus_write(16#EC000#, 16#11#);
       bus_write(16#EFFFF#, 16#22#);
       bus_write(16#C0000#, 16#33#);
       bus_write(16#C3FFF#, 16#44#);
-      bus_read(16#F0010#);
-      bus_read(16#F0011#);
+      bus_read(16#F0000#);
+      bus_read(16#F0001#);
       bus_read(16#FFFFF#);
       bus_read(16#EC000#);
       bus_read(16#EFFFF#);
@@ -1788,6 +1972,7 @@ begin
             rom_word(C_ROM_IDX(i), 2 * w, rom_pat(C_ROM_IDX(i), 2 * w), 1);
          end loop;
       end loop;
+      rom_word(0, 16#FFFE#, rom_pat(0, 16#FFFE#), 1);   -- keep the 64 KB placement (image at F0000)
       for op in 1 to G_RANDOM_OPS loop
          -- region
          rnd(0, 99, k);
