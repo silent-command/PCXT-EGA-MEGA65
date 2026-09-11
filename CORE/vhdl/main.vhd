@@ -260,6 +260,8 @@ architecture synthesis of main is
    signal osm_opl2, osm_speaker, osm_boost, osm_monitor, osm_joy1, osm_joy2, osm_floppy_wp : std_logic_vector(1 downto 0);
    signal osm_display         : std_logic_vector(2 downto 0);
    signal osm_vga13_tv        : std_logic;
+   signal osm_mouse           : std_logic_vector(1 downto 0);
+   signal mouse_ps2_clk, mouse_ps2_data, mouse_host_clk, mouse_host_data : std_logic;
    signal joy0_vec, joy1_vec  : std_logic_vector(13 downto 0);
    signal core_audio_right    : std_logic_vector(15 downto 0);
 
@@ -401,7 +403,31 @@ begin
    -- VGA: lines 62..64 (31 kHz / 15 kHz / 15 kHz + csync). The 15 kHz items also
    -- select the core's 60 Hz TV raster for mode 13h (status[10]); the analog
    -- pipeline controls live in mega65.vhd (analog_video_ctl).
-   osm_vga13_tv  <= osm_control_i(63) or osm_control_i(64);
+constant OPTM_GROUPS       : OPTM_GTYPE := (   -- Mouse: lines 77..79 (off / C1351 / Amiga) on joystick port 1
+   osm_mouse     <= "10" when osm_control_i(79) = '1' else
+                    "01" when osm_control_i(78) = '1' else
+                    "00";
+
+   -- MEGA65 mouse port -> emulated PS/2 mouse device for the core's serial-mouse
+   -- converter (MSMouseWrapper). Not reset: the converter sends its init
+   -- command while the framework still holds the core in reset.
+   i_mouse : entity work.m65_mouse_ps2
+      port map (
+         clk_i        => clk_main_i,
+         rst_i        => '0',
+         mode_i       => osm_mouse,
+         joy_up_n_i   => joy_1_up_n_i,
+         joy_down_n_i => joy_1_down_n_i,
+         joy_left_n_i => joy_1_left_n_i,
+         joy_right_n_i=> joy_1_right_n_i,
+         joy_fire_n_i => joy_1_fire_n_i,
+         pot_x_i      => pot1_x_i,
+         pot_y_i      => pot1_y_i,
+         host_clk_i   => mouse_host_clk,
+         host_data_i  => mouse_host_data,
+         ps2_clk_o    => mouse_ps2_clk,
+         ps2_data_o   => mouse_ps2_data
+      ); -- i_mouse
 
    -- MEGA65 joystick ports -> game port: [0] right [1] left [2] down [3] up [4] fire
    joy0_vec <= "000000000" & (not joy_1_fire_n_i) & (not joy_1_up_n_i) & (not joy_1_down_n_i)
@@ -459,10 +485,10 @@ begin
          ps2_kbd_clk_o             => ps2_host_clk,
          ps2_kbd_data_o            => ps2_host_data,
          ps2_key_i                 => ps2_key,
-         ps2_mouse_clk_i           => '1',
-         ps2_mouse_data_i          => '1',
-         ps2_mouse_clk_o           => open,
-         ps2_mouse_data_o          => open,
+         ps2_mouse_clk_i           => mouse_ps2_clk,        -- emulated PS/2 mouse (m65_mouse_ps2)
+         ps2_mouse_data_i          => mouse_ps2_data,
+         ps2_mouse_clk_o           => mouse_host_clk,
+         ps2_mouse_data_o          => mouse_host_data,
          joy0_i                    => joy0_vec,
          joy1_i                    => joy1_vec,
          joya0_i                   => (others => '0'),
