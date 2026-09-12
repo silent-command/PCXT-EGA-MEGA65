@@ -779,7 +779,11 @@ module pcxt_core
     wire       ega_bios_loaded;
     wire       ega_bios_write_protect;
     wire [1:0] ega_video_switches;
-    wire select_pcxt  = (ioctl_index[5:0] == 0) && (ioctl_addr[24:16] == 9'b000000000);
+    // MEGA65: accept up to 128 KB (mem_backend top-aligns the image in E0000-FFFFF
+    // and ignores this FSM's writes). The presence latch is cleared whenever the
+    // download line rises anew; if the stream pauses around the 64 KB mark the
+    // second half must be able to set it again, so it has to be "selected".
+    wire select_pcxt  = (ioctl_index[5:0] == 0) && (ioctl_addr[24:17] == 8'b00000000);
     wire select_xtide = ioctl_index == 2;
     wire select_ega_bios = (ioctl_index[5:0] == 3) && (ioctl_addr[24:16] == 9'b000000000);
 
