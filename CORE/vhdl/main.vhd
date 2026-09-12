@@ -738,7 +738,7 @@ begin
 
    i_mem : entity work.mem_backend
       generic map (
-         G_CACHE => true             -- framework avm_cache (one line, 8-word bursts); bench-balanced, ~2x read throughput
+         G_CACHE => false            -- framework avm_cache: hangs the DOS kernel load on hardware (2026-09-12); bench-balanced but not coherent with CPU writes?
       )
       port map (
          clk_i               => clk_main_i,
