@@ -44,9 +44,15 @@ def core_version():
 
 
 def git_describe():
+    # "dirty" is judged ignoring CR/LF differences: the tree is checked out
+    # with CRLF on Windows and this script runs under WSL, whose git would
+    # otherwise report every CRLF file as modified.
     try:
-        return subprocess.check_output(["git", "-C", str(ROOT), "describe", "--always", "--dirty"],
-                                       text=True).strip()
+        g = ["git", "-C", str(ROOT)]
+        d = subprocess.check_output(g + ["describe", "--always", "--tags"], text=True).strip()
+        clean = (subprocess.call(g + ["diff", "--quiet", "--ignore-cr-at-eol"]) == 0 and
+                 subprocess.call(g + ["diff", "--quiet", "--cached", "--ignore-cr-at-eol"]) == 0)
+        return d if clean else d + "-dirty"
     except Exception:
         return "unknown"
 
