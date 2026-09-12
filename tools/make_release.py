@@ -50,8 +50,8 @@ def git_describe():
     try:
         g = ["git", "-C", str(ROOT)]
         d = subprocess.check_output(g + ["describe", "--always", "--tags"], text=True).strip()
-        clean = (subprocess.call(g + ["diff", "--quiet", "--ignore-cr-at-eol"]) == 0 and
-                 subprocess.call(g + ["diff", "--quiet", "--cached", "--ignore-cr-at-eol"]) == 0)
+        clean = (subprocess.call(g + ["diff", "--quiet", "--ignore-cr-at-eol", "--ignore-submodules=dirty"]) == 0 and
+                 subprocess.call(g + ["diff", "--quiet", "--cached", "--ignore-cr-at-eol", "--ignore-submodules=dirty"]) == 0)
         return d if clean else d + "-dirty"
     except Exception:
         return "unknown"
