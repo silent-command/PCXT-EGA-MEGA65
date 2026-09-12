@@ -284,47 +284,11 @@ module RAM (
             latch_data_word <= data_bus_in_word;
     end
 
-    // MEGA65 overlay: which command RAM.sv accepted (1 = write, 0 = read),
-    // latched at the same edge as latch_address/latch_data. Used by
-    // served_match below so a completing transaction can only report READY to
-    // the bus cycle that actually requested it. See the memory_access_ready
-    // assignment for the full rationale.
-    logic           latch_cmd_write;
-    always_ff @(posedge clock, posedge reset) begin
-        if (reset)
-            latch_cmd_write <= 1'b0;
-        else if (state == IDLE)
-            latch_cmd_write <= write_command;
-    end
-
     // Write Command
     assign write_command = ~ram_address_select_n & ~memory_write_n & ~write_protect;
 
     // Read Command
     assign read_command  = ~ram_address_select_n & ~memory_read_n;
-
-    // MEGA65 overlay: does the command now on the bus match the one RAM.sv is
-    // actually servicing?  A transaction that reaches COMPLETE_RAM_RW raises
-    // access_ready, and upstream forwards that straight to memory_access_ready
-    // for whatever command happens to be on the bus.  At the fastest CPU speed
-    // (ratio 1/1) a HyperRAM access can outlast its own bus cycle (a refresh
-    // steals a clock, or the arbiter is busy), so the NEXT access's command
-    // strobe asserts while the previous one is still completing.  Its
-    // completion then satisfies the new command's READY before RAM.sv has
-    // accepted it: the CPU advances inside the strobe and the access is
-    // dropped (a write lost, or a read taking stale data).  At 4.77/7.16/9.54
-    // the command pulse is many times longer than the transaction, so RAM.sv
-    // is back in IDLE and has accepted the new command before READY is
-    // sampled - which is why the fault is unique to Max.
-    //
-    // served_match is high only while the bus is presenting the very access
-    // RAM.sv latched (same physical address AND same direction).  It gates the
-    // CPU-visible ready and lets COMPLETE_RAM_RW release early to re-accept a
-    // different pending access, so a completing transaction can never hand its
-    // readiness to a later, unaccepted one.
-    wire            served_match = (decoded_address == latch_address)
-                                 & ((write_command & latch_cmd_write)
-                                  | (read_command  & ~latch_cmd_write));
 
     // Generate refresh timing
     always_ff @(posedge clock, posedge reset) begin
@@ -429,17 +393,7 @@ module RAM (
                     next_state = COMPLETE_RAM_RW;
             end
             COMPLETE_RAM_RW: begin
-                // Leave when the completed access's own strobe has dropped, or
-                // (MEGA65 overlay) as soon as the command on the bus is a
-                // different one (served_match low while a command is present):
-                // return to IDLE to re-accept it rather than holding this
-                // transaction's readiness out to it. Without this second exit
-                // the CPU, held not-ready by served_match below, would keep the
-                // new strobe asserted and RAM.sv would wait for it to drop -
-                // a deadlock.
                 if ((~write_command) && (~read_command))
-                    next_state = IDLE;
-                else if ((write_command | read_command) & ~served_match)
                     next_state = IDLE;
             end
             WAIT: begin
@@ -791,14 +745,7 @@ module RAM (
             write_wait_count    <= write_wait_count;
     end
 
-    // MEGA65 overlay: access_ready is only allowed to report READY to the CPU
-    // for the access RAM.sv actually accepted (served_match). This closes the
-    // ratio-1/1 hole where a slow transaction's completion satisfied the next
-    // command's READY before it was accepted, dropping it (see served_match).
-    // served_match is only meaningful under the closed-loop policy; when
-    // strict_ready is 0 the open-loop bet already holds and the qualification
-    // would only cost a wait state, so gate it on strict_ready.
     assign  memory_access_ready = ((~ram_address_select_n) && ((~memory_read_n) || (~memory_write_n)))
-                                        ? (access_ready & (served_match | ~strict_ready) & ((read_wait_count==0) || (~read_command)) & ((write_wait_count==0) || (~write_command))) : 1'b1;
+                                        ? (access_ready & ((read_wait_count==0) || (~read_command)) & ((write_wait_count==0) || (~write_command))) : 1'b1;
 
 endmodule
