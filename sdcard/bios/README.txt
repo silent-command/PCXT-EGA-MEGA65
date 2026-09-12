@@ -4,7 +4,7 @@ Alternative system BIOS images for /pcxt (Sergey Kiselev's 8088 BIOS 1.0.0a)
 All support 1.44 MB / 1.2 MB floppies. The Turbo XT BIOS the release ships
 as /pcxt/pcxt.rom (upstream SW/ROMs/pcxt_pcxt31.rom) does not.
 
-pcxt-xt.rom + xtide.rom   THE ONE TO USE. The "IBM PC/XT" build (16 KB, lands
+pcxt-xt.rom + xtide.rom   The "IBM PC/XT" build (16 KB, lands
                           at FC000) for an 8255-based XT like this core, plus
                           the XTIDE Universal BIOS build the Turbo XT BIOS
                           embeds (12 KB, already configured for this core's
@@ -12,6 +12,9 @@ pcxt-xt.rom + xtide.rom   THE ONE TO USE. The "IBM PC/XT" build (16 KB, lands
                           Copy both: /pcxt/pcxt.rom and /pcxt/xtide.rom.
                           No setup memory: defaults are one 1.44 MB drive A:,
                           CGA/EGA autodetected.
+                          STATUS 2026-09-12: boots FreeDOS on this core but
+                          the keyboard does not respond (under investigation;
+                          simulation of the whole chain passes). Not yet usable.
 pcxt-micro8088.rom        Micro 8088 build: boots DOS, but its board has a
 pcxt-micro8088-xtl.rom    fixed-function keyboard port instead of an 8255, so
                           on this core the keyboard does not work and the
