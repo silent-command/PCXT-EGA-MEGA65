@@ -9,6 +9,8 @@ Produces release/PCXT-EGA-MEGA65-<version>/ containing
   m2m/m2mcfg               settings file (OPTM_SIZE bytes of 0xFF = defaults)
   pcxt/pcxt.rom            system BIOS (upstream SW/ROMs/pcxt_pcxt31.rom, GPL)
   pcxt/README.txt          what else goes into /pcxt and where to get it
+  pcxt/bios-hd-floppy/     8088_bios XT build + XTIDE: alternative BIOS with
+                           1.2 MB / 1.44 MB floppy support (GPL)
   pcxt/freedos.vhd         only with --with-hd-image (from upstream hd_image.zip)
   README.md                installation, menu, keyboard, limitations
   LICENSE, VERSION.txt
@@ -76,6 +78,13 @@ def main():
         shutil.copy2(bios, rel / "pcxt" / "pcxt.rom")
     else:
         print("warning: upstream pcxt_pcxt31.rom not found (submodule not checked out?)")
+
+    # alternative system BIOS with high-density floppy support (GPL): the user
+    # copies both files over /pcxt/pcxt.rom and /pcxt/xtide.rom
+    hd = rel / "pcxt" / "bios-hd-floppy"
+    hd.mkdir()
+    for src in ("pcxt-xt.rom", "xtide.rom"):
+        shutil.copy2(ROOT / "sdcard" / "bios" / src, hd / src)
 
     if a.with_hd_image:
         z = UPSTREAM / "games" / "PCXT" / "hd_image.zip"

@@ -61,15 +61,21 @@ lacks:
 
 ## Known limitations
 
-- The Turbo XT BIOS has no high-density floppy support: 1.44 MB and 1.2 MB
-  images mount but DOS reports "drive not ready" on them. Use 360 KB or
-  720 KB images, or a BIOS with high-density support.
+- The Turbo XT BIOS in `pcxt.rom` has no high-density floppy support: 1.44 MB
+  and 1.2 MB images mount but DOS reports "drive not ready" on them. Either
+  use 360 KB or 720 KB images, or switch to the alternative BIOS shipped in
+  `pcxt/bios-hd-floppy/`: copy its `pcxt-xt.rom` over `/pcxt/pcxt.rom` and
+  its `xtide.rom` to `/pcxt/xtide.rom`. That is Sergey Kiselev's 8088 BIOS
+  (XT build) with the XTIDE Universal BIOS as a separate option ROM; it boots
+  DOS 3.30 and FreeDOS and reads 1.44 MB images.
+
 - Mouse: a Commodore 1351 or an Amiga mouse in joystick port 1 appears as a
   Microsoft serial mouse on COM1 when enabled in Input Settings; load a
   serial mouse driver such as CTMOUSE in DOS. USB mice are not supported.
 - One hard disk image at a time; the second SD card slot is not used.
-- The optional `/pcxt/xtide.rom` is not needed: XTIDE is inside `pcxt.rom`.
-  The startup log line "LOADING ROM #0002: FAILED" refers to it and is harmless.
+- With the default `pcxt.rom` the optional `/pcxt/xtide.rom` is not needed:
+  XTIDE is inside `pcxt.rom`. The startup log line "LOADING ROM #0002: FAILED"
+  refers to it and is harmless.
 
 ## Source
 
