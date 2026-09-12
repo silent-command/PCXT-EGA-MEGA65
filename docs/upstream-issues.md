@@ -1,7 +1,7 @@
 # Draft issues for the upstream projects
 
-Three defects found while porting to the MEGA65, each fixed in this repo,
-each still present upstream as of 2026-09-11. Drafted for the port author to
+Four defects found while porting to the MEGA65, each fixed in this repo,
+each still present upstream as of 2026-09-12. Drafted for the port author to
 post (or adapt); nothing has been filed.
 
 ---
@@ -80,7 +80,40 @@ reproduces the hang without the clause and passes with it (512 bytes moved).
 
 ---
 
-## 3. MiSTer-devel/PCXT-EGA_MiSTer — inferred latches on the SDRAM command path in `RAM.sv`
+## 3. MiSTer-devel/PCXT-EGA_MiSTer (KFPC-XT) — 8259 in-service register is not cleared by ICW1, so Ctrl+Alt+Del leaves the keyboard dead
+
+**File:** `rtl/KFPC-XT/HDL/KF8259/HDL/KF8259_Control_Logic.sv` (the
+`end_of_interrupt` block; upstream of upstream is kitune-san/KF8259).
+
+**Symptom.** After a Ctrl+Alt+Del reboot the keyboard no longer responds
+and a floppy boot stalls on interrupt timeouts; a cold boot is fine. Seen
+with the Super PC/Turbo XT BIOS and with skiselev/8088_bios. Both reboot
+from inside INT 9 without an EOI (`mov word [40:72],1234h` and a far jump
+to the POST), as the IBM BIOS does, relying on the POST's ICW1 to reset the
+controller. A real 8259A clears its in-service register on initialisation;
+KF8259 clears only the request latches (`clear_interrupt_request`) and
+keeps `in_service_register`, so ISR bit 1 survives the warm POST and the
+priority resolver blocks IR1 and every lower-priority input from then on.
+The keyboard's self-test byte after the POST reset is never serviced,
+KFPS2KB holds `irq` high and inhibits the PS/2 clock, and IRQ6 is blocked.
+
+**Fix (as applied):** in the `end_of_interrupt` always_comb, make ICW1
+clear the ISR:
+
+```systemverilog
+if (write_initial_command_word_1 == 1'b1)
+    end_of_interrupt = 8'b11111111;
+else if ((auto_eoi_config == 1'b1) && (end_of_acknowledge_sequence == 1'b1))
+    ...
+```
+
+A bench with the real KF8259/KF8255/KFPS2KB and the exact port sequences of
+both BIOSes (Ctrl+Alt+Del, warm POST, typing) reproduces the dead keyboard
+without the change (ISR=02 after POST) and passes with it.
+
+---
+
+## 4. MiSTer-devel/PCXT-EGA_MiSTer — inferred latches on the SDRAM command path in `RAM.sv`
 
 **File:** `rtl/KFPC-XT/HDL/RAM.sv`, the `always_comb casez (state)` block that
 drives `access_address`, `access_num`, `access_data_in`, `write_request`,
