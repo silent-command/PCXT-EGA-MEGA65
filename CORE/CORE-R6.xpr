@@ -89,14 +89,14 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/PCXT-EGA_MiSTer/rtl/KFPC-XT/HDL/KF8237/HDL/KF8237.sv">
+      <File Path="$PPRDIR/rtl/overlay/KF8237.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/PCXT-EGA_MiSTer/rtl/KFPC-XT/HDL/KF8237/HDL/KF8237_Address_And_Count_Registers.sv">
+      <File Path="$PPRDIR/rtl/overlay/KF8237_Address_And_Count_Registers.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
