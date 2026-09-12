@@ -12,9 +12,10 @@ pcxt-xt.rom + xtide.rom   The "IBM PC/XT" build (16 KB, lands
                           Copy both: /pcxt/pcxt.rom and /pcxt/xtide.rom.
                           No setup memory: defaults are one 1.44 MB drive A:,
                           CGA/EGA autodetected.
-                          STATUS 2026-09-12: boots FreeDOS on this core but
-                          the keyboard does not respond (under investigation;
-                          simulation of the whole chain passes). Not yet usable.
+                          STATUS 2026-09-12: works (DOS 3.30, FreeDOS). The
+                          dead keyboard after Ctrl+Alt+Del that this build
+                          exposed was a core bug (8259 in-service register
+                          not cleared by ICW1), fixed in the KF8259 overlay.
 pcxt-micro8088.rom        Micro 8088 build: boots DOS, but its board has a
 pcxt-micro8088-xtl.rom    fixed-function keyboard port instead of an 8255, so
                           on this core the keyboard does not work and the

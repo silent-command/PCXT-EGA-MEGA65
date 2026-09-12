@@ -97,4 +97,4 @@ $plus = @()
 if ($Max)     { $plus += @('-testplusarg', 'MAXSPEED') }
 if ($NoPatch) { $plus += @('-testplusarg', 'NOPATCH') }
 & "$bin\xsim.bat" kbd_bios_sys_sim -R @plus 2>&1 | Tee-Object -FilePath run.log |
-    Select-String -Pattern 'RESULT|---|IN 60h|OUT 61h|IMR|\*\*\*|CHECK FAILED|observations|values:|final:|running|patch|loaded|reset|unmasked|HLT|irq=1' | ForEach-Object { $_.Line }
+    Select-String -Pattern 'RESULT|---|IN 60h|IMR|\*\*\*|CHECK FAILED|observations|values:|final:|running|patch|loaded|reset|unmasked|HLT|BDA|RING|DELIVERED|program' | ForEach-Object { $_.Line }

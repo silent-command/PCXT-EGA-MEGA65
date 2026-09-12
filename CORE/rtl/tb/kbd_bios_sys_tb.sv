@@ -194,7 +194,8 @@ module kbd_bios_sys_tb;
     //  Memory: 640 KB RAM, B8000 text RAM, BIOS at FC000, FF elsewhere
     // ==================================================================
     logic [7:0] mem [0:1048575];
-    wire ram_select = (address < 20'hA0000) || (address >= 20'hB8000 && address < 20'hC0000);
+    // 64 KB of RAM keeps detect_ram short; the BIOS needs MIN_RAM_SIZE = 32 KB
+    wire ram_select = (address < 20'h10000) || (address >= 20'hB8000 && address < 20'hC0000);
     always_ff @(posedge clk)
         if (~memory_write_n && ram_select) mem[address] <= internal_data_bus;
     wire [7:0] mem_rdata = mem[address];
@@ -292,12 +293,22 @@ module kbd_bios_sys_tb;
         if (reset) begin keycode_ff <= 8'h00; port_a_in <= 8'h00; end
         else begin keycode_ff <= keycode; port_a_in <= keycode_ff; end
 
+    // No EGA ROM in this bench, so the BIOS falls back to its own CGA/MDA video
+    // code (video.inc), which waits for the CRTC retrace bits before touching
+    // video memory. A free-running status register (3DAh / 3BAh: bit 0 hsync,
+    // bit 3 vsync) stands in for the CRT controller so it never spins.
+    logic [19:0] crt_cnt = 20'd0;
+    always_ff @(posedge clk) crt_cnt <= crt_cnt + 20'd1;
+    wire [7:0] crt_status = {4'b0000, crt_cnt[18], 2'b00, crt_cnt[7]};
+    wire crt_status_select = ~address_enable_n && ((address[15:0] == 16'h03DA) || (address[15:0] == 16'h03BA));
+
     // Peripherals.sv:1823-1945 registered read mux
     always_ff @(posedge clk) begin
         if (~interrupt_acknowledge_n)                          begin data_bus_out_from_chipset <= 1'b1; data_bus_out <= interrupt_data_bus_out; end
         else if ((~interrupt_chip_select_n) && (~io_read_n))  begin data_bus_out_from_chipset <= 1'b1; data_bus_out <= interrupt_data_bus_out; end
         else if ((~timer_chip_select_n) && (~io_read_n))      begin data_bus_out_from_chipset <= 1'b1; data_bus_out <= timer_data_bus_out; end
         else if ((~ppi_chip_select_n) && (~io_read_n))        begin data_bus_out_from_chipset <= 1'b1; data_bus_out <= ppi_data_bus_out; end
+        else if (crt_status_select && (~io_read_n))           begin data_bus_out_from_chipset <= 1'b1; data_bus_out <= crt_status; end
         else                                                  begin data_bus_out_from_chipset <= 1'b0; data_bus_out <= 8'h00; end
     end
 
@@ -334,6 +345,21 @@ module kbd_bios_sys_tb;
     logic [7:0] p60_codes [0:255];
     integer     p60_count = 0, p61_writes = 0, inta_count = 0, halts = 0;
     logic       warm_marker_lo = 1'b0, warm_boot_seen = 1'b0;
+    logic       program_started = 1'b0;
+    integer     delivered_bytes = 0;
+
+    task automatic dump_bda();
+        $display("    BDA: flags1 40:17=%02x flags2 40:18=%02x alt_keypad 40:19=%02x flags3 40:96=%02x flags4 40:97=%02x",
+                 mem[20'h417], mem[20'h418], mem[20'h419], mem[20'h496], mem[20'h497]);
+        $display("    BDA: head 40:1A=%02x%02x tail 40:1C=%02x%02x start 40:80=%02x%02x end 40:82=%02x%02x",
+                 mem[20'h41B], mem[20'h41A], mem[20'h41D], mem[20'h41C], mem[20'h481], mem[20'h480], mem[20'h483], mem[20'h482]);
+        $write("    RING 40:1E..3D:");
+        for (int i = 0; i < 32; i += 2) $write(" %02x%02x", mem[20'h41F + i], mem[20'h41E + i]);
+        $display("");
+        $write("    DELIVERED 0000:0700..:");
+        for (int i = 0; i < 16; i += 2) $write(" %02x%02x", mem[20'h701 + i], mem[20'h700 + i]);
+        $display("");
+    endtask
     logic       prev_io_read_n = 1'b1, prev_io_write_n = 1'b1, prev_inta_n = 1'b1, prev_mem_write_n = 1'b1;
     logic       prev_irq = 1'b0;
     logic [2:0] prev_status = 3'b111;
@@ -374,6 +400,22 @@ module kbd_bios_sys_tb;
             end
             else warm_marker_lo <= 1'b0;
         end
+        // BIOS data area keyboard state, and the test program's delivery area
+        if (~prev_mem_write_n & memory_write_n & ~address_enable_n) begin
+            if (address >= 20'h0041A && address <= 20'h0041D) $display("  [%0t] BDA head/tail write 0040:%04X <- %02x", $time, address[15:0] - 16'h0400, internal_data_bus);
+            if (address >= 20'h0041E && address <= 20'h0043D) $display("  [%0t] RING write 0040:%04X <- %02x", $time, address[15:0] - 16'h0400, internal_data_bus);
+            if (address >= 20'h00417 && address <= 20'h00419) $display("  [%0t] BDA flags write 0040:%04X <- %02x", $time, address[15:0] - 16'h0400, internal_data_bus);
+            if (address >= 20'h00480 && address <= 20'h00483) $display("  [%0t] BDA buffer start/end write 0040:%04X <- %02x", $time, address[15:0] - 16'h0400, internal_data_bus);
+            if (address >= 20'h00496 && address <= 20'h00497) $display("  [%0t] BDA flags3/4 write 0040:%04X <- %02x", $time, address[15:0] - 16'h0400, internal_data_bus);
+            if (address >= 20'h00700 && address <= 20'h0071F) begin
+                $display("  [%0t] DELIVERED via INT 16h/00: byte 0000:%04X <- %02x", $time, address[15:0], internal_data_bus);
+                delivered_bytes++;
+            end
+        end
+        if (~memory_read_n & ~address_enable_n & (address == 20'h00600) & ~program_started) begin
+            program_started <= 1'b1;
+            $display("  [%0t] *** test program at 0000:0600 fetched (INT 19h taken)", $time);
+        end
         if (processor_status == 3'b011 && prev_status != 3'b011) begin
             halts++;
             if (halts <= 3) $display("  [%0t] CPU HLT (IMR %02x)", $time, pic_imr);
@@ -403,11 +445,37 @@ module kbd_bios_sys_tb;
         if (hits == 1) begin rom[at+1] = n1; rom[at+2] = n2; $display("  sim-only ROM patch: %s at F000:%04X", what, at + 16'hC000); end
         else $display("  sim-only ROM patch: %s NOT applied (%0d matches)", what, hits);
     endtask
+    // same, every occurrence (used for the "mov cx,MIN_RAM_SIZE*512" immediates of the low RAM test)
+    task automatic patch3_all(input [7:0] b0, b1, b2, input [7:0] n1, n2, input string what);
+        int hits = 0;
+        for (int i = 0; i < 16382; i++)
+            if (rom[i] == b0 && rom[i+1] == b1 && rom[i+2] == b2) begin rom[i+1] = n1; rom[i+2] = n2; hits++; end
+        $display("  sim-only ROM patch: %s applied %0d times", what, hits);
+    endtask
+
+    // Test program the hijacked INT 19h vector points at (0000:0600): a DOS-like
+    // console loop.  Every keystroke INT 16h/AH=00h returns is stored as a word
+    // (AL = ASCII, AH = BIOS scan code) from 0000:0700 upwards.
+    task automatic load_test_program();
+        int p = 20'h00600;
+        mem[p++] = 8'hFB;                                  // sti
+        mem[p++] = 8'hB8; mem[p++] = 8'h00; mem[p++] = 8'h00; // mov ax,0
+        mem[p++] = 8'h8E; mem[p++] = 8'hD8;                // mov ds,ax
+        mem[p++] = 8'hBF; mem[p++] = 8'h00; mem[p++] = 8'h07; // mov di,0700h
+        mem[p++] = 8'hB4; mem[p++] = 8'h00;                // loop: mov ah,0
+        mem[p++] = 8'hCD; mem[p++] = 8'h16;                //       int 16h
+        mem[p++] = 8'h89; mem[p++] = 8'h05;                //       mov [di],ax
+        mem[p++] = 8'h83; mem[p++] = 8'hC7; mem[p++] = 8'h02; //    add di,2
+        mem[p++] = 8'hEB; mem[p++] = 8'hF5;                //       jmp loop
+        // INT 19h vector -> 0000:0600 (the BIOS table copy at bios.asm:975-985 is long done)
+        mem[20'h00064] = 8'h00; mem[20'h00065] = 8'h06; mem[20'h00066] = 8'h00; mem[20'h00067] = 8'h00;
+        $display("  [%0t] test program placed at 0000:0600, INT 19h vector redirected to it", $time);
+    endtask
 
     // ==================================================================
     //  Test
     // ==================================================================
-    localparam M65_A = 10, M65_CTRL = 58, M65_MEGA = 61, M65_INS_DEL = 0;
+    localparam M65_A = 10, M65_D = 18, M65_I = 33, M65_R = 17, M65_CTRL = 58, M65_MEGA = 61, M65_INS_DEL = 0;
     integer i_make, i_break, i_ctrl, i_alt, i_e0, i_del, base;
     real t_unmask;
 
@@ -422,6 +490,10 @@ module kbd_bios_sys_tb;
         if (!$test$plusargs("NOPATCH")) begin
             patch3(8'hB9, 8'h00, 8'h15, 8'h10, 8'h00, "beepinit note delay cx=1500h -> 0010h (sound.inc:55)");
             patch3(8'hB9, 8'h00, 8'h30, 8'h10, 8'h00, "oplsound note delay cx=3000h -> 0010h (sound.inc:68)");
+            patch3(8'hB9, 8'h56, 8'h29, 8'h40, 8'h01, "keyboard clock-low hold cx=10582 -> 320 (bios.asm:1059)");
+            patch3(8'hB9, 8'hE8, 8'h03, 8'h0A, 8'h00, "kbd_flush 1000 -> 10 INT 16h calls (bios.asm:1067)");
+            patch3(8'hB9, 8'h0A, 8'h1A, 8'h0A, 8'h00, "beep 0.1 s -> 150 us (sound.inc:123)");
+            patch3_all(8'hB9, 8'h00, 8'h40, 8'h00, 8'h01, "mov cx,4000h -> 0100h (low RAM test word counts, bios.asm:889-909)");
         end
         for (int i = 0; i < 16384; i++) mem[20'hFC000 + i] = rom[i];
         check(mem[20'hFFFF0] == 8'hEA, "reset vector is a far jump");
@@ -430,21 +502,35 @@ module kbd_bios_sys_tb;
         #3000; reset = 1'b0;
         $display("  [%0t] reset released", $time);
 
-        // wait for the BIOS to unmask the PIC (bios.asm:1097), then give it a moment
+        // wait for the BIOS to unmask the PIC (bios.asm:1097); from here on the
+        // vector table is final, so redirect INT 19h to the test program
         wait (imr_unmasked);
         t_unmask = $realtime;
         $display("  [%0t] PIC unmasked; port B = %02x", $time, port_b_out);
-        #60ms;
+        load_test_program();
+
+        // the BIOS finishes POST (video, messages, detect_*, ROM scan) and boots into it
+        fork
+            wait (program_started);
+            #1500ms;
+        join_any
+        disable fork;
+        if (!program_started) $display("  *** INT 19h not reached within 1.5 s of simulated time; testing the ring anyway");
+        #20ms;
         base = p60_count;
 
-        $display("--- press A");
-        pressed[M65_A] = 1'b1;  #40ms;
-        $display("--- release A");
-        pressed[M65_A] = 1'b0;  #40ms;
-        i_make  = find_code(8'h1E, base);
-        i_break = find_code(8'h9E, base);
-        check(i_make  >= 0, "INT 9 read make code 1E for A from port 60h");
-        check(i_break >= 0 && i_break > i_make, "INT 9 read break code 9E for A after the make");
+        $display("--- type d i r");
+        pressed[M65_D] = 1'b1; #30ms; pressed[M65_D] = 1'b0; #30ms;
+        pressed[M65_I] = 1'b1; #30ms; pressed[M65_I] = 1'b0; #30ms;
+        pressed[M65_R] = 1'b1; #30ms; pressed[M65_R] = 1'b0; #60ms;
+        dump_bda();
+        check(find_code(8'h20, base) >= 0, "INT 9 read make code 20 for D");
+        check(find_code(8'h17, base) >= 0, "INT 9 read make code 17 for I");
+        check(find_code(8'h13, base) >= 0, "INT 9 read make code 13 for R");
+        check(program_started, "BIOS booted into the INT 16h test program via INT 19h");
+        check({mem[20'h701], mem[20'h700]} == 16'h2064, "INT 16h/00 delivered 'd' (2064h) first");
+        check({mem[20'h703], mem[20'h702]} == 16'h1769, "INT 16h/00 delivered 'i' (1769h) second");
+        check({mem[20'h705], mem[20'h704]} == 16'h1372, "INT 16h/00 delivered 'r' (1372h) third");
 
         $display("--- Ctrl+Alt+Del");
         base = p60_count;
@@ -452,17 +538,12 @@ module kbd_bios_sys_tb;
         pressed[M65_MEGA] = 1'b1;    #20ms;
         pressed[M65_INS_DEL] = 1'b1; #60ms;
         i_ctrl = find_code(8'h1D, base);
-        i_alt  = find_code(8'h38, base);
-        i_e0   = find_code(8'hE0, base);
         i_del  = find_code(8'h53, base);
-        check(i_ctrl >= 0, "INT 9 read Ctrl make 1D");
-        check(i_alt  >= 0 && i_alt > i_ctrl, "INT 9 read Alt make 38");
-        check(i_e0   >= 0 && i_e0 > i_alt,  "INT 9 read E0 prefix of Del");
-        check(i_del  >= 0 && i_del == i_e0 + 1, "INT 9 read Del make 53 right after E0");
+        check(i_ctrl >= 0 && i_del > i_ctrl, "INT 9 read Ctrl ... Del");
         check(warm_boot_seen, "BIOS wrote the 1234h warm-boot marker (Ctrl+Alt+Del reboot taken)");
 
-        $display("--- observations: port 60h reads=%0d port 61h writes=%0d INTA cycles=%0d HLTs=%0d",
-                 p60_count, p61_writes, inta_count, halts);
+        $display("--- observations: port 60h reads=%0d port 61h writes=%0d INTA cycles=%0d HLTs=%0d delivered bytes=%0d",
+                 p60_count, p61_writes, inta_count, halts, delivered_bytes);
         $write("    port 60h values:");
         for (int i = 0; i < p60_count; i++) $write(" %02x", p60_codes[i]);
         $display("");

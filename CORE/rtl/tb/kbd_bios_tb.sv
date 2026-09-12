@@ -370,6 +370,11 @@ module kbd_bios_tb;
         io_write(16'h0020, 8'h20);             // non-specific EOI
     endtask
 
+    // Ctrl+Alt+Del: both BIOSes leave INT 9 for the POST entry without an EOI
+    // (keyboard.inc:324-331 `jmp 0F000h:warm_start`; pcxtbios.asm:2267-2269
+    // `reboot: ... jmp warm_boot`), relying on the POST's ICW1 to reset the PIC.
+    logic ctrl_down = 1'b0, alt_down = 1'b0, e0_seen = 1'b0, reboot_request = 1'b0;
+
     task automatic int_09();
         logic [7:0] sc, pb;
         // both BIOSes: keyboard.inc:269-277 / pcxtbios.asm:2049-2056
@@ -381,6 +386,18 @@ module kbd_bios_tb;
         $display("  [%0t] INT 9: scancode %02x (port B %02x, IMR %02x, ISR %02x)", $time, sc, pb, pic_imr, pic_isr);
         if (bios == "8088") sti();             // keyboard.inc:279 - interrupts on before the EOI
         run_us(60.0);                          // flag / translate / buffer work
+        case (sc)
+            8'h1D: ctrl_down = 1'b1;  8'h9D: ctrl_down = 1'b0;
+            8'h38: alt_down  = 1'b1;  8'hB8: alt_down  = 1'b0;
+            default: ;
+        endcase
+        if (sc == 8'h53 && ctrl_down && alt_down) begin
+            $display("  [%0t] INT 9: Ctrl+Alt+Del -> jmp warm_start WITHOUT EOI (ISR stays %02x)", $time, pic_isr);
+            reboot_request = 1'b1;
+            cli();                             // warm_start: cli (bios.asm:724 / pcxtbios.asm:473)
+            return;
+        end
+        e0_seen = (sc == 8'hE0);
         io_write(16'h0020, 8'h20);             // keyboard.inc:545-546 / pcxtbios.asm:2073-2074
     endtask
 
@@ -528,8 +545,28 @@ module kbd_bios_tb;
         check(i_alt  >= 0 && i_alt > i_ctrl, "INT 9 saw Alt make 38");
         check(i_e0   >= 0 && i_e0 > i_alt,  "INT 9 saw E0 prefix of Del");
         check(i_del  >= 0 && i_del == i_e0 + 1, "INT 9 saw Del make 53 right after E0 (Ctrl+Alt+Del recognised)");
+        check(reboot_request, "INT 9 took the Ctrl+Alt+Del reboot path");
+
+        // ---- the warm reboot: keys still held through POST (the usual case),
+        //      released once the machine is back at its prompt
+        $display("--- warm reboot: POST again (ISR before ICW1 = %02x)", pic_isr);
+        base = int9_count;
+        ctrl_down = 1'b0; alt_down = 1'b0;
+        if (bios == "8088") post_8088_xt(); else post_turbo_xt();
+        run_us(30000.0);                       // the keyboard's AA after the reset FF must be serviced
+        $display("--- after warm POST: ISR=%02x IRR=%02x IMR=%02x KFPS2KB irq=%0d keycode=%02x ps2_clock_out=%0d port B=%02x",
+                 pic_isr, pic_irr, pic_imr, keybord_irq, keycode_buf, ps2_clock_out, port_b_out);
+        check(find_code(8'hAA, base) >= 0, "after the warm POST INT 9 serviced the keyboard's AA self-test reply");
+        check(pic_isr == 8'h00, "no interrupt left in service after the warm POST");
+        $display("--- release Ctrl+Alt+Del at the prompt, then type A");
         pressed[M65_INS_DEL] = 1'b0; pressed[M65_MEGA] = 1'b0; pressed[M65_CTRL] = 1'b0;
-        run_us(40000.0);
+        run_us(60000.0);
+        base = int9_count;
+        pressed[M65_A] = 1'b1;  run_us(40000.0);
+        pressed[M65_A] = 1'b0;  run_us(40000.0);
+        check(find_code(8'h1E, base) >= 0, "after the warm reboot INT 9 still sees make 1E for A");
+        check(find_code(8'h9E, base) >= 0, "after the warm reboot INT 9 still sees break 9E for A");
+        check(keybord_irq == 1'b0, "KFPS2KB irq not stuck high after the warm reboot");
 
         $display("--- observations: INT 9 entries=%0d INT 8 entries=%0d default-handler entries=%0d IRQs masked by int_ignore=%0d",
                  int9_count, int8_count, spurious_count, masked_by_default_handler);
@@ -548,7 +585,7 @@ module kbd_bios_tb;
 
     // safety net
     initial begin
-        #600ms;
+        #1500ms;
         $display("RESULT: FAIL (timeout)");
         $finish;
     end
