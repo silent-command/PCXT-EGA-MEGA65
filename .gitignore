@@ -41,3 +41,4 @@ tools/vdrive-latency-bench/qnice
 tools/vdrive-latency-bench/_pp.asm
 tools/vdrive-latency-bench/*.out
 tools/vdrive-latency-bench/*.rom
+xvhdl.pb
