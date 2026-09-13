@@ -61,6 +61,11 @@ lacks:
 
 ## Known limitations
 
+- The analog VGA connector is not usable with a modern monitor for DOS text.
+  The BIOS and DOS text screens are 350-line EGA rasters, which leave the VGA
+  socket at 21.8 kHz; LCD monitors need about 30 kHz and report "no signal".
+  HDMI is unaffected and shows everything. See docs/analog-video.md.
+
 - The Turbo XT BIOS in `pcxt.rom` has no high-density floppy support: 1.44 MB
   and 1.2 MB images mount but DOS reports "drive not ready" on them. Either
   use 360 KB or 720 KB images, or switch to the alternative BIOS shipped in
