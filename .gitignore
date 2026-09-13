@@ -33,3 +33,11 @@ M2M/video_filters/*.out
 CORE/ooc/
 CORE/build-r6.stdout
 /release/
+
+# tools/vdrive-latency-bench build artefacts
+tools/vdrive-latency-bench/sd.img
+tools/vdrive-latency-bench/qasm
+tools/vdrive-latency-bench/qnice
+tools/vdrive-latency-bench/_pp.asm
+tools/vdrive-latency-bench/*.out
+tools/vdrive-latency-bench/*.rom

@@ -1,0 +1,898 @@
+000001                    ; PCXT-EGA-MEGA65: latency bench for the SD-direct vdrive block path.
+000002                    ; Counts QNICE instructions for the pieces of shell.asm HANDLE_DRV_RD.
+000003                    
+000004                    ;;
+000005                    ;; sysdef.asm: This file contains definitions to simplify assembler programming
+000006                    ;; and for accessing the various hardware registers via MMIO
+000007                    ;;
+000008                    ;
+000009                    ;***************************************************************************************
+000010                    ;* Assembler macros which make life much easier:
+000011                    ;***************************************************************************************
+000012                    ;
+000013                    
+000014                    
+000015                    
+000016                    
+000017                    
+000018                    ;
+000019                    ; Some register short names:
+000020                    ;
+000021                    
+000022                    
+000023                    
+000024                    
+000025                    ;
+000026                    ;***************************************************************************************
+000027                    ;* IO-page addresses: Default: 8 registers per block
+000028                    ;***************************************************************************************
+000029                    ;
+000030                    IO$AREA_START               .EQU 0xFF00
+000031                    ;
+000032                    ;---------------------------------------------------------------------------------------
+000033                    ; Block FF00: FUNDAMENTAL IO
+000034                    ;---------------------------------------------------------------------------------------
+000035                    ;
+000036                    ; Switch-register:
+000037                    ;
+000038                    IO$SWITCH_REG               .EQU 0xFF00                      ; 16 binary keys
+000039                    ;
+000040                    ; Registers for TIL-display:
+000041                    ;
+000042                    IO$TIL_DISPLAY              .EQU 0xFF01                      ; Address of TIL-display
+000043                    IO$TIL_MASK                 .EQU 0xFF02                      ; Mask register of TIL display
+000044                    ;
+000045                    ; USB-keyboard-registers:
+000046                    ;
+000047                    IO$KBD_STATE                .EQU 0xFF04                      ; Status register of USB keyboard
+000048                    ; Bit 0 (read only): New ASCII character avaiable for reading
+000049                    ; (bits 7 downto 0 of Read register)
+000050                    ; Bit 1 (read only): New special key available for reading
+000051                    ; (bits 15 downto 8 of Read register)
+000052                    ; Bits 2..4 (read/write): Locales: 000 = US English keyboard layout,
+000053                    ; 001 = German layout, others: reserved for more locales
+000054                    ; Bits 5..7 (read only): Modifiers: 5 = shift, 6 = alt, 7 = ctrl
+000055                    ; Only valid, when bits 0 and/or 1 are '1'
+000056                    ;
+000057                    IO$KBD_DATA                 .EQU 0xFF05                      ; Data register of USB keyboard
+000058                    ; Contains the ASCII character in bits 7 downto 0 or the special key code
+000059                    ; in 15 downto 8. The "or" is meant exclusive, i.e. it cannot happen that
+000060                    ; one transmission contains an ASCII character PLUS a special character.
+000061                    ;
+000062                    ;---------------------------------------------------------------------------------------
+000063                    ; Block FF08: SYSTEM COUNTERS
+000064                    ;---------------------------------------------------------------------------------------
+000065                    ;
+000066                    ; CYCLE-COUNT-registers
+000067                    ;
+000068                    IO$CYC_LO                   .EQU 0xFF08                      ; low word of 48-bit counter
+000069                    IO$CYC_MID                  .EQU 0xFF09                      ; middle word of 48-bit counter
+000070                    IO$CYC_HI                   .EQU 0xFF0A                      ; high word of 48-bit counter
+000071                    IO$CYC_STATE                .EQU 0xFF0B                      ; status register
+000072                    ; Bit 0 (write only): Reset counter to zero and start counting, i.e.
+000073                    ; bit 1 is automatically set to 1 when resetting
+000074                    ; Bit 1 (read/write): Start/stop counter
+000075                    ;
+000076                    ; INSTRUCTION-COUNT-registers
+000077                    ;
+000078                    IO$INS_LO                   .EQU 0xFF0C                      ; low word of 48-bit counter
+000079                    IO$INS_MID                  .EQU 0xFF0D                      ; middle word of 48-bit counter
+000080                    IO$INS_HI                   .EQU 0xFF0E                      ; high word of 48-bit counter
+000081                    IO$INS_STATE                .EQU 0xFF0F                      ; status register
+000082                    ; Bit 0 (write only): Reset counter to zero and start counting, i.e.
+000083                    ; bit 1 is automatically set to 1 when resetting
+000084                    ; Bit 1 (read/write): Start/stop counter
+000085                    ;
+000086                    ;---------------------------------------------------------------------------------------
+000087                    ; Block FF10: UART
+000088                    ;---------------------------------------------------------------------------------------
+000089                    ;
+000090                    ; QNICE-FPGA supports: IO$UART_SRA, IO$UART_RHRA and IO$UART_THRA
+000091                    ; The other registers are mentioned for completeness to map real hardware (16550)
+000092                    ;
+000093                    IO$UART_BASE_ADDRESS        .EQU 0xFF10
+000094                    IO$UART_MR1A                .EQU 0xFF10                      ; n/a
+000095                    IO$UART_MR1B                .EQU 0xFF10                      ; n/a
+000096                    IO$UART_SRA                 .EQU 0xFF11                      ; Status register (relative to base address)
+000097                    IO$UART_RHRA                .EQU 0xFF12                      ; Receiving register (relative to base address)
+000098                    IO$UART_THRA                .EQU 0xFF13                      ; Transmitting register (relative to base address)
+000099                    ;
+000100                    ;---------------------------------------------------------------------------------------
+000101                    ; Block FF18: EAE
+000102                    ;---------------------------------------------------------------------------------------
+000103                    ;
+000104                    ; EAE (Extended Arithmetic Element) registers:
+000105                    ;
+000106                    IO$EAE_OPERAND_0            .EQU 0xFF18
+000107                    IO$EAE_OPERAND_1            .EQU 0xFF19
+000108                    IO$EAE_RESULT_LO            .EQU 0xFF1A
+000109                    IO$EAE_RESULT_HI            .EQU 0xFF1B
+000110                    IO$EAE_CSR                  .EQU 0xFF1C                      ; Command and Status Register
+000111                    ;
+000112                    ; EAE-Opcodes (CSR): 0x0000 MULU 32-bit result in LO HI
+000113                    ; 0x0001 MULS 32-bit result in LO HI
+000114                    ; 0x0002 DIVU result in LO, modulo in HI
+000115                    ; 0x0003 DIVS result in LO, modulo in HI
+000116                    ; Bit 15 of CSR is the busy bit. If it is set, the EAE is still busy crunching numbers.
+000117                    ;
+000118                    ;---------------------------------------------------------------------------------------
+000119                    ; Block FF20: SD CARD
+000120                    ;---------------------------------------------------------------------------------------
+000121                    ;
+000122                    ; SD CARD INTERFACE registers
+000123                    ;
+000124                    IO$SD_BASE_ADDRESS          .EQU 0xFF20
+000125                    IO$SD_ADDR_LO               .EQU 0xFF20                      ; low word of 32bit linear SD card block address
+000126                    IO$SD_ADDR_HI               .EQU 0xFF21                      ; high word of 32bit linear SD card block address
+000127                    IO$SD_DATA_POS              .EQU 0xFF22 ; "Cursor" to navigate the 512-byte data buffer
+000128                    IO$SD_DATA                  .EQU 0xFF23                      ; read/write 1 byte from/to the 512-byte data buffer
+000129                    IO$SD_ERROR                 .EQU 0xFF24                      ; error code of last operation (read only)
+000130                    IO$SD_CSR                   .EQU 0xFF25                      ; Command and Status Register (write to execute command)
+000131                    ;
+000132                    ; SD-Opcodes (CSR): 0x0000 Reset SD card
+000133                    ; 0x0001 Read 512 bytes from the linear block address
+000134                    ; 0x0002 Write 512 bytes to the linear block address
+000135                    ; Bits 0 .. 2 are write-only (reading always returns 0)
+000136                    ; Bits 13 .. 12 return the card type: 00 = no card / unknown card
+000137                    ; 01 = SD V1
+000138                    ; 10 = SD V2
+000139                    ; 11 = SDHC
+000140                    ; Bit 14 of the CSR is the error bit: 1, if the last operation failed. In such
+000141                    ; a case, the error code is in IO$SD_ERROR and
+000142                    ; you need to reset the controller to go on
+000143                    ; Bit 15 of the CSR is the busy bit: 1, if current operation is still running
+000144                    ;
+000145                    ;---------------------------------------------------------------------------------------
+000146                    ; Block FF28: TIMER 0 and 1
+000147                    ;---------------------------------------------------------------------------------------
+000148                    ;
+000149                    ; Interrupt timer: There are two timers capable of generating interrupts.
+000150                    ; Each timer is controlled by three 16 bit registers:
+000151                    ;
+000152                    ; IO$TIMER_x_PRE: The 100 kHz timer clock is divided by the value stored in
+000153                    ; this device register. 100 (which corresponds to 0x0064 in
+000154                    ; the prescaler register) yields a 1 millisecond pulse which
+000155                    ; in turn is fed to the actual counter.
+000156                    ; IO$TIMER_x_CNT: When the number of output pulses from the prescaler circuit
+000157                    ; equals the number stored in this register, an interrupt will
+000158                    ; be generated (if the interrupt address is 0x0000, the
+000159                    ; interrupt will be suppressed).
+000160                    ; IO$TIMER_x_INT: This register contains the address of the desired interrupt
+000161                    ; service routine.
+000162                    ;
+000163                    IO$TIMER_BASE_ADDRESS       .EQU 0xFF28
+000164                    IO$TIMER_0_PRE              .EQU 0xFF28
+000165                    IO$TIMER_0_CNT              .EQU 0xFF29
+000166                    IO$TIMER_0_INT              .EQU 0xFF2A
+000167                    IO$TIMER_1_PRE              .EQU 0xFF2B
+000168                    IO$TIMER_1_CNT              .EQU 0xFF2C
+000169                    IO$TIMER_1_INT              .EQU 0xFF2D
+000170                    ;
+000171                    ;---------------------------------------------------------------------------------------
+000172                    ; Block FF30: VGA (double block, 16 registers)
+000173                    ;---------------------------------------------------------------------------------------
+000174                    ;
+000175                    VGA$STATE                   .EQU 0xFF30                      ; VGA status register
+000176                                                ; Bits 11-10: Hardware scrolling / offset enable: Bit #10 enables the use
+000177                                                ; of the offset register #4 (display offset) and bit #11
+000178                                                ; enables the use of register #5 (read/write offset).
+000179                                                ; Bit 9: Busy: VGA is currently busy, e.g. clearing the screen,
+000180                                                ; printing, etc. While busy, commands will be ignored, but
+000181                                                ; they can still be written into the registers, though
+000182                                                ; Bit 8: Set bit to clear screen. Read bit to find out, if clear
+000183                                                ; screen is still active
+000184                                                ; Bit 7: VGA enable (1 = on; 0: no VGA signal is generated)
+000185                                                ; Bit 6: Hardware cursor enable
+000186                                                ; Bit 5: Hardware cursor blink enable
+000187                                                ; Bit 4: Hardware cursor mode: 1 - small
+000188                                                ; 0 - large
+000189                                                ; Bits 2-0: Output color for the whole screen, bits (2, 1, 0) = RGB
+000190                    VGA$CR_X                    .EQU 0xFF31                      ; VGA cursor X position
+000191                    VGA$CR_Y                    .EQU 0xFF32                      ; VGA cursor Y position
+000192                    VGA$CHAR                    .EQU 0xFF33                      ; write: VGA character to be displayed
+000193                                                ; read: character "under" the cursor
+000194                    VGA$OFFS_DISPLAY            .EQU 0xFF34                      ; Offset in bytes that is used when displaying
+000195                                                ; the video RAM. Scrolling forward one line
+000196                                                ; means adding 0x50 to this register.
+000197                                                ; Only works, if bit #10 in VGA$STATE is set.
+000198                    VGA$OFFS_RW                 .EQU 0xFF35                      ; Offset in bytes that is used, when you read
+000199                                                ; or write to the video RAM using VGA$CHAR.
+000200                                                ; Works independently from VGA$OFFS_DISPLAY.
+000201                                                ; Active, when bit #11 in VGA$STATE is set.
+000202                    VGA$HDMI_H_MIN              .EQU 0xFF36                      ; HDMI Data Enable: X: minimum valid column
+000203                    VGA$HDMI_H_MAX              .EQU 0xFF37                      ; HDMI Data Enable: X: maximum valid column
+000204                    VGA$HDMI_V_MAX              .EQU 0xFF38                      ; HDMI Data Enable: Y: maximum row (line)
+000205                    ;
+000206                    ;---------------------------------------------------------------------------------------
+000207                    ; Block FFF0: MEGA65 (double block, 16 registers)
+000208                    ;---------------------------------------------------------------------------------------
+000209                    ;
+000210                    ; HyperRAM
+000211                    ;
+000212                    IO$M65HRAM_LO               .EQU 0xFFF0                      ; Low word of address (15 downto 0)
+000213                    IO$M65HRAM_HI               .EQU 0xFFF1                      ; High word of address (26 downto 16)
+000214                    IO$M65HRAM_DATA8            .EQU 0xFFF2                      ; HyperRAM native 8-bit data in/out
+000215                    IO$M65HRAM_DATA16           .EQU 0xFFF3                      ; HyperRAM 16-bit data in/out
+000216                    
+000217                    ;
+000218                    ;***************************************************************************************
+000219                    ;* Constant definitions
+000220                    ;***************************************************************************************
+000221                    ;
+000222                    
+000223                    ; ========== VGA ==========
+000224                    
+000225                    VGA$MAX_X                   .EQU 79                          ; Max. X-coordinate in decimal!
+000226                    VGA$MAX_Y                   .EQU 39                          ; Max. Y-coordinate in decimal!
+000227                    VGA$MAX_CHARS               .EQU 3200                        ; 80 * 40 chars
+000228                    VGA$CHARS_PER_LINE          .EQU 80
+000229                    
+000230                    VGA$EN_HW_CURSOR            .EQU 0x0040                      ; Show hardware cursor
+000231                    VGA$EN_HW_SCRL              .EQU 0x0C00                      ; Hardware scrolling enable
+000232                    VGA$CLR_SCRN                .EQU 0x0100                      ; Clear screen
+000233                    VGA$BUSY                    .EQU 0x0200                      ; VGA is currently performing a task
+000234                    
+000235                    VGA$COLOR_RED               .EQU 0x0004
+000236                    VGA$COLOR_GREEN             .EQU 0x0002
+000237                    VGA$COLOR_BLUE              .EQU 0x0001
+000238                    VGA$COLOR_WHITE             .EQU 0x0007
+000239                    
+000240                    ; ========== CYCLE COUNTER ==========
+000241                    
+000242                    CYC$RESET                   .EQU 0x0001                      ; Reset cycle counter
+000243                    CYC$RUN                     .EQU 0x0002                      ; Start/stop counter
+000244                    
+000245                    ; ========== CYCLE COUNTER ==========
+000246                    
+000247                    INS$RESET                   .EQU 0x0001                      ; Reset instruction counter
+000248                    INS$RUN                     .EQU 0x0002                      ; Start/stop counter
+000249                    
+000250                    ; ========== EAE ==========
+000251                    
+000252                    EAE$MULU                    .EQU 0x0000                      ; Unsigned 16 bit multiplication
+000253                    EAE$MULS                    .EQU 0x0001                      ; Signed 16 bit multiplication
+000254                    EAE$DIVU                    .EQU 0x0002                      ; Unsigned 16 bit division with remainder
+000255                    EAE$DIVS                    .EQU 0x0003                      ; Signed 16 bit division with remainder
+000256                    EAE$BUSY                    .EQU 0x8000                      ; Busy flag (1 = operation still running)
+000257                    
+000258                    ; ========== SD CARD ==========
+000259                    
+000260                    SD$CMD_RESET                .EQU 0x0000                      ; Reset SD card
+000261                    SD$CMD_READ                 .EQU 0x0001                      ; Read 512 bytes from SD to internal buffer
+000262                    SD$CMD_WRITE                .EQU 0x0002                      ; Write 512 bytes from int. buf. to SD
+000263                    SD$BIT_ERROR                .EQU 0x4000                      ; Error flag: 1, if last operation failed
+000264                    SD$BIT_BUSY                 .EQU 0x8000                      ; Busy flag: 1, if current op. is still running
+000265                    SD$TIMEOUT_MID              .EQU 0x0479                      ; equals ~75.000.000 cycles, i.e. 1.5sec @ 50 MHz
+000266                    
+000267                    SD$ERR_MASK                 .EQU 0x00FF                      ; AND mask for errors: HI byte = state machine info, so mask it for error checks
+000268                    SD$ERR_R1_ERROR             .EQU 0x0001                      ; SD Card R1 error (R1 bit 6-0)
+000269                    SD$ERR_CRC_OR_TIMEOUT       .EQU 0x0002                      ; Read CRC error or Write Timeout error
+000270                    SD$ERR_RESPONSE_TOKEN       .EQU 0x0003                      ; Data Response Token error (Token bit 3)
+000271                    SD$ERR_ERROR_TOKEN          .EQU 0x0004                      ; Data Error Token error (Token bit 3-0)
+000272                    SD$ERR_WRITE_PROTECT        .EQU 0x0005                      ; SD Card Write Protect switch
+000273                    SD$ERR_CARD_UNUSABLE        .EQU 0x0006                      ; Unusable SD card
+000274                    SD$ERR_NO_CARD              .EQU 0x0007                      ; No SD card (no response from CMD0)
+000275                    SD$ERR_READ_TIMEOUT         .EQU 0x0008 ; Timeout while trying to receive the read start token "FE"
+000276                    SD$ERR_READWRITEJAM         .EQU 0xEE21                      ; Trying to write while pending read or trying to read while pending write
+000277                    SD$ERR_TIMEOUT              .EQU 0xEEFF                      ; General timeout
+000278                    
+000279                    SD$CT_SD_V1                 .EQU 0x0001                      ; Card type: SD Version 1
+000280                    SD$CT_SD_V2                 .EQU 0x0002                      ; Card type: SD Version 2
+000281                    SD$CT_SDHC                  .EQU 0x0003                      ; Card type: SDHC (or SDXC)
+000282                    
+000283                    ; ========== FAT32 =============
+000284                    
+000285                    ; FAT32 ERROR CODES
+000286                    
+000287                    FAT32$ERR_MBR               .EQU 0xEE10                      ; no or illegal Master Boot Record (MBR) found
+000288                    FAT32$ERR_PARTITION_NO      .EQU 0xEE11                      ; the partition number needs to be in the range 1 .. 4
+000289                    FAT32$ERR_PARTTBL           .EQU 0xEE12                      ; no or illegal partition table entry found (e.g. no FAT32 partition)
+000290                    FAT32$ERR_NOTIMPL           .EQU 0xEE13                      ; functionality is not implemented
+000291                    FAT32$ERR_SIZE              .EQU 0xEE14                      ; partition size or volume size too large (see doc/constraints.txt)
+000292                    FAT32$ERR_NOFAT32           .EQU 0xEE15                      ; illegal volume id (either not 512 bytes per sector, or not 2 FATs or wrong magic)
+000293                    FAT32$ERR_ILLEGAL_SIC       .EQU 0xEE16                      ; trying to read/write a sector within a cluster that is out of range
+000294                    FAT32$ERR_ILLEGAL_CLUS      .EQU 0xEE17                      ; trying to access an illegal cluster number
+000295                    FAT32$ERR_CORRUPT_DH        .EQU 0xEE18                      ; corrupt directory handle (e.g. because current to-be-read offs > sector size)
+000296                    FAT32$ERR_DIRNOTFOUND       .EQU 0xEE19                      ; directory not found (illegal path name passed to change directory command)
+000297                    FAT32$ERR_FILENOTFOUND      .EQU 0xEE20                      ; file not found
+000298                    FAT23$ERR_SEEKTOOLARGE      .EQU 0xEE21                      ; seek position > file size
+000299                    
+000300                    ; FAT32 STATUS CODES
+000301                    
+000302                    FAT32$EOF                   .EQU 0xEEEE                      ; end of file reached
+000303                    
+000304                    ; LAYOUT OF THE MOUNT DATA STRUCTURE (DEVICE HANDLE)
+000305                    
+000306                    FAT32$DEV_RESET             .EQU 0x0000                      ; pointer to device reset function
+000307                    FAT32$DEV_BLOCK_READ        .EQU 0x0001                      ; pointer to 512-byte block read function
+000308                    FAT32$DEV_BLOCK_WRITE       .EQU 0x0002                      ; pointer to 512-byte block write function
+000309                    FAT32$DEV_BYTE_READ         .EQU 0x0003                      ; pointer to 1-byte read function (within block buffer)
+000310                    FAT32$DEV_BYTE_WRITE        .EQU 0x0004                      ; pointer to 1-byte write function (within block buffer)
+000311                    FAT32$DEV_PARTITION         .EQU 0x0005                      ; number of partition to be mounted
+000312                    FAT32$DEV_FS_LO             .EQU 0x0006                      ; file system start address (LBA): low word
+000313                    FAT32$DEV_FS_HI             .EQU 0x0007                      ; file system start address (LBA): high word
+000314                    FAT32$DEV_FAT_LO            .EQU 0x0008                      ; fat start address (LBA): low word
+000315                    FAT32$DEV_FAT_HI            .EQU 0x0009                      ; fat start address (LBA): high word
+000316                    FAT32$DEV_CLUSTER_LO        .EQU 0x000A                      ; cluster start address (LBA): low word
+000317                    FAT32$DEV_CLUSTER_HI        .EQU 0x000B                      ; cluster start address (LBA): high word
+000318                    FAT32$DEV_SECT_PER_CLUS     .EQU 0x000C                      ; sectors per cluster
+000319                    FAT32$DEV_RD_1STCLUS_LO     .EQU 0x000D                      ; root directory first cluster: low word
+000320                    FAT32$DEV_RD_1STCLUS_HI     .EQU 0x000E                      ; root directory first cluster: high word
+000321                    FAT32$DEV_AD_1STCLUS_LO     .EQU 0x000F                      ; currently active directory first cluster: low word
+000322                    FAT32$DEV_AD_1STCLUS_HI     .EQU 0x0010                      ; currently active directory first cluster: high word
+000323                    FAT32$DEV_BUFFERED_FDH      .EQU 0x0011                      ; FDH which is responsible for the current 512 byte hardware buffer filling
+000324                    
+000325                    FAT32$DEV_STRUCT_SIZE       .EQU 0x0012                      ; size (words) of the mount data structure (device handle)
+000326                    
+000327                    ; LAYOUT OF THE FILE HANDLE AND DIRECTORY HANDLE (FDH)
+000328                    
+000329                    FAT32$FDH_DEVICE            .EQU 0x0000                      ; pointer to the device handle
+000330                    FAT32$FDH_CLUSTER_LO        .EQU 0x0001                      ; current cluster (low word)
+000331                    FAT32$FDH_CLUSTER_HI        .EQU 0x0002                      ; current cluster (high word)
+000332                    FAT32$FDH_SECTOR            .EQU 0x0003                      ; current sector
+000333                    FAT32$FDH_INDEX             .EQU 0x0004                      ; current byte index within current sector
+000334                    FAT32$FDH_SIZE_LO           .EQU 0x0005                      ; only if FDH is a file: low word of file size, otherwise undefined
+000335                    FAT32$FDH_SIZE_HI           .EQU 0x0006                      ; only if FDH is a file: high word of file size, otherwise undefined
+000336                    FAT32$FDH_ACCESS_LO         .EQU 0x0007                      ; only if FDH is a file: low word of already read/written amount of bytes
+000337                    FAT32$FDH_ACCESS_HI         .EQU 0x0008                      ; only if FDH is a file: high word of already read/written amount of bytes
+000338                    FAT32$FDH_START_CLUS_LO     .EQU 0x0009                      ; only if FDH is a file: start of file: cluster (low word)
+000339                    FAT32$FDH_START_CLUS_HI     .EQU 0x000A                      ; only if FDH is a file: start of file: cluster (high word)
+000340                    FAT32$FDH_FLAGS             .EQU 0x000B                      ; status flags
+000341                    
+000342                    FAT32$FDH_STRUCT_SIZE       .EQU 0x000C                      ; size of the directory handle structure
+000343                    
+000344                    ; Flags used by FAT32$FDH_FLAGS
+000345                    
+000346                    FAT32$FDHF_DIRTY            .EQU 0x0001                      ; bit 0: sector buffer is dirty due to a write access
+000347                    
+000348                    ; FILE ATTRIBUTES
+000349                    
+000350                    FAT32$FA_READ_ONLY          .EQU 0x0001                      ; read only file
+000351                    FAT32$FA_HIDDEN             .EQU 0x0002                      ; hidden file
+000352                    FAT32$FA_SYSTEM             .EQU 0x0004                      ; system file
+000353                    FAT32$FA_VOLUME_ID          .EQU 0x0008                      ; volume id (name of the volume)
+000354                    FAT32$FA_DIR                .EQU 0x0010                      ; directory
+000355                    FAT32$FA_ARCHIVE            .EQU 0x0020                      ; archive flag
+000356                    
+000357                    FAT32$FA_DEFAULT            .EQU 0x0035                      ; browse for non hidden files and directories but not for the volume id
+000358                    FAT32$FA_ALL                .EQU 0x0037                      ; browse for all files, but not for the volume id
+000359                    
+000360                    ; LAYOUT OF THE DIRECTORY ENTRY STRUCTURE
+000361                    
+000362                    FAT32$DE_NAME               .EQU 0x0000                      ; volume, file or directory name, zero terminated (max 256 characters)
+000363                    FAT32$DE_ATTRIB             .EQU 0x0101                      ; file attributes (read-only, hidden, system, volume id, directory, archive)
+000364                    FAT32$DE_SIZE_LO            .EQU 0x0102                      ; file size: low word
+000365                    FAT32$DE_SIZE_HI            .EQU 0x0103                      ; file size: high word
+000366                    FAT32$DE_YEAR               .EQU 0x0104                      ; last file write: year (valid range 1980 .. 2107)
+000367                    FAT32$DE_MONTH              .EQU 0x0105                      ; last file write: month
+000368                    FAT32$DE_DAY                .EQU 0x0106                      ; last file write: day
+000369                    FAT32$DE_HOUR               .EQU 0x0107                      ; last file write: hour
+000370                    FAT32$DE_MINUTE             .EQU 0x0108                      ; last file write: minute
+000371                    FAT32$DE_SECOND             .EQU 0x0109                      ; last file write: second (in 2 second steps, valid range 0 .. 58)
+000372                    FAT32$DE_CLUS_LO            .EQU 0x010A                      ; start cluster: low word
+000373                    FAT32$DE_CLUS_HI            .EQU 0x010B                      ; start cluster: high word
+000374                    
+000375                    FAT32$DE_STRUCT_SIZE        .EQU 0x010C                      ; size (words) of the directory entry data structure of the
+000376                    
+000377                    ; DISPLAY FLAGS FOR FILE ENTRY PRETTY PRINTER
+000378                    
+000379                    FAT32$PRINT_SHOW_DIR        .EQU 0x0001 ; show "<DIR>" indicator
+000380                    FAT32$PRINT_SHOW_ATTRIB     .EQU 0x0002 ; show attributes as "HRSA"
+000381                    FAT32$PRINT_SHOW_SIZE       .EQU 0x0004                      ; show file size
+000382                    FAT32$PRINT_SHOW_DATE       .EQU 0x0008                      ; show file date as YYYY-MM-DD
+000383                    FAT32$PRINT_SHOW_TIME       .EQU 0x0010                      ; show file time as HH:MM
+000384                    
+000385                    FAT32$PRINT_DEFAULT         .EQU 0x001D                      ; print <DIR> indicator, size, date and time (no attributes)
+000386                    FAT32$PRINT_ALL             .EQU 0x001F                      ; print all details
+000387                    
+000388                    ; ========== KEYBOARD ==========
+000389                    
+000390                    ; STATUS REGISTER
+000391                    
+000392                    KBD$NEW_ASCII               .EQU 0x0001                      ; new ascii character available
+000393                    KBD$NEW_SPECIAL             .EQU 0x0002                      ; new special key available
+000394                    KBD$NEW_ANY                 .EQU 0x0003                      ; any new key available
+000395                    
+000396                    KBD$ASCII                   .EQU 0x00FF                      ; mask the special keys
+000397                    KBD$SPECIAL                 .EQU 0xFF00                      ; mask the ascii keys
+000398                    
+000399                    KBD$LOCALE                  .EQU 0x001C                      ; bit mask for checking locales
+000400                    KBD$LOCALE_US               .EQU 0x0000                      ; default: US keyboard layout
+000401                    KBD$LOCALE_DE               .EQU 0x0004                      ; DE: German keyboard layout
+000402                    
+000403                    KBD$MODIFIERS               .EQU 0x00E0                      ; bit mask for checking modifiers
+000404                    KBD$SHIFT                   .EQU 0x0020 ; modifier "SHIFT" pressed
+000405                    KBD$ALT                     .EQU 0x0040 ; modifier "ALT" pressed
+000406                    KBD$CTRL                    .EQU 0x0080 ; modifier "CTRL" pressed
+000407                    
+000408                    ; READ REGISTER: COMMON ASCII CODES
+000409                    
+000410                    KBD$SPACE                   .EQU 0x0020
+000411                    KBD$ENTER                   .EQU 0x000D
+000412                    KBD$ESC                     .EQU 0x001B
+000413                    KBD$TAB                     .EQU 0x0009
+000414                    KBD$BACKSPACE               .EQU 0x0008
+000415                    
+000416                    ; READ REGISTER: SPECIAL KEYS
+000417                    
+000418                    KBD$F1                      .EQU 0x0100
+000419                    KBD$F2                      .EQU 0x0200
+000420                    KBD$F3                      .EQU 0x0300
+000421                    KBD$F4                      .EQU 0x0400
+000422                    KBD$F5                      .EQU 0x0500
+000423                    KBD$F6                      .EQU 0x0600
+000424                    KBD$F7                      .EQU 0x0700
+000425                    KBD$F8                      .EQU 0x0800
+000426                    KBD$F9                      .EQU 0x0900
+000427                    KBD$F10                     .EQU 0x0A00
+000428                    KBD$F11                     .EQU 0x0B00
+000429                    KBD$F12                     .EQU 0x0C00
+000430                    
+000431                    KBD$CUR_UP                  .EQU 0x1000
+000432                    KBD$CUR_DOWN                .EQU 0x1100
+000433                    KBD$CUR_LEFT                .EQU 0x1200
+000434                    KBD$CUR_RIGHT               .EQU 0x1300
+000435                    KBD$PG_UP                   .EQU 0x1400
+000436                    KBD$PG_DOWN                 .EQU 0x1500
+000437                    KBD$HOME                    .EQU 0x1600
+000438                    KBD$END                     .EQU 0x1700
+000439                    KBD$INS                     .EQU 0x1800
+000440                    KBD$DEL                     .EQU 0x1900
+000441                    
+000442                    ; READ REGISTER: CTRL + character is also mapped to an ASCII code
+000443                    
+000444                    KBD$CTRL_A                  .EQU 0x0001
+000445                    KBD$CTRL_B                  .EQU 0x0002
+000446                    KBD$CTRL_C                  .EQU 0x0003
+000447                    KBD$CTRL_D                  .EQU 0x0004
+000448                    KBD$CTRL_E                  .EQU 0x0005
+000449                    KBD$CTRL_F                  .EQU 0x0006
+000450                    KBD$CTRL_G                  .EQU 0x0007
+000451                    KBD$CTRL_H                  .EQU 0x0008
+000452                    KBD$CTRL_I                  .EQU 0x0009
+000453                    KBD$CTRL_J                  .EQU 0x000A
+000454                    KBD$CTRL_K                  .EQU 0x000B
+000455                    KBD$CTRL_L                  .EQU 0x000C
+000456                    KBD$CTRL_M                  .EQU 0x000D
+000457                    KBD$CTRL_N                  .EQU 0x000E
+000458                    KBD$CTRL_O                  .EQU 0x000F
+000459                    KBD$CTRL_P                  .EQU 0x0010
+000460                    KBD$CTRL_Q                  .EQU 0x0011
+000461                    KBD$CTRL_R                  .EQU 0x0012
+000462                    KBD$CTRL_S                  .EQU 0x0013
+000463                    KBD$CTRL_T                  .EQU 0x0014
+000464                    KBD$CTRL_U                  .EQU 0x0015
+000465                    KBD$CTRL_V                  .EQU 0x0016
+000466                    KBD$CTRL_W                  .EQU 0x0017
+000467                    KBD$CTRL_X                  .EQU 0x0018
+000468                    KBD$CTRL_Y                  .EQU 0x0019
+000469                    KBD$CTRL_Z                  .EQU 0x001A
+000470                    
+000471                    ;
+000472                    ; Useful ASCII constants:
+000473                    ;
+000474                    CHR$BELL                    .EQU 0x0007                      ; ASCII-BELL character
+000475                    CHR$TAB                     .EQU 0x0009                      ; ASCII-TAB character
+000476                    CHR$SPACE                   .EQU 0x0020                      ; ASCII-Space
+000477                    CHR$CR                      .EQU 0x000d                      ; Carriage return
+000478                    CHR$LF                      .EQU 0x000a                      ; Line feed
+000479                    ;;
+000480                    ;; This is an automatically generated definition file!
+000481                    ;; Do NOT change manually!
+000482                    ;;
+000483                    reset                       .EQU 0x0000
+000484                    getc                        .EQU 0x0002
+000485                    putc                        .EQU 0x0004
+000486                    gets                        .EQU 0x0006
+000487                    puts                        .EQU 0x0008
+000488                    crlf                        .EQU 0x000A
+000489                    til                         .EQU 0x000C
+000490                    muls                        .EQU 0x000E
+000491                    memset                      .EQU 0x0010
+000492                    memcpy                      .EQU 0x0012
+000493                    wait                        .EQU 0x0014
+000494                    exit                        .EQU 0x0016
+000495                    chr2upper                   .EQU 0x0018
+000496                    str2upper                   .EQU 0x001A
+000497                    strlen                      .EQU 0x001C
+000498                    chomp                       .EQU 0x001E
+000499                    strcmp                      .EQU 0x0020
+000500                    strchr                      .EQU 0x0022
+000501                    gethex                      .EQU 0x0024
+000502                    puthex                      .EQU 0x0026
+000503                    mulu                        .EQU 0x0028
+000504                    vga_cls                     .EQU 0x002A
+000505                    divu                        .EQU 0x002C
+000506                    divs                        .EQU 0x002E
+000507                    chr2lower                   .EQU 0x0030
+000508                    mulu32                      .EQU 0x0032
+000509                    divu32                      .EQU 0x0034
+000510                    split                       .EQU 0x0036
+000511                    h2dstr                      .EQU 0x0038
+000512                    sd_reset                    .EQU 0x003A
+000513                    sd_r_block                  .EQU 0x003C
+000514                    sd_w_block                  .EQU 0x003E
+000515                    sd_r_byte                   .EQU 0x0040
+000516                    sd_w_byte                   .EQU 0x0042
+000517                    f32_mnt_sd                  .EQU 0x0044
+000518                    f32_mnt                     .EQU 0x0046
+000519                    f32_od                      .EQU 0x0048
+000520                    f32_ld                      .EQU 0x004A
+000521                    f32_cd                      .EQU 0x004C
+000522                    f32_pd                      .EQU 0x004E
+000523                    f32_fopen                   .EQU 0x0050
+000524                    f32_fread                   .EQU 0x0052
+000525                    f32_fseek                   .EQU 0x0054
+000526                    gets_s                      .EQU 0x0056
+000527                    gets_slf                    .EQU 0x0058
+000528                    vga_init                    .EQU 0x005A
+000529                    in_range_u                  .EQU 0x005C
+000530                    enter                       .EQU 0x005E
+000531                    leave                       .EQU 0x0060
+000532                    strcpy                      .EQU 0x0062
+000533                    strstr                      .EQU 0x0064
+000534                    f32_fwrite                  .EQU 0x0066
+000535                    f32_fflush                  .EQU 0x0068
+000536                    f32_fclose                  .EQU 0x006A
+000537                    strrplchr                   .EQU 0x006C
+000538                    
+000539                                                .ORG 0x8000
+000540                    
+000541  8000  0FB4  FEFF                              MOVE 0xFEFF, R13
+000542                    
+000543  8002  0FA0  80F4                              MOVE HANDLE_DEV, R8
+000544  8004  0FA4  0001                              MOVE 1, R9
+000545  8006  FF90  0044                              ASUB f32_mnt_sd, 1
+000546  8008  0F80  A000                              MOVE RESULTS, R0
+000547  800A  0901                                    MOVE R9, @R0
+000548                    
+000549  800B  0FA0  80F4                              MOVE HANDLE_DEV, R8
+000550  800D  0FA4  8106                              MOVE HANDLE_FILE, R9
+000551  800F  0FA8  8112                              MOVE STR_FILE, R10
+000552  8011  BB2C                                    XOR R11, R11
+000553  8012  FF90  0050                              ASUB f32_fopen, 1
+000554  8014  0F80  A000                              MOVE RESULTS, R0
+000555  8016  1F80  0001                              ADD 1, R0
+000556  8018  0A01                                    MOVE R10, @R0
+000557                    
+000558                                                ; ---- T0: calibration, empty measurement
+000559  8019  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000560  801B  0F9D  0001                              MOVE 1, @R7
+000561  801D  0FA0  0002                              MOVE 2, R8
+000562  801F  FFB0  00B6                              RSUB CYC_END, 1
+000563                    
+000564                                                ; ---- warm up: read bytes 0..511 so a sector is buffered
+000565  8021  0F94  0200                              MOVE 512, R5
+000566  8023  0FA0  8106  _W1                         MOVE HANDLE_FILE, R8
+000567  8025  FF90  0052                              ASUB f32_fread, 1
+000568  8027  3F94  0001                              SUB 1, R5
+000569  8029  FFAB  FFF8                              RBRA _W1, !Z
+000570                    
+000571                                                ; ---- T1: 512 x f32_fread, sequential (one block, one SD read)
+000572  802B  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000573  802D  0F9D  0001                              MOVE 1, @R7
+000574  802F  0F94  0200                              MOVE 512, R5
+000575  8031  0FA0  8106  _T1                         MOVE HANDLE_FILE, R8
+000576  8033  FF90  0052                              ASUB f32_fread, 1
+000577  8035  3F94  0001                              SUB 1, R5
+000578  8037  FFAB  FFF8                              RBRA _T1, !Z
+000579  8039  0FA0  0004                              MOVE 4, R8
+000580  803B  FFB0  009A                              RSUB CYC_END, 1
+000581                    
+000582                                                ; ---- T2: the real shell.asm per-byte loop (fread + 4 CAD writes)
+000583  803D  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000584  803F  0F9D  0001                              MOVE 1, @R7
+000585  8041  0F80  0200                              MOVE 512, R0
+000586  8043  B618                                    XOR R6, R6
+000587  8044  C600        _T2                         CMP R6, R0
+000588  8045  FFA3  0022                              RBRA _T2_DONE, Z
+000589  8047  0FA0  8106                              MOVE HANDLE_FILE, R8
+000590  8049  FF90  0052                              ASUB f32_fread, 1
+000591  804B  CFA8  0000                              CMP 0, R10
+000592  804D  FFA3  0002                              RBRA _T2_OK, Z
+000593  804F  FFA0  0018                              RBRA _T2_DONE, 1
+000594  8051  0930        _T2_OK                      MOVE R9, R12
+000595  8052  0FA0  8122                              MOVE SIM_B_ADDR, R8
+000596  8054  0624                                    MOVE R6, R9
+000597  8055  FFB0  0090                              RSUB CAD_WRITE, 1
+000598  8057  0FA0  8123                              MOVE SIM_B_DOUT, R8
+000599  8059  0C24                                    MOVE R12, R9
+000600  805A  FFB0  008B                              RSUB CAD_WRITE, 1
+000601  805C  0FA0  8124                              MOVE SIM_B_WREN, R8
+000602  805E  0FA4  0001                              MOVE 1, R9
+000603  8060  FFB0  0085                              RSUB CAD_WRITE, 1
+000604  8062  B924                                    XOR R9, R9
+000605  8063  FFB0  0082                              RSUB CAD_WRITE, 1
+000606  8065  1F98  0001                              ADD 1, R6
+000607  8067  FFA0  FFDB                              RBRA _T2, 1
+000608  8069  0FA0  0006  _T2_DONE                    MOVE 6, R8
+000609  806B  FFB0  006A                              RSUB CYC_END, 1
+000610                    
+000611                                                ; ---- T3: f32_fseek to LBA 100
+000612  806D  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000613  806F  0F9D  0001                              MOVE 1, @R7
+000614  8071  0FA0  8106                              MOVE HANDLE_FILE, R8
+000615  8073  0FA4  C800                              MOVE 0xC800, R9
+000616  8075  BA28                                    XOR R10, R10
+000617  8076  FF90  0054                              ASUB f32_fseek, 1
+000618  8078  0FA0  0008                              MOVE 8, R8
+000619  807A  FFB0  005B                              RSUB CYC_END, 1
+000620                    
+000621                                                ; ---- T4: f32_fseek to LBA 1000
+000622  807C  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000623  807E  0F9D  0001                              MOVE 1, @R7
+000624  8080  0FA0  8106                              MOVE HANDLE_FILE, R8
+000625  8082  0FA4  D000                              MOVE 0xD000, R9
+000626  8084  0FA8  0007                              MOVE 0x0007, R10
+000627  8086  FF90  0054                              ASUB f32_fseek, 1
+000628  8088  0FA0  000A                              MOVE 10, R8
+000629  808A  FFB0  004B                              RSUB CYC_END, 1
+000630                    
+000631                                                ; ---- T5: f32_fseek to LBA 10000
+000632  808C  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000633  808E  0F9D  0001                              MOVE 1, @R7
+000634  8090  0FA0  8106                              MOVE HANDLE_FILE, R8
+000635  8092  0FA4  2000                              MOVE 0x2000, R9
+000636  8094  0FA8  004E                              MOVE 0x004E, R10
+000637  8096  FF90  0054                              ASUB f32_fseek, 1
+000638  8098  0FA0  000C                              MOVE 12, R8
+000639  809A  FFB0  003B                              RSUB CYC_END, 1
+000640                    
+000641                                                ; ---- T6: f32_fseek to LBA 80000
+000642  809C  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000643  809E  0F9D  0001                              MOVE 1, @R7
+000644  80A0  0FA0  8106                              MOVE HANDLE_FILE, R8
+000645  80A2  0FA4  0000                              MOVE 0x0000, R9
+000646  80A4  0FA8  0271                              MOVE 0x0271, R10
+000647  80A6  FF90  0054                              ASUB f32_fseek, 1
+000648  80A8  0FA0  000E                              MOVE 14, R8
+000649  80AA  FFB0  002B                              RSUB CYC_END, 1
+000650                    
+000651                                                ; ---- T7: bulk alternative: raw SD buffer byte + 1 CAD write
+000652  80AC  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000653  80AE  0F9D  0001                              MOVE 1, @R7
+000654  80B0  0F80  0200                              MOVE 512, R0
+000655  80B2  B618                                    XOR R6, R6
+000656  80B3  C600        _T7                         CMP R6, R0
+000657  80B4  FFA3  000F                              RBRA _T7_DONE, Z
+000658  80B6  0FA0  FF22                              MOVE IO$SD_DATA_POS, R8
+000659  80B8  0621                                    MOVE R6, @R8
+000660  80B9  0FA0  FF23                              MOVE IO$SD_DATA, R8
+000661  80BB  0870                                    MOVE @R8, R12
+000662  80BC  0FA0  8123                              MOVE SIM_B_DOUT, R8
+000663  80BE  0C24                                    MOVE R12, R9
+000664  80BF  FFB0  0026                              RSUB CAD_WRITE, 1
+000665  80C1  1F98  0001                              ADD 1, R6
+000666  80C3  FFA0  FFEE                              RBRA _T7, 1
+000667  80C5  0FA0  0010  _T7_DONE                    MOVE 16, R8
+000668  80C7  FFB0  000E                              RSUB CYC_END, 1
+000669                    
+000670                                                ; ---- T8: one FAT32$RW_SIC-sized SD block read via SD library
+000671  80C9  0F9C  FF0B                              MOVE IO$CYC_STATE, R7
+000672  80CB  0F9D  0001                              MOVE 1, @R7
+000673  80CD  0FA0  0A00                              MOVE 0x0A00, R8
+000674  80CF  B924                                    XOR R9, R9
+000675  80D0  FF90  003C                              ASUB sd_r_block, 1
+000676  80D2  0FA0  0012                              MOVE 18, R8
+000677  80D4  FFB0  0001                              RSUB CYC_END, 1
+000678                    
+000679  80D6  E000                                    HALT
+000680                    
+000681                    ; stop the counter and store it: R8 = slot index
+000682  80D7  0FA4  FF0B  CYC_END                     MOVE IO$CYC_STATE, R9
+000683  80D9  0FA5  0000                              MOVE 0, @R9
+000684  80DB  0FA8  A000                              MOVE RESULTS, R10
+000685  80DD  1828                                    ADD R8, R10
+000686  80DE  0FA4  FF08                              MOVE IO$CYC_LO, R9
+000687  80E0  0969                                    MOVE @R9, @R10
+000688  80E1  1FA8  0001                              ADD 1, R10
+000689  80E3  0FA4  FF09                              MOVE IO$CYC_MID, R9
+000690  80E5  0969                                    MOVE @R9, @R10
+000691  80E6  0DBC                                    MOVE @R13++, R15
+000692                    
+000693                    ; exact replica of M2M/rom/vdrives.asm VD_CAD_WRITE
+000694  80E7  E0C0        CAD_WRITE                   INCRB
+000695  80E8  0F80  811F                              MOVE SIM_RAMROM_DEV, R0
+000696  80EA  0F84  8121                              MOVE SIM_VDRIVES_DEV, R1
+000697  80EC  0141                                    MOVE @R1, @R0
+000698  80ED  0F80  8120                              MOVE SIM_RAMROM_4KWIN, R0
+000699  80EF  0F81  0100                              MOVE 0x0100, @R0
+000700  80F1  0921                                    MOVE R9, @R8
+000701  80F2  E100                                    DECRB
+000702  80F3  0DBC                                    MOVE @R13++, R15
+000703                    
+000704  80F4  0000        HANDLE_DEV                  .BLOCK FAT32$DEV_STRUCT_SIZE
+        80F5  0000
+        80F6  0000
+        80F7  0000
+        80F8  0000
+        80F9  0000
+        80FA  0000
+        80FB  0000
+        80FC  0000
+        80FD  0000
+        80FE  0000
+        80FF  0000
+        8100  0000
+        8101  0000
+        8102  0000
+        8103  0000
+        8104  0000
+        8105  0000
+000705  8106  0000        HANDLE_FILE                 .BLOCK FAT32$FDH_STRUCT_SIZE
+        8107  0000
+        8108  0000
+        8109  0000
+        810A  0000
+        810B  0000
+        810C  0000
+        810D  0000
+        810E  0000
+        810F  0000
+        8110  0000
+        8111  0000
+000706  8112  002F        STR_FILE                    .ASCII_W "/freedos.vhd"
+        8113  0066
+        8114  0072
+        8115  0065
+        8116  0065
+        8117  0064
+        8118  006F
+        8119  0073
+        811A  002E
+        811B  0076
+        811C  0068
+        811D  0064
+        811E  0000
+000707                    
+000708  811F  0000        SIM_RAMROM_DEV              .DW 0
+000709  8120  0000        SIM_RAMROM_4KWIN            .DW 0
+000710  8121  0102        SIM_VDRIVES_DEV             .DW 0x0102
+000711  8122  0000        SIM_B_ADDR                  .DW 0
+000712  8123  0000        SIM_B_DOUT                  .DW 0
+000713  8124  0000        SIM_B_WREN                  .DW 0
+000714                                                .ORG 0xA000
+000715  A000  0000        RESULTS                     .BLOCK 32
+        A001  0000
+        A002  0000
+        A003  0000
+        A004  0000
+        A005  0000
+        A006  0000
+        A007  0000
+        A008  0000
+        A009  0000
+        A00A  0000
+        A00B  0000
+        A00C  0000
+        A00D  0000
+        A00E  0000
+        A00F  0000
+        A010  0000
+        A011  0000
+        A012  0000
+        A013  0000
+        A014  0000
+        A015  0000
+        A016  0000
+        A017  0000
+        A018  0000
+        A019  0000
+        A01A  0000
+        A01B  0000
+        A01C  0000
+        A01D  0000
+        A01E  0000
+        A01F  0000
+
+
+EQU-list:
+--------------------------------------------------------------------------------------------------------
+IO$AREA_START           : 0xFF00    IO$SWITCH_REG           : 0xFF00    IO$TIL_DISPLAY          : 0xFF01    
+IO$TIL_MASK             : 0xFF02    IO$KBD_STATE            : 0xFF04    IO$KBD_DATA             : 0xFF05    
+IO$CYC_LO               : 0xFF08    IO$CYC_MID              : 0xFF09    IO$CYC_HI               : 0xFF0A    
+IO$CYC_STATE            : 0xFF0B    IO$INS_LO               : 0xFF0C    IO$INS_MID              : 0xFF0D    
+IO$INS_HI               : 0xFF0E    IO$INS_STATE            : 0xFF0F    IO$UART_BASE_ADDRESS    : 0xFF10    
+IO$UART_MR1A            : 0xFF10    IO$UART_MR1B            : 0xFF10    IO$UART_SRA             : 0xFF11    
+IO$UART_RHRA            : 0xFF12    IO$UART_THRA            : 0xFF13    IO$EAE_OPERAND_0        : 0xFF18    
+IO$EAE_OPERAND_1        : 0xFF19    IO$EAE_RESULT_LO        : 0xFF1A    IO$EAE_RESULT_HI        : 0xFF1B    
+IO$EAE_CSR              : 0xFF1C    IO$SD_BASE_ADDRESS      : 0xFF20    IO$SD_ADDR_LO           : 0xFF20    
+IO$SD_ADDR_HI           : 0xFF21    IO$SD_DATA_POS          : 0xFF22    IO$SD_DATA              : 0xFF23    
+IO$SD_ERROR             : 0xFF24    IO$SD_CSR               : 0xFF25    IO$TIMER_BASE_ADDRESS   : 0xFF28    
+IO$TIMER_0_PRE          : 0xFF28    IO$TIMER_0_CNT          : 0xFF29    IO$TIMER_0_INT          : 0xFF2A    
+IO$TIMER_1_PRE          : 0xFF2B    IO$TIMER_1_CNT          : 0xFF2C    IO$TIMER_1_INT          : 0xFF2D    
+VGA$STATE               : 0xFF30    VGA$CR_X                : 0xFF31    VGA$CR_Y                : 0xFF32    
+VGA$CHAR                : 0xFF33    VGA$OFFS_DISPLAY        : 0xFF34    VGA$OFFS_RW             : 0xFF35    
+VGA$HDMI_H_MIN          : 0xFF36    VGA$HDMI_H_MAX          : 0xFF37    VGA$HDMI_V_MAX          : 0xFF38    
+IO$M65HRAM_LO           : 0xFFF0    IO$M65HRAM_HI           : 0xFFF1    IO$M65HRAM_DATA8        : 0xFFF2    
+IO$M65HRAM_DATA16       : 0xFFF3    VGA$MAX_X               : 0x004F    VGA$MAX_Y               : 0x0027    
+VGA$MAX_CHARS           : 0x0C80    VGA$CHARS_PER_LINE      : 0x0050    VGA$EN_HW_CURSOR        : 0x0040    
+VGA$EN_HW_SCRL          : 0x0C00    VGA$CLR_SCRN            : 0x0100    VGA$BUSY                : 0x0200    
+VGA$COLOR_RED           : 0x0004    VGA$COLOR_GREEN         : 0x0002    VGA$COLOR_BLUE          : 0x0001    
+VGA$COLOR_WHITE         : 0x0007    CYC$RESET               : 0x0001    CYC$RUN                 : 0x0002    
+INS$RESET               : 0x0001    INS$RUN                 : 0x0002    EAE$MULU                : 0x0000    
+EAE$MULS                : 0x0001    EAE$DIVU                : 0x0002    EAE$DIVS                : 0x0003    
+EAE$BUSY                : 0x8000    SD$CMD_RESET            : 0x0000    SD$CMD_READ             : 0x0001    
+SD$CMD_WRITE            : 0x0002    SD$BIT_ERROR            : 0x4000    SD$BIT_BUSY             : 0x8000    
+SD$TIMEOUT_MID          : 0x0479    SD$ERR_MASK             : 0x00FF    SD$ERR_R1_ERROR         : 0x0001    
+SD$ERR_CRC_OR_TIMEOUT   : 0x0002    SD$ERR_RESPONSE_TOKEN   : 0x0003    SD$ERR_ERROR_TOKEN      : 0x0004    
+SD$ERR_WRITE_PROTECT    : 0x0005    SD$ERR_CARD_UNUSABLE    : 0x0006    SD$ERR_NO_CARD          : 0x0007    
+SD$ERR_READ_TIMEOUT     : 0x0008    SD$ERR_READWRITEJAM     : 0xEE21    SD$ERR_TIMEOUT          : 0xEEFF    
+SD$CT_SD_V1             : 0x0001    SD$CT_SD_V2             : 0x0002    SD$CT_SDHC              : 0x0003    
+FAT32$ERR_MBR           : 0xEE10    FAT32$ERR_PARTITION_NO  : 0xEE11    FAT32$ERR_PARTTBL       : 0xEE12    
+FAT32$ERR_NOTIMPL       : 0xEE13    FAT32$ERR_SIZE          : 0xEE14    FAT32$ERR_NOFAT32       : 0xEE15    
+FAT32$ERR_ILLEGAL_SIC   : 0xEE16    FAT32$ERR_ILLEGAL_CLUS  : 0xEE17    FAT32$ERR_CORRUPT_DH    : 0xEE18    
+FAT32$ERR_DIRNOTFOUND   : 0xEE19    FAT32$ERR_FILENOTFOUND  : 0xEE20    FAT23$ERR_SEEKTOOLARGE  : 0xEE21    
+FAT32$EOF               : 0xEEEE    FAT32$DEV_RESET         : 0x0000    FAT32$DEV_BLOCK_READ    : 0x0001    
+FAT32$DEV_BLOCK_WRITE   : 0x0002    FAT32$DEV_BYTE_READ     : 0x0003    FAT32$DEV_BYTE_WRITE    : 0x0004    
+FAT32$DEV_PARTITION     : 0x0005    FAT32$DEV_FS_LO         : 0x0006    FAT32$DEV_FS_HI         : 0x0007    
+FAT32$DEV_FAT_LO        : 0x0008    FAT32$DEV_FAT_HI        : 0x0009    FAT32$DEV_CLUSTER_LO    : 0x000A    
+FAT32$DEV_CLUSTER_HI    : 0x000B    FAT32$DEV_SECT_PER_CLUS : 0x000C    FAT32$DEV_RD_1STCLUS_LO : 0x000D    
+FAT32$DEV_RD_1STCLUS_HI : 0x000E    FAT32$DEV_AD_1STCLUS_LO : 0x000F    FAT32$DEV_AD_1STCLUS_HI : 0x0010    
+FAT32$DEV_BUFFERED_FDH  : 0x0011    FAT32$DEV_STRUCT_SIZE   : 0x0012    FAT32$FDH_DEVICE        : 0x0000    
+FAT32$FDH_CLUSTER_LO    : 0x0001    FAT32$FDH_CLUSTER_HI    : 0x0002    FAT32$FDH_SECTOR        : 0x0003    
+FAT32$FDH_INDEX         : 0x0004    FAT32$FDH_SIZE_LO       : 0x0005    FAT32$FDH_SIZE_HI       : 0x0006    
+FAT32$FDH_ACCESS_LO     : 0x0007    FAT32$FDH_ACCESS_HI     : 0x0008    FAT32$FDH_START_CLUS_LO : 0x0009    
+FAT32$FDH_START_CLUS_HI : 0x000A    FAT32$FDH_FLAGS         : 0x000B    FAT32$FDH_STRUCT_SIZE   : 0x000C    
+FAT32$FDHF_DIRTY        : 0x0001    FAT32$FA_READ_ONLY      : 0x0001    FAT32$FA_HIDDEN         : 0x0002    
+FAT32$FA_SYSTEM         : 0x0004    FAT32$FA_VOLUME_ID      : 0x0008    FAT32$FA_DIR            : 0x0010    
+FAT32$FA_ARCHIVE        : 0x0020    FAT32$FA_DEFAULT        : 0x0035    FAT32$FA_ALL            : 0x0037    
+FAT32$DE_NAME           : 0x0000    FAT32$DE_ATTRIB         : 0x0101    FAT32$DE_SIZE_LO        : 0x0102    
+FAT32$DE_SIZE_HI        : 0x0103    FAT32$DE_YEAR           : 0x0104    FAT32$DE_MONTH          : 0x0105    
+FAT32$DE_DAY            : 0x0106    FAT32$DE_HOUR           : 0x0107    FAT32$DE_MINUTE         : 0x0108    
+FAT32$DE_SECOND         : 0x0109    FAT32$DE_CLUS_LO        : 0x010A    FAT32$DE_CLUS_HI        : 0x010B    
+FAT32$DE_STRUCT_SIZE    : 0x010C    FAT32$PRINT_SHOW_DIR    : 0x0001    FAT32$PRINT_SHOW_ATTRIB : 0x0002    
+FAT32$PRINT_SHOW_SIZE   : 0x0004    FAT32$PRINT_SHOW_DATE   : 0x0008    FAT32$PRINT_SHOW_TIME   : 0x0010    
+FAT32$PRINT_DEFAULT     : 0x001D    FAT32$PRINT_ALL         : 0x001F    KBD$NEW_ASCII           : 0x0001    
+KBD$NEW_SPECIAL         : 0x0002    KBD$NEW_ANY             : 0x0003    KBD$ASCII               : 0x00FF    
+KBD$SPECIAL             : 0xFF00    KBD$LOCALE              : 0x001C    KBD$LOCALE_US           : 0x0000    
+KBD$LOCALE_DE           : 0x0004    KBD$MODIFIERS           : 0x00E0    KBD$SHIFT               : 0x0020    
+KBD$ALT                 : 0x0040    KBD$CTRL                : 0x0080    KBD$SPACE               : 0x0020    
+KBD$ENTER               : 0x000D    KBD$ESC                 : 0x001B    KBD$TAB                 : 0x0009    
+KBD$BACKSPACE           : 0x0008    KBD$F1                  : 0x0100    KBD$F2                  : 0x0200    
+KBD$F3                  : 0x0300    KBD$F4                  : 0x0400    KBD$F5                  : 0x0500    
+KBD$F6                  : 0x0600    KBD$F7                  : 0x0700    KBD$F8                  : 0x0800    
+KBD$F9                  : 0x0900    KBD$F10                 : 0x0A00    KBD$F11                 : 0x0B00    
+KBD$F12                 : 0x0C00    KBD$CUR_UP              : 0x1000    KBD$CUR_DOWN            : 0x1100    
+KBD$CUR_LEFT            : 0x1200    KBD$CUR_RIGHT           : 0x1300    KBD$PG_UP               : 0x1400    
+KBD$PG_DOWN             : 0x1500    KBD$HOME                : 0x1600    KBD$END                 : 0x1700    
+KBD$INS                 : 0x1800    KBD$DEL                 : 0x1900    KBD$CTRL_A              : 0x0001    
+KBD$CTRL_B              : 0x0002    KBD$CTRL_C              : 0x0003    KBD$CTRL_D              : 0x0004    
+KBD$CTRL_E              : 0x0005    KBD$CTRL_F              : 0x0006    KBD$CTRL_G              : 0x0007    
+KBD$CTRL_H              : 0x0008    KBD$CTRL_I              : 0x0009    KBD$CTRL_J              : 0x000A    
+KBD$CTRL_K              : 0x000B    KBD$CTRL_L              : 0x000C    KBD$CTRL_M              : 0x000D    
+KBD$CTRL_N              : 0x000E    KBD$CTRL_O              : 0x000F    KBD$CTRL_P              : 0x0010    
+KBD$CTRL_Q              : 0x0011    KBD$CTRL_R              : 0x0012    KBD$CTRL_S              : 0x0013    
+KBD$CTRL_T              : 0x0014    KBD$CTRL_U              : 0x0015    KBD$CTRL_V              : 0x0016    
+KBD$CTRL_W              : 0x0017    KBD$CTRL_X              : 0x0018    KBD$CTRL_Y              : 0x0019    
+KBD$CTRL_Z              : 0x001A    CHR$BELL                : 0x0007    CHR$TAB                 : 0x0009    
+CHR$SPACE               : 0x0020    CHR$CR                  : 0x000D    CHR$LF                  : 0x000A    
+reset                   : 0x0000    getc                    : 0x0002    putc                    : 0x0004    
+gets                    : 0x0006    puts                    : 0x0008    crlf                    : 0x000A    
+til                     : 0x000C    muls                    : 0x000E    memset                  : 0x0010    
+memcpy                  : 0x0012    wait                    : 0x0014    exit                    : 0x0016    
+chr2upper               : 0x0018    str2upper               : 0x001A    strlen                  : 0x001C    
+chomp                   : 0x001E    strcmp                  : 0x0020    strchr                  : 0x0022    
+gethex                  : 0x0024    puthex                  : 0x0026    mulu                    : 0x0028    
+vga_cls                 : 0x002A    divu                    : 0x002C    divs                    : 0x002E    
+chr2lower               : 0x0030    mulu32                  : 0x0032    divu32                  : 0x0034    
+split                   : 0x0036    h2dstr                  : 0x0038    sd_reset                : 0x003A    
+sd_r_block              : 0x003C    sd_w_block              : 0x003E    sd_r_byte               : 0x0040    
+sd_w_byte               : 0x0042    f32_mnt_sd              : 0x0044    f32_mnt                 : 0x0046    
+f32_od                  : 0x0048    f32_ld                  : 0x004A    f32_cd                  : 0x004C    
+f32_pd                  : 0x004E    f32_fopen               : 0x0050    f32_fread               : 0x0052    
+f32_fseek               : 0x0054    gets_s                  : 0x0056    gets_slf                : 0x0058    
+vga_init                : 0x005A    in_range_u              : 0x005C    enter                   : 0x005E    
+leave                   : 0x0060    strcpy                  : 0x0062    strstr                  : 0x0064    
+f32_fwrite              : 0x0066    f32_fflush              : 0x0068    f32_fclose              : 0x006A    
+strrplchr               : 0x006C    
+
+Label-list:
+--------------------------------------------------------------------------------------------------------
+_W1                     : 0x8023    _T1                     : 0x8031    _T2                     : 0x8044    
+_T2_OK                  : 0x8051    _T2_DONE                : 0x8069    _T7                     : 0x80B3    
+_T7_DONE                : 0x80C5    CYC_END                 : 0x80D7    CAD_WRITE               : 0x80E7    
+HANDLE_DEV              : 0x80F4    HANDLE_FILE             : 0x8106    STR_FILE                : 0x8112    
+SIM_RAMROM_DEV          : 0x811F    SIM_RAMROM_4KWIN        : 0x8120    SIM_VDRIVES_DEV         : 0x8121    
+SIM_B_ADDR              : 0x8122    SIM_B_DOUT              : 0x8123    SIM_B_WREN              : 0x8124    
+RESULTS                 : 0xA000    
