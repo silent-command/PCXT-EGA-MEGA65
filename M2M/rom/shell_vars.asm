@@ -178,13 +178,34 @@ SDB_NULL_MAP    .BLOCK  1               ; stays 0: forces the FAT32 fallback
 SDB_DUMMY_FDH   .BLOCK  FAT32$FDH_STRUCT_SIZE   ; stays 0: never dirty, see
                                                 ; SDB_ORPHAN
 
-; how to put the FAT32 library's sector buffer back (SDB_GUARD_IN/OUT)
-SDB_G_LBA       .BLOCK  2               ; the sector the library expects
-SDB_G_VAL       .BLOCK  1               ; 0 = there is nothing to restore
+; whether a real file handle claims the FAT32 library sector buffer that we
+; are about to overwrite (SDB_GUARD_IN/OUT)
+SDB_G_VAL       .BLOCK  1               ; 1 = somebody has to be told
 
 ; what the last SDB_FREAD_FAST did, also readable without the serial log
 SDB_FF_STAT     .BLOCK  1               ; SDB_B_OK or the reason it stopped
 SDB_FF_BLKS     .BLOCK  1               ; blocks it transferred
+
+; what the last virtual drive block request did, likewise
+SDB_RD_STAT     .BLOCK  1               ; SDB_R_OK or why the fast path was..
+SDB_RD_LBA      .BLOCK  2               ; ..refused; the LBA when it was used
+
+; per request measurement, only filled in when SDB_DEBUG is on
+SDB_DBG_N       .BLOCK  1               ; log lines still owed after a mount
+SDB_DBG_CNT     .BLOCK  1               ; requests since the mount
+SDB_DBG_ACT     .BLOCK  1               ; an SD-direct request is in flight
+SDB_DBG_DRV     .BLOCK  1               ; its virtual drive
+SDB_DBG_SZ      .BLOCK  1               ; its VD_SIZEB
+SDB_DBG_PL      .BLOCK  1               ; its byte position, low
+SDB_DBG_PH      .BLOCK  1               ; ..and high
+SDB_DBG_T0      .BLOCK  2               ; cycle counter when it started
+SDB_DBG_TE      .BLOCK  2               ; ..when the previous one ended
+
+; how long the SD card itself takes, and how often it is asked
+SDB_SD_T0       .BLOCK  2               ; start of one card access
+SDB_SD_LAST     .BLOCK  2               ; cycles of the last card access
+SDB_SD_CYC      .BLOCK  2               ; cycles of all of them in a request
+SDB_SD_N        .BLOCK  1               ; how many of them in a request
 
 ; scratch space used while a map is being built
 SDB_S_BLEFT     .BLOCK  2               ; blocks that are not mapped yet

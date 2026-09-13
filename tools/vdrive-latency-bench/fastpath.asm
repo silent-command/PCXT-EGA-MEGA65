@@ -10,6 +10,7 @@
 ; Output is plain text on the emulator console, one line per check, plus a
 ; PASS/FAIL summary at the end.
 
+#include "../../M2M/rom/sdblock_cfg.asm"
 #include "../../M2M/QNICE/dist_kit/sysdef.asm"
 #include "../../M2M/QNICE/dist_kit/monitor.def"
 #include "../../M2M/rom/sysdef.asm"
@@ -378,6 +379,78 @@ _T7B_NO         MOVE    S_NOMAP, R8
                 SYSCALL(puts, 1)
                 RSUB    BUMPFAIL, 1
 _T7B_D          MOVE    S_NUL, R8
+                SYSCALL(puts, 1)
+
+; ============================================================================
+; Test 8: the FAT32 library reads a sector immediately after the fast path
+;         overwrote the hardware buffer with a *different* sector.
+;
+;         This is the check that the "mark the buffer as unknown instead of
+;         reading it back" scheme stands or falls on: if the marking did not
+;         happen, the library would happily serve the block we put there.
+; ============================================================================
+                MOVE    S_T8, R8
+                SYSCALL(puts, 1)
+                MOVE    F_FREEDOS, R8
+                RSUB    OPEN, 1
+                MOVE    HANDLE_FILE, R8
+                MOVE    SDB_VD_MAPS, R9
+                RSUB    SDB_MAP_BUILD, 1
+
+                ; reference: what block B really contains
+                MOVE    HANDLE_FILE, R8
+                MOVE    T8_BLKB, R9
+                MOVE    @R9, R9
+                XOR     R10, R10
+                RSUB    RDSLOW, 1               ; f32 read into BUF_B
+                MOVE    BUF_B, R8
+                MOVE    BUF_A, R9
+                RSUB    COPY512, 1
+
+                ; put the library on block B, so that it owns the buffer and
+                ; believes it holds B's sector
+                MOVE    HANDLE_FILE, R8
+                MOVE    T8_BLKB, R9
+                MOVE    @R9, R9
+                XOR     R10, R10
+                RSUB    SDB_BLK2B, 1
+                SYSCALL(f32_fseek, 1)
+                CMP     0, R9
+                RBRA    _T8_BAD, !Z
+
+                ; now let the fast path overwrite the buffer with block A
+                MOVE    T8_BLKA, R9
+                MOVE    @R9, R9
+                XOR     R10, R10
+                RSUB    SDB_BLK2B, 1
+                MOVE    R10, R11
+                MOVE    R9, R10
+                XOR     R8, R8                  ; virtual drive 0
+                MOVE    HANDLE_FILE, R9
+                MOVE    0x0200, R12
+                RSUB    SDB_VD_RDBLK, 1
+                RBRA    _T8_NOMAP, !C
+                XOR     R8, R8
+                RSUB    SDB_SD2VD, 1
+                RSUB    SDB_VD_RDDONE, 1
+
+                ; the library must still deliver block B, not block A
+                MOVE    HANDLE_FILE, R8
+                MOVE    BUF_B, R9
+                RSUB    FREAD512, 1
+                MOVE    BUF_A, R8
+                MOVE    BUF_B, R9
+                RSUB    CMP512, 1
+                RSUB    VERDICT0, 1
+                RBRA    _T8_D, 1
+_T8_NOMAP       MOVE    S_NOMAP, R8
+                SYSCALL(puts, 1)
+                RSUB    BUMPFAIL, 1
+                RBRA    _T8_D, 1
+_T8_BAD         MOVE    S_FAIL, R8
+                SYSCALL(puts, 1)
+                RSUB    BUMPFAIL, 1
+_T8_D           MOVE    S_NUL, R8
                 SYSCALL(puts, 1)
 
 ; ============================================================================
@@ -874,6 +947,7 @@ S_T6B           .ASCII_W "T6b testrom.bin, 4k window wrap: "
 S_T6C           .ASCII_W "T6c exact.bin, ends on a cluster boundary: "
 S_T7            .ASCII_W "T7a library untouched after a failed map: "
 S_T7B           .ASCII_W "T7b other file handle after a fast read: "
+S_T8            .ASCII_W "T8 library reads another sector after a fast read: "
 S_NUL           .ASCII_W ""
 
 ; block index lo, hi, expectation (0 = mapped, 1 = must fall back)
@@ -892,6 +966,11 @@ T1_BLKS         .DW 0x0000, 0x0000, 0
                 .DW 0x0000, 0x0000, 0xFFFF
 
 T3_BLK          .DW 0x7530                      ; block 30000 of freedos.vhd
+T8_BLKA         .DW 0x4E20                      ; the MARK20000 sector and..
+T8_BLKB         .DW 0x0000                      ; ..the 00..FF patterned one:
+                                                ; blocks 0..7 are all equal to
+                                                ; each other, so they cannot
+                                                ; be used to tell the two apart
 NFAIL           .DW 0
 
 #include "bench_env.asm"

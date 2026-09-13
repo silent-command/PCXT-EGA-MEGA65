@@ -66,11 +66,10 @@
 ; ----------------------------------------------------------------------------
 ; Serial logging
 ; ----------------------------------------------------------------------------
-; To log what the fast path does to the serial console at boot (no keyboard
-; needed), remove the ";" in front of the #define below and rebuild the ROM
-; with CORE/m2m-rom/make_rom.sh. Put the ";" back to switch it off again.
-;
-;#define SDB_DEBUG
+; The switch is SDB_DEBUG in M2M/rom/sdblock_cfg.asm, which shell.asm includes
+; as its very first line. It must NOT be defined here: this file is included
+; at the end of shell.asm, and the C preprocessor runs once from top to
+; bottom, so a #define here would be invisible to every #ifdef above it.
 ;
 ; This file needs the environment of shell.asm.
 ;
@@ -127,6 +126,17 @@ SDB_B_SHORT     .EQU 9                  ; chain ends before the file does
 SDB_B_LBA       .EQU 10                 ; LBA arithmetic out of range
 SDB_B_GUARD     .EQU 11                 ; buffer could not be made restorable
 SDB_B_SEEK      .EQU 12                 ; restoring seek failed
+
+; Why one virtual drive block request did or did not take the fast path.
+; Left in SDB_RD_STAT by SDB_VD_RDBLK / SDB_VD_WRBLK after every request, so
+; it can be read out even in a build without the serial log.
+SDB_R_OK        .EQU 0                  ; fast path taken
+SDB_R_SIZE      .EQU 1                  ; VD_SIZEB is not exactly 512
+SDB_R_ALIGN     .EQU 2                  ; byte position is not block aligned
+SDB_R_MAP       .EQU 3                  ; no usable map for this drive/handle
+SDB_R_RANGE     .EQU 4                  ; block is outside the mapped file
+SDB_R_GUARD     .EQU 5                  ; buffer could not be made restorable
+SDB_R_SDERR     .EQU 6                  ; the SD card operation failed
 
 ; end-of-chain marker: everything >= 0x0FFFFFF8 terminates a FAT32 chain,
 ; and everything >= 0x0FFFFFF0 is reserved, so refuse all of it
@@ -211,6 +221,68 @@ _SDBC_NO        AND     0xFFFB, SR              ; clear Carry
 _SDBC_R         DECRB
                 RET
 
+; ----------------------------------------------------------------------------
+; Every SD card access of the fast path goes through these two wrappers, so
+; that the time the card itself needs can be measured separately from
+; everything else, and so that the number of card accesses per virtual drive
+; request is countable. Without SDB_DEBUG they are a plain call.
+; ----------------------------------------------------------------------------
+
+; SDB_SDRD: read one 512-byte block into the SD controller's buffer
+; Input:   R8/R9 = LBA lo/hi
+; Output:  R8 = 0, or the error code
+SDB_SDRD
+#ifdef SDB_DEBUG
+                RSUB    _SDB_SDT0, 1
+#endif
+                SYSCALL(sd_r_block, 1)
+#ifdef SDB_DEBUG
+                RSUB    _SDB_SDT1, 1
+#endif
+                RET
+
+; SDB_SDWR: write the SD controller's buffer to one 512-byte block
+; Input:   R8/R9 = LBA lo/hi
+; Output:  R8 = 0, or the error code
+SDB_SDWR
+#ifdef SDB_DEBUG
+                RSUB    _SDB_SDT0, 1
+#endif
+                SYSCALL(sd_w_block, 1)
+#ifdef SDB_DEBUG
+                RSUB    _SDB_SDT1, 1
+#endif
+                RET
+
+#ifdef SDB_DEBUG
+; take the time before one card access; all registers unchanged
+_SDB_SDT0       SYSCALL(enter, 1)
+                RSUB    SDB_DBG_NOW, 1
+                MOVE    SDB_SD_T0, R0
+                MOVE    R8, @R0++
+                MOVE    R9, @R0
+                SYSCALL(leave, 1)
+                RET
+
+; take the time after one card access and accumulate it; R8 (the error code
+; of the access) and all other registers unchanged
+_SDB_SDT1       SYSCALL(enter, 1)
+                RSUB    SDB_DBG_NOW, 1          ; R9|R8 = now
+                MOVE    SDB_SD_T0, R0
+                SUB     @R0++, R8               ; R9|R8 = how long it took
+                SUBC    @R0, R9
+                MOVE    SDB_SD_LAST, R0
+                MOVE    R8, @R0++
+                MOVE    R9, @R0
+                MOVE    SDB_SD_CYC, R0          ; total in this request
+                ADD     R8, @R0++
+                ADDC    R9, @R0
+                MOVE    SDB_SD_N, R0            ; accesses in this request
+                ADD     1, @R0
+                SYSCALL(leave, 1)
+                RET
+#endif
+
 ; SDB_SDERR
 ; Called after a failed SD card operation. The controller latches its error
 ; state and refuses everything until it is reset, which would turn our
@@ -238,11 +310,18 @@ SDB_SDERR       INCRB
 ; ----------------------------------------------------------------------------
 
 ; SDB_GUARD_IN
-; Prepares for direct SD card access. Works out which sector the FAT32
-; library believes the hardware buffer holds and remembers its LBA so that
-; SDB_GUARD_OUT can put it back, and writes the buffer back first if it is
-; dirty. Refuses (Carry=0) without touching anything if the sector cannot be
-; identified or the write-back fails.
+; Prepares for direct SD card access. Writes the FAT32 library's sector
+; buffer back first if it is dirty, and notes whether a real file handle
+; currently claims the buffer, so that SDB_GUARD_OUT can tell that handle
+; afterwards that the contents are no longer what it thinks. Refuses
+; (Carry=0) without touching anything if the write-back fails.
+;
+; This used to remember the sector's LBA and read it back in
+; SDB_GUARD_OUT. That was a second SD card access per virtual drive request,
+; about 1.5 ms of hardware time out of 3.4 ms, for something that the
+; library's own re-read mechanism does for free. It also could only ever
+; satisfy one of the two device handles that share the one hardware buffer,
+; whereas marking tells both.
 ;
 ; Input:   none
 ; Output:  Carry=1: direct access is allowed
@@ -250,7 +329,7 @@ SDB_SDERR       INCRB
 ;          all registers unchanged
 SDB_GUARD_IN    SYSCALL(enter, 1)
 
-                MOVE    SDB_G_VAL, R8           ; nothing to restore yet
+                MOVE    SDB_G_VAL, R8           ; nobody to tell yet
                 MOVE    0, @R8
 
                 MOVE    HANDLE_DEV, R8          ; who claims the buffer?
@@ -259,11 +338,10 @@ SDB_GUARD_IN    SYSCALL(enter, 1)
                 MOVE    CONFIG_DEVH, R8
                 RSUB    _SDB_OWNER, 1
                 RBRA    _SDBGI_HAVE, C
-                RBRA    _SDBGI_OK, 1            ; nobody: nothing to restore
+                RBRA    _SDBGI_OK, 1            ; nobody: nothing to do
 
                 ; R8: device handle, R9: owning FDH
-_SDBGI_HAVE     MOVE    R8, R0
-                MOVE    R9, R1
+_SDBGI_HAVE     MOVE    R9, R1
 
                 MOVE    R1, R8                  ; dirty? then write it back
                 ADD     FAT32$FDH_FLAGS, R8
@@ -275,25 +353,8 @@ _SDBGI_HAVE     MOVE    R8, R0
                 CMP     0, R9
                 RBRA    _SDBGI_NO, !Z           ; cannot write back: refuse
 
-                ; which sector does the library think it is holding?
-_SDBGI_CLEAN    MOVE    R1, R8
-                ADD     FAT32$FDH_CLUSTER_LO, R8
-                MOVE    @R8, R9
-                MOVE    R1, R8
-                ADD     FAT32$FDH_CLUSTER_HI, R8
-                MOVE    @R8, R10
-                MOVE    R1, R8
-                ADD     FAT32$FDH_SECTOR, R8
-                MOVE    @R8, R11
-                MOVE    R0, R8
-                RSUB    SDB_CLULBA, 1
-                RBRA    _SDBGI_NO, !C           ; cannot be restored: refuse
-
-                MOVE    SDB_G_LBA, R8
-                MOVE    R9, @R8++
-                MOVE    R10, @R8
-                MOVE    SDB_G_VAL, R8
-                MOVE    1, @R8
+_SDBGI_CLEAN    MOVE    SDB_G_VAL, R8           ; a real handle owns it, so
+                MOVE    1, @R8                  ; ..it has to be told later
 
 _SDBGI_OK       OR      0x0004, SR              ; set Carry
                 RBRA    _SDBGI_RET, 1
@@ -303,6 +364,12 @@ _SDBGI_RET      SYSCALL(leave, 1)
 
 ; Input:  R8: device handle
 ; Output: Carry=1 and R9 = the FDH that claims the buffer, R8 unchanged
+;
+; SDB_DUMMY_FDH is our own "the contents are unknown" marker and must not be
+; reported as an owner: otherwise the request after an orphaned one would try
+; to write back and mark a handle that is not a real file, and - since the
+; dummy has cluster 0 - would have been refused outright by the old
+; restore-based guard.
 _SDB_OWNER      INCRB
                 CMP     0, @R8                  ; device handle initialized?
                 RBRA    _SDB_OWN_NO, Z
@@ -310,6 +377,9 @@ _SDB_OWNER      INCRB
                 ADD     FAT32$DEV_BUFFERED_FDH, R0
                 MOVE    @R0, R9
                 RBRA    _SDB_OWN_NO, Z          ; nobody claims it
+                MOVE    SDB_DUMMY_FDH, R0
+                CMP     R0, R9                  ; already marked as unknown?
+                RBRA    _SDB_OWN_NO, Z          ; then there is no owner
                 OR      0x0004, SR
                 RBRA    _SDB_OWN_R, 1
 _SDB_OWN_NO     AND     0xFFFB, SR
@@ -317,49 +387,54 @@ _SDB_OWN_R      DECRB
                 RET
 
 ; SDB_GUARD_OUT
-; Puts the hardware buffer back to the sector SDB_GUARD_IN identified, so
-; that the FAT32 library finds exactly what it left behind.
+; The direct access is done and the hardware buffer now holds our block. Tell
+; whoever claimed it that its contents are unknown, so that the FAT32 library
+; re-reads instead of trusting it.
 ;
 ; Input:   none
 ; Output:  none, all registers unchanged
 SDB_GUARD_OUT   SYSCALL(enter, 1)
                 MOVE    SDB_G_VAL, R8
                 CMP     0, @R8
-                RBRA    _SDBGO_RET, Z           ; nothing to restore
-
-                MOVE    SDB_G_LBA, R8
-                MOVE    @R8++, R10
-                MOVE    @R8, R11
-                MOVE    R10, R8
-                MOVE    R11, R9
-                SYSCALL(sd_r_block, 1)
-                CMP     0, R8
-                RBRA    _SDBGO_RET, Z           ; restored
-
-                ; the restoring read failed, so the card is already broken.
-                ; Reset the controller, try once more, and if that fails too
-                ; make sure the library re-reads instead of trusting a buffer
-                ; that now holds something else than it believes.
-                RSUB    SDB_SDERR, 1
-                MOVE    R10, R8
-                MOVE    R11, R9
-                SYSCALL(sd_r_block, 1)
-                CMP     0, R8
-                RBRA    _SDBGO_RET, Z
+                RBRA    _SDBGO_RET, Z           ; nobody had claimed it
+                MOVE    0, @R8
                 RSUB    SDB_ORPHAN, 1
 _SDBGO_RET      SYSCALL(leave, 1)
                 RET
 
+; SDB_GUARD_CLR
+; The library has been put back by other means - SDB_FREAD_FAST finishes with
+; an f32_fseek, which re-reads the sector and re-claims ownership itself - so
+; there is nothing left to mark.
+;
+; Input:   none
+; Output:  none, all registers unchanged
+SDB_GUARD_CLR   INCRB
+                MOVE    SDB_G_VAL, R0
+                MOVE    0, @R0
+                DECRB
+                RET
+
 ; SDB_ORPHAN
-; Last resort, only used when the hardware buffer could not be restored: tell
-; both device handles that the buffer contents are unknown, so that the
-; library re-reads rather than serving something stale.
+; Tells both device handles that the contents of the 512-byte hardware buffer
+; are unknown, so that the library re-reads rather than serving something we
+; overwrote. This is the same mechanism the library uses on itself: READ_FDH
+; compares FAT32$DEV_BUFFERED_FDH with the handle it was called for and
+; re-reads through FAT32$RW_SIC whenever they differ.
 ;
 ; "Unknown" is expressed by handing the buffer to SDB_DUMMY_FDH, an all-zero
 ; and therefore never dirty file handle, and not by the obvious 0: FAT32$FLUSH
 ; returns immediately when called with R8 = 0 and then leaves R9 - its error
 ; code - untouched, and FAT32$FILE_SEEK checks that stale R9 right after
 ; calling it, so a seek would silently do nothing.
+;
+; Note what this does NOT do: it issues no SD card access of its own, so it
+; cannot produce an LBA, and therefore cannot reproduce anything of the shape
+; that made hardware run 1 fatal (a wild LBA latching the controller's error
+; state). All of the guards against that - stopping one block short of the
+; end of a file, verifying FAT32$FDH_ACCESS after every seek, validating every
+; LBA in SDB_CLULBA, and resetting the controller after a failed access - are
+; untouched.
 ;
 ; Input:   none
 ; Output:  none, all registers unchanged
@@ -373,6 +448,8 @@ SDB_ORPHAN      SYSCALL(enter, 1)
                 RSUB    _SDB_ORPH1, 1
                 MOVE    CONFIG_DEVH, R8
                 RSUB    _SDB_ORPH1, 1
+                MOVE    SDB_G_VAL, R8           ; everybody has been told
+                MOVE    0, @R8
                 SYSCALL(leave, 1)
                 RET
 
@@ -893,7 +970,7 @@ _SDB_FN_RD      MOVE    SDB_S_FCVAL, R2         ; cache is stale in any case
                 MOVE    R10, R3
                 MOVE    R2, R8
                 MOVE    R3, R9
-                SYSCALL(sd_r_block, 1)
+                RSUB    SDB_SDRD, 1
                 CMP     0, R8
                 RBRA    _SDB_FN_SDE, !Z
                 MOVE    SDB_S_FCLBA, R8
@@ -1072,10 +1149,10 @@ SDB_VD_RDBLK    INCRB
                 MOVE    R9, R5                  ; R5/R6: LBA
                 MOVE    R10, R6
                 RSUB    SDB_GUARD_IN, 1         ; can we put the buffer back?
-                RBRA    _SDB_VRD_NO, !C         ; no: nothing was touched
+                RBRA    _SDB_VRD_GRD, !C        ; no: nothing was touched
                 MOVE    R5, R8
                 MOVE    R6, R9
-                SYSCALL(sd_r_block, 1)
+                RSUB    SDB_SDRD, 1
                 CMP     0, R8
                 RBRA    _SDB_VRD_SDE, !Z        ; SD error: try the slow path
                 MOVE    R0, R8
@@ -1083,6 +1160,11 @@ SDB_VD_RDBLK    INCRB
                 RBRA    _SDB_VRD_R, 1
 _SDB_VRD_SDE    RSUB    SDB_SDERR, 1
                 RSUB    SDB_GUARD_OUT, 1
+                MOVE    SDB_RD_STAT, R8
+                MOVE    SDB_R_SDERR, @R8
+                RBRA    _SDB_VRD_NO, 1
+_SDB_VRD_GRD    MOVE    SDB_RD_STAT, R8
+                MOVE    SDB_R_GUARD, @R8
 _SDB_VRD_NO     MOVE    R0, R8
                 AND     0xFFFB, SR              ; clear Carry
 _SDB_VRD_R      MOVE    R1, R9
@@ -1124,12 +1206,12 @@ SDB_VD_WRBLK    INCRB
                 MOVE    R9, R5                  ; R5/R6: LBA
                 MOVE    R10, R6
                 RSUB    SDB_GUARD_IN, 1         ; can we put the buffer back?
-                RBRA    _SDB_VWR_NO, !C         ; no: nothing was touched
+                RBRA    _SDB_VWR_GRD, !C        ; no: nothing was touched
                 MOVE    R0, R8
                 RSUB    SDB_VD2SD, 1
                 MOVE    R5, R8
                 MOVE    R6, R9
-                SYSCALL(sd_w_block, 1)
+                RSUB    SDB_SDWR, 1
                 CMP     0, R8
                 RBRA    _SDB_VWR_SDE, !Z
                 RSUB    SDB_GUARD_OUT, 1        ; the write is done, restore
@@ -1138,6 +1220,11 @@ SDB_VD_WRBLK    INCRB
                 RBRA    _SDB_VWR_R, 1
 _SDB_VWR_SDE    RSUB    SDB_SDERR, 1            ; SD error: try the slow path
                 RSUB    SDB_GUARD_OUT, 1
+                MOVE    SDB_RD_STAT, R8
+                MOVE    SDB_R_SDERR, @R8
+                RBRA    _SDB_VWR_NO, 1
+_SDB_VWR_GRD    MOVE    SDB_RD_STAT, R8
+                MOVE    SDB_R_GUARD, @R8
 _SDB_VWR_NO     MOVE    R0, R8
                 AND     0xFFFB, SR              ; clear Carry
 _SDB_VWR_R      MOVE    R1, R9
@@ -1151,23 +1238,34 @@ _SDB_VWR_R      MOVE    R1, R9
 ; the caller's R0 (drive), R1 (FDH), R2/R3 (byte position) and R4 (amount of
 ; bytes) and returns Carry=1 plus the LBA in R9/R10. Runs in the caller's
 ; register bank on purpose. Touches nothing outside our own variables.
-_SDB_PREP       MOVE    0x0200, R8
+_SDB_PREP       MOVE    SDB_RD_STAT, R11
+                MOVE    SDB_R_SIZE, @R11
+                MOVE    0x0200, R8
                 CMP     R4, R8                  ; exactly one block?
                 RBRA    _SDB_PREP_NO, !Z        ; no: let the FAT32 path do
-                MOVE    R2, R8                  ; ..partial/multi blocks
+                MOVE    SDB_R_ALIGN, @R11       ; ..partial/multi blocks
+                MOVE    R2, R8
                 AND     0x01FF, R8              ; block aligned?
                 RBRA    _SDB_PREP_NO, !Z        ; no
+                MOVE    SDB_R_MAP, @R11
                 MOVE    R0, R8
                 RSUB    SDB_VDMAP, 1
-                MOVE    R8, R11                 ; R11: map
-                MOVE    R1, R9
+                MOVE    R8, R12                 ; R12: map (R11 stays the..
+                MOVE    R1, R9                  ; ..status pointer)
                 RSUB    SDB_CHECK, 1
                 RBRA    _SDB_PREP_NO, !C
+                MOVE    SDB_R_RANGE, @R11
                 MOVE    R2, R9
                 MOVE    R3, R10
                 RSUB    SDB_B2BLK, 1
-                MOVE    R11, R8
-                RSUB    SDB_LBA, 1              ; sets/clears Carry
+                MOVE    R12, R8
+                RSUB    SDB_LBA, 1
+                RBRA    _SDB_PREP_NO, !C
+                MOVE    SDB_RD_LBA, R8          ; remember it for the log
+                MOVE    R9, @R8++
+                MOVE    R10, @R8
+                MOVE    SDB_R_OK, @R11
+                OR      0x0004, SR              ; set Carry
                 RET
 _SDB_PREP_NO    AND     0xFFFB, SR              ; clear Carry
                 RET
@@ -1259,7 +1357,7 @@ _SDBFF_LOOP     CMP     0, R7
 #endif
                 MOVE    R9, R8
                 MOVE    R10, R9
-                SYSCALL(sd_r_block, 1)
+                RSUB    SDB_SDRD, 1
                 CMP     0, R8
                 RBRA    _SDBFF_SDE, !Z          ; SD error: stop here
                 MOVE    R2, R8
@@ -1306,7 +1404,8 @@ _SDBFF_SEEK     MOVE    SDB_FF_STAT, R8
 
                 MOVE    SDB_FF_STAT, R8
                 MOVE    SDB_B_OK, @R8
-                MOVE    R3, R11
+                RSUB    SDB_GUARD_CLR, 1        ; the seek put the library..
+                MOVE    R3, R11                 ; ..back, nobody to tell
                 MOVE    R4, R12
                 OR      0x0004, SR              ; set Carry
                 RBRA    _SDBFF_RET, 1
@@ -1321,8 +1420,10 @@ _SDBFF_REW      MOVE    R0, R8
                 XOR     R10, R10
                 SYSCALL(f32_fseek, 1)
                 CMP     0, R9
-                RBRA    _SDBFF_NO, Z
-                RSUB    SDB_ORPHAN, 1
+                RBRA    _SDBFF_RW1, !Z
+                RSUB    SDB_GUARD_CLR, 1        ; the rewind put it back
+                RBRA    _SDBFF_NO, 1
+_SDBFF_RW1      RSUB    SDB_ORPHAN, 1           ; not even that worked
 
 _SDBFF_NO       AND     0xFFFB, SR              ; clear Carry
 _SDBFF_RET
@@ -1540,6 +1641,207 @@ SDB_L_ADR       .ASCII_W " adr="
 SDB_L_POS       .ASCII_W " pos="
 SDB_L_CLS       .ASCII_W " cluster="
 SDB_L_SEC       .ASCII_W " sector="
+; ----------------------------------------------------------------------------
+; Per request logging for the virtual drives
+;
+; This is the measurement that tells the two possible explanations of a slow
+; virtual drive apart: either the fast path is refused (st= is not 0000) or
+; it is taken and the time goes somewhere else. "fw" is the time spent inside
+; HANDLE_DRV_RD, "gap" the time between the end of the previous request and
+; the start of this one, both in QNICE clock cycles, i.e. 50,000 cycles per
+; millisecond. Everything the firmware can influence is in "fw"; everything
+; else - the core, the bridge, the poll interval of the Shell main loop - is
+; in "gap".
+;
+; The first 8 requests after a mount are logged, plus one in every 512 after
+; that, so that the steady state is visible without flooding the serial line.
+; ----------------------------------------------------------------------------
+
+; Arm the log for the next 8 block requests, and say which drive was mounted
+; and with which buffer device id, so that "is this drive really SD-direct
+; and is HANDLE_DRV_RD really the routine serving it" is answered in the log
+; rather than by reasoning. buf=AAAA is VD_BUF_SDDIRECT.
+; Input:   R8 = virtual drive number, R9 = its buffer device id
+; Output:  all registers unchanged
+SDB_DBG_ARM     SYSCALL(enter, 1)
+                MOVE    SDB_DBG_N, R0
+                MOVE    8, @R0
+                MOVE    SDB_DBG_CNT, R0
+                MOVE    0, @R0
+                MOVE    SDB_DBG_ACT, R0
+                MOVE    0, @R0
+                MOVE    R8, R1
+                MOVE    R9, R2
+                MOVE    SDB_L_MNT, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    R1, R8
+                RSUB    SDB_LOGH, 1
+                MOVE    SDB_L_MNTB, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    R2, R8
+                RSUB    SDB_LOGH, 1
+                RSUB    SDB_LOGNL, 1
+                SYSCALL(leave, 1)
+                RET
+
+; A tear-free sample of the free running 48-bit cycle counter.
+; Output: R8/R9 = low/high word of the lower 32 bits
+SDB_DBG_NOW     INCRB
+                MOVE    IO$CYC_STATE, R0
+                OR      CYC$RUN, @R0            ; make sure it is counting
+                MOVE    IO$CYC_LO, R0
+                MOVE    IO$CYC_MID, R1
+_SDBN_L         MOVE    @R1, R9                 ; high word
+                MOVE    @R0, R8                 ; low word
+                CMP     @R1, R9                 ; did the high word move on?
+                RBRA    _SDBN_L, !Z             ; yes: sample again
+                DECRB
+                RET
+
+; Start of one SD-direct block request.
+; Input: R8 = virtual drive, R9 = VD_SIZEB, R10 = pos lo, R12 = pos hi
+; Output: all registers unchanged
+SDB_DBG_RD0     SYSCALL(enter, 1)
+                MOVE    SDB_DBG_DRV, R0
+                MOVE    R8, @R0
+                MOVE    SDB_DBG_SZ, R0
+                MOVE    R9, @R0
+                MOVE    SDB_DBG_PL, R0
+                MOVE    R10, @R0
+                MOVE    SDB_DBG_PH, R0
+                MOVE    R12, @R0
+                MOVE    SDB_DBG_ACT, R0
+                MOVE    1, @R0
+                MOVE    SDB_SD_N, R0            ; count the card accesses of
+                MOVE    0, @R0                  ; ..this one request
+                MOVE    SDB_SD_CYC, R0
+                MOVE    0, @R0++
+                MOVE    0, @R0
+                RSUB    SDB_DBG_NOW, 1
+                MOVE    SDB_DBG_T0, R0
+                MOVE    R8, @R0++
+                MOVE    R9, @R0
+                SYSCALL(leave, 1)
+                RET
+
+; End of one SD-direct block request: log it, if this one is due.
+; Output: all registers unchanged
+SDB_DBG_RD1     SYSCALL(enter, 1)
+                MOVE    SDB_DBG_ACT, R0
+                CMP     0, @R0                  ; was this an SD-direct read?
+                RBRA    _SDBR1_RET, Z           ; no: the buffered path
+                MOVE    0, @R0
+
+                RSUB    SDB_DBG_NOW, 1
+                MOVE    R8, R2                  ; R2/R3: now
+                MOVE    R9, R3
+
+                MOVE    SDB_DBG_T0, R0          ; R4/R5: fw = now - t0
+                MOVE    R2, R4
+                MOVE    R3, R5
+                SUB     @R0++, R4
+                SUBC    @R0, R5
+
+                MOVE    SDB_DBG_T0, R0          ; R6/R7: gap = t0 - tend
+                MOVE    @R0++, R6
+                MOVE    @R0, R7
+                MOVE    SDB_DBG_TE, R0
+                SUB     @R0++, R6
+                SUBC    @R0, R7
+
+                MOVE    SDB_DBG_TE, R0          ; remember the end of this one
+                MOVE    R2, @R0++
+                MOVE    R3, @R0
+
+                ; is this request due to be logged?
+                MOVE    SDB_DBG_CNT, R0
+                ADD     1, @R0
+                MOVE    SDB_DBG_N, R1
+                CMP     0, @R1
+                RBRA    _SDBR1_YES, !Z          ; still in the first eight
+                MOVE    @R0, R1
+                AND     0x01FF, R1              ; one in every 512 after that
+                RBRA    _SDBR1_RET, !Z
+                RBRA    _SDBR1_LOG, 1
+_SDBR1_YES      SUB     1, @R1
+
+_SDBR1_LOG      MOVE    SDB_L_RD, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_DBG_DRV, R8
+                MOVE    @R8, R8
+                RSUB    SDB_LOGH, 1
+                MOVE    SDB_L_RDSZ, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_DBG_SZ, R8
+                MOVE    @R8, R8
+                RSUB    SDB_LOGH, 1
+                MOVE    SDB_L_RDPOS, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_DBG_PH, R8
+                MOVE    @R8, R8
+                MOVE    SDB_DBG_PL, R9
+                MOVE    @R9, R9
+                RSUB    SDB_LOGH32, 1
+                MOVE    SDB_L_RDST, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_RD_STAT, R8
+                MOVE    @R8, R8
+                RSUB    SDB_LOGH, 1
+                MOVE    SDB_L_RDLBA, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_RD_LBA, R8
+                ADD     1, R8
+                MOVE    @R8, R8
+                MOVE    SDB_RD_LBA, R9
+                MOVE    @R9, R9
+                RSUB    SDB_LOGH32, 1
+                MOVE    SDB_L_RDFW, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    R5, R8
+                MOVE    R4, R9
+                RSUB    SDB_LOGH32, 1
+                MOVE    SDB_L_RDGAP, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    R7, R8
+                MOVE    R6, R9
+                RSUB    SDB_LOGH32, 1
+                MOVE    SDB_L_SDN, R8           ; card accesses in this..
+                RSUB    SDB_LOGS, 1             ; ..request and their cost
+                MOVE    SDB_SD_N, R8
+                MOVE    @R8, R8
+                RSUB    SDB_LOGH, 1
+                MOVE    SDB_L_SDCYC, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_SD_CYC, R8
+                ADD     1, R8
+                MOVE    @R8, R8
+                MOVE    SDB_SD_CYC, R9
+                MOVE    @R9, R9
+                RSUB    SDB_LOGH32, 1
+                MOVE    SDB_L_SDLST, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    SDB_SD_LAST, R8
+                ADD     1, R8
+                MOVE    @R8, R8
+                MOVE    SDB_SD_LAST, R9
+                MOVE    @R9, R9
+                RSUB    SDB_LOGH32, 1
+                RSUB    SDB_LOGNL, 1
+_SDBR1_RET      SYSCALL(leave, 1)
+                RET
+
+SDB_L_RD        .ASCII_W "SDB: rd drv="
+SDB_L_RDSZ      .ASCII_W " sz="
+SDB_L_RDPOS     .ASCII_W " pos="
+SDB_L_RDST      .ASCII_W " st="
+SDB_L_RDLBA     .ASCII_W " lba="
+SDB_L_RDFW      .ASCII_W " fw="
+SDB_L_RDGAP     .ASCII_W " gap="
+SDB_L_SDN       .ASCII_W " sdn="
+SDB_L_SDCYC     .ASCII_W " sdcyc="
+SDB_L_SDLST     .ASCII_W " sdlast="
+SDB_L_MNT       .ASCII_W "SDB: mount drv="
+SDB_L_MNTB      .ASCII_W " buf="
 SDB_L_SDERR     .ASCII_W "SDB: SD ERROR code="
 SDB_L_ORPH      .ASCII_W "SDB: buffer could not be restored"
 SDB_L_CRMA      .ASCII_W "SDB: f32_fread error in _CRMA_3 code="

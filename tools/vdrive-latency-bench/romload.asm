@@ -4,6 +4,7 @@
 ;   0 = mount and open only (baseline, subtracted by run.sh)
 ;   1 = the original byte loop: f32_fread plus a device/window select per byte
 ;   2 = SDB_FREAD_FAST plus the byte-wise tail
+#include "../../M2M/rom/sdblock_cfg.asm"
 #include "../../M2M/QNICE/dist_kit/sysdef.asm"
 #include "../../M2M/QNICE/dist_kit/monitor.def"
 #include "../../M2M/rom/sysdef.asm"
