@@ -112,3 +112,9 @@ set_multicycle_path 1 -hold  -end -from $xt_rd_launch -to $xt_rd_capture
 ## the board's 100 MHz primary, so Vivado would time the crossing as a related
 ## path with a sub-nanosecond requirement; it is a level crossing.
 set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode13_meta_reg/D}]
+
+## Same for the 350-line raster flag, which the analog line doubler follows:
+## it is a level from the EGA in the muxed video clock, resynchronised into
+## qnice_clk by a two-flop ASYNC_REG pair in analog_video_ctl.vhd.
+set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode350_meta_reg/D}]
+set_false_path -to [get_pins {CORE/i_analog_video_ctl/video_15khz_meta_reg/D}]

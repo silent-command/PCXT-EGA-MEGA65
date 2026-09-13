@@ -21,7 +21,10 @@ use xpm.vcomponents.all;
 
 entity framework is
 generic (
-   G_BOARD : string                                         -- Which platform are we running on.
+   G_BOARD : string;                                        -- Which platform are we running on.
+   -- PCXT-EGA addition (docs/analog-video.md): build the analog-only line doubler inside av_pipeline.
+   -- Default false, so an unmodified core is bit-for-bit unchanged and pays no block RAM for it.
+   G_ANALOG_LINE_DOUBLER : boolean := false
 );
 port (
    clk_i                   : in    std_logic;                  -- 100 MHz clock
@@ -132,6 +135,8 @@ port (
    video_hs_i              : in    std_logic;
    video_hblank_i          : in    std_logic;
    video_vblank_i          : in    std_logic;
+   -- PCXT-EGA addition: 1 = line-double the ANALOG branch only (video clock domain, see av_pipeline.vhd)
+   video_analog_dbl_i      : in    std_logic := '0';
    main_joy1_up_n_o        : out   std_logic;
    main_joy1_down_n_o      : out   std_logic;
    main_joy1_left_n_o      : out   std_logic;
@@ -864,6 +869,7 @@ begin
    i_av_pipeline : entity work.av_pipeline
       generic map (
          G_VIDEO_MODE_VECTOR     => VIDEO_MODE_VECTOR,
+         G_ANALOG_LINE_DOUBLER   => G_ANALOG_LINE_DOUBLER,
          G_AUDIO_CLOCK_RATE      => 12_288_000,
          G_VGA_DX                => VGA_DX,
          G_VGA_DY                => VGA_DY,
@@ -884,6 +890,7 @@ begin
          video_hs_i              => video_hs_i,
          video_hblank_i          => video_hblank_i,
          video_vblank_i          => video_vblank_i,
+         video_analog_dbl_i      => video_analog_dbl_i,
          audio_clk_i             => audio_clk,
          audio_rst_i             => audio_rst,
          audio_left_i            => audio_left,

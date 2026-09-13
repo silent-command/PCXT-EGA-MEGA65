@@ -22,6 +22,10 @@ use xpm.vcomponents.all;
 entity av_pipeline is
    generic (
       G_VIDEO_MODE_VECTOR     : video_modes_vector;   -- Desired video format of HDMI output.
+      -- PCXT-EGA addition (docs/analog-video.md): instantiate CORE/vhdl/analog_line_doubler.vhd in the
+      -- ANALOG branch only. Off by default, so a core that does not need it is bit-for-bit unchanged and
+      -- pays nothing (the doubler's two line buffers are not built at all).
+      G_ANALOG_LINE_DOUBLER   : boolean := false;
       G_AUDIO_CLOCK_RATE      : natural;
       G_VGA_DX                : natural;              -- Actual format of video from Core (in pixels).
       G_VGA_DY                : natural;
@@ -42,6 +46,9 @@ entity av_pipeline is
       video_hs_i              : in  std_logic;
       video_hblank_i          : in  std_logic;
       video_vblank_i          : in  std_logic;
+      -- PCXT-EGA addition: 1 = line-double this stream on the ANALOG output only (G_ANALOG_LINE_DOUBLER).
+      -- Video clock domain. Default '0' so cores that do not drive it behave exactly as before.
+      video_analog_dbl_i      : in  std_logic := '0';
       audio_clk_i             : in  std_logic; -- 12.288 MHz
       audio_rst_i             : in  std_logic;
       audio_left_i            : in  std_logic_vector(15 downto 0);
@@ -388,8 +395,14 @@ begin
          h_freq_o   => video_h_freq
       ); -- i_video_counters
 
+   -- PCXT-EGA addition (docs/analog-video.md section 2): the optional 350-line line doubler lives
+   -- inside i_analog_pipeline, so only the ANALOG branch is affected. The core's video_*_i feed BOTH
+   -- output pipelines, so doubling anywhere upstream of this instance would also double the ascal
+   -- input and its HyperRAM frame-buffer bandwidth; i_video_counters above and the whole digital
+   -- pipeline below keep the raw core raster.
    i_analog_pipeline : entity work.analog_pipeline
       generic map (
+         G_ANALOG_LINE_DOUBLER   => G_ANALOG_LINE_DOUBLER,
          G_VGA_DX                => G_VGA_DX,
          G_VGA_DY                => G_VGA_DY,
          G_FONT_FILE             => G_FONT_FILE,
@@ -409,6 +422,7 @@ begin
          video_vs_i              => video_vs_i,
          video_hblank_i          => video_hblank_i,
          video_vblank_i          => video_vblank_i,
+         video_analog_dbl_i      => video_analog_dbl_i,
          audio_clk_i             => audio_clk_i,
          audio_rst_i             => audio_rst_i,
          audio_left_i            => signed(audio_left),

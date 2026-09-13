@@ -47,6 +47,7 @@ entity main is
       -- Video output, clk_video_out_ps_i domain
       video_ce_o              : out std_logic;
       video_mode13_o          : out std_logic;              -- private 31.5 kHz raster active (clk_card_video, async)
+      video_mode350_o         : out std_logic;              -- 350-line 18.4-21.9 kHz raster active (clk_video_base, async)
       video_red_o             : out std_logic_vector(7 downto 0);
       video_green_o           : out std_logic_vector(7 downto 0);
       video_blue_o            : out std_logic_vector(7 downto 0);
@@ -470,7 +471,7 @@ begin
          video_de_o                => core_video_de,
          video_mode13_o            => video_mode13_o,
          video_mode13_native_clk_o => open,
-         video_mode350_o           => open,
+         video_mode350_o           => video_mode350_o,
          video_active_dots_o       => open,
          video_active_lines_o      => open,
          video_aspect_o            => open,

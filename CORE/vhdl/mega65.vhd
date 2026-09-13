@@ -97,6 +97,8 @@ port (
    video_hs_o              : out std_logic;
    video_hblank_o          : out std_logic;
    video_vblank_o          : out std_logic;
+   -- PCXT-EGA addition (docs/analog-video.md): 1 = line-double the VGA branch only (350-line rasters)
+   video_analog_dbl_o      : out std_logic;
 
    --------------------------------------------------------------------------------------------------------
    -- Core Clock Domain
@@ -278,6 +280,7 @@ constant C_MENU_IMPROVE_AUDIO  : natural := 85;
 
 -- analog VGA modes (docs/analog-video.md)
 signal main_video_mode13       : std_logic;   -- core's private 31.5 kHz raster active (async)
+signal main_video_mode350      : std_logic;   -- core's 350-line 18.4-21.9 kHz raster active (async)
 signal qnice_vga_15khz         : std_logic;   -- either 15 kHz menu item
 
 -- QNICE clock domain
@@ -419,6 +422,7 @@ begin
          -- Raw EGA/CGA/VGA rasters in the clk_57_ps domain, re-timed by the framework's scaler
          video_ce_o           => video_ce_o,
          video_mode13_o       => main_video_mode13,
+         video_mode350_o      => main_video_mode350,
          video_red_o          => video_red_o,
          video_green_o        => video_green_o,
          video_blue_o         => video_blue_o,
@@ -521,6 +525,8 @@ begin
          qnice_csync_o       => qnice_csync_o,
          video_clk_i         => clk_57_ps,
          video_mode13_i      => main_video_mode13,
+         video_mode350_i     => main_video_mode350,
+         video_analog_dbl_o  => video_analog_dbl_o,
          video_ce_ovl_o      => video_ce_ovl_o
       ); -- i_analog_video_ctl
    qnice_vga_15khz <= qnice_osm_control_i(C_MENU_VGA_15KHZ) or qnice_osm_control_i(C_MENU_VGA_15KHZ_CS);
