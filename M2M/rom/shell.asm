@@ -731,7 +731,19 @@ _LI_FOPEN_OK    MOVE    R5, R8
                 CMP     0, R4                   ; vdrive mode?
                 RBRA    _LI_BUFFERED, !Z        ; no
                 CMP     VD_BUF_SDDIRECT, R0     ; drive without RAM buffer?
-                RBRA    _LI_FREAD_EOF, Z        ; yes: nothing to load
+                RBRA    _LI_BUFFERED, !Z        ; no
+
+                ; SD-direct: resolve the on-disk layout of the image file
+                ; once so that HANDLE_DRV_RD/WR can map a block of the image
+                ; to an absolute SD card LBA in O(1). Silently does nothing
+                ; if the file cannot be described, in which case the original
+                ; f32_fread/f32_fwrite path is used.
+                MOVE    R1, R8                  ; R1: virtual drive number
+                RSUB    SDB_VDMAP, 1
+                MOVE    R8, R9                  ; R9: block map
+                MOVE    R5, R8                  ; R5: file handle
+                RSUB    SDB_MAP_BUILD, 1
+                RBRA    _LI_FREAD_EOF, 1        ; nothing to load
 _LI_BUFFERED
 
                 ; For showing a progress bar: Take the remaining size of the
@@ -937,6 +949,7 @@ HANDLE_IO       SYSCALL(enter, 1)
                 RBRA    _HANDLE_IO_0, Z         ; no: proceed
                 MOVE    R1, @R0                 ; remember new status
                 MOVE    1, @R2                  ; set "changed" flag
+                RSUB    SDB_INVAL_ALL, 1        ; block maps are stale now
 
                 ; Loop through all VDRIVES (if any) and check for requests
 _HANDLE_IO_0    XOR     R0, R0                  ; R0: number of virtual drive
@@ -1095,7 +1108,33 @@ _HDR_SD_1       MOVE    R11, R8
                 MOVE    VD_BYTES_H, R9
                 RSUB    VD_DRV_READ, 1
                 MOVE    R8, R3                  ; R3: byte position, high
-                MOVE    R1, R8
+
+                ; Fast path: if the layout of the image file is known (see
+                ; sdblock.asm) the block is one SD card read at a computed
+                ; LBA plus a tight copy loop - no f32_fread, no O(LBA) seek.
+                ; Falls through to the FAT32 library path if anything about
+                ; this request is unusual.
+                MOVE    R11, R8                 ; R8: virtual drive
+                MOVE    R1, R9                  ; R9: file handle
+                MOVE    R2, R10                 ; R10/R11: byte position
+                MOVE    R3, R11
+                MOVE    R0, R12                 ; R12: amount of bytes
+                RSUB    SDB_VD_RDBLK, 1
+                RBRA    _HDR_SD_FAST, C         ; the block is ready
+                MOVE    R8, R11                 ; R11: virtual drive again
+                RBRA    _HDR_SD_FAT, 1          ; no map: FAT32 library
+
+_HDR_SD_FAST    MOVE    R8, R11                 ; R11: virtual drive again
+                MOVE    R11, R8                 ; acknowledge sd_rd_i
+                MOVE    VD_ACK, R9
+                MOVE    1, R10
+                RSUB    VD_DRV_WRITE, 1
+                MOVE    R11, R8
+                RSUB    SDB_SD2VD, 1            ; SD buffer -> drive buffer
+                RSUB    SDB_VD_RDDONE, 1        ; put the library's sector..
+                RBRA    _HDR_SEND_DONE, 1       ; ..back into the SD buffer
+
+_HDR_SD_FAT     MOVE    R1, R8
                 MOVE    R2, R9
                 MOVE    R3, R10
                 RSUB    VD_SD_SEEK, 1
@@ -1235,7 +1274,21 @@ _HDW_SD         MOVE    HNDL_VD_FILES, R4
                 XOR     R9, R9
                 RBRA    FATAL, 1
 
-_HDW_SD_1       MOVE    R4, R8
+                ; Fast path: if the layout of the image file is known (see
+                ; sdblock.asm) the block is one tight copy loop into the
+                ; buffer of the SD controller plus one SD card block write -
+                ; no f32_fwrite, no O(LBA) seek and no extra f32_fflush.
+                ; Reads use the very same path, so a read after a write
+                ; cannot see stale data.
+_HDW_SD_1       MOVE    R0, R8                  ; R8: virtual drive
+                MOVE    R4, R9                  ; R9: file handle
+                MOVE    R2, R10                 ; R10/R11: byte position
+                MOVE    R1, R11
+                MOVE    R3, R12                 ; R12: amount of bytes
+                RSUB    SDB_VD_WRBLK, 1
+                RBRA    _HDW_SD_ACK, C          ; done
+
+                MOVE    R4, R8
                 MOVE    R2, R9                  ; byte position, low
                 MOVE    R1, R10                 ; byte position, high
                 RSUB    VD_SD_SEEK, 1
@@ -1653,6 +1706,7 @@ FRAME_FULLSCR   SYSCALL(enter, 1)
 #include "filters.asm"
 #include "gencfg.asm"
 #include "options.asm"
+#include "sdblock.asm"
 #include "selectfile.asm"
 #include "strings.asm"
 #include "vdrives.asm"

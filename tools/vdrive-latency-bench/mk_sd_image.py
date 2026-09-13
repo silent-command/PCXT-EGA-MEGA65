@@ -72,6 +72,32 @@ setf(2, 0x0FFFFFFF)               # root dir, one cluster
 for i in range(NCL):
     c = 3+i
     setf(c, 0x0FFFFFFF if i == NCL-1 else c+1)
+
+# ---- two deliberately fragmented files, to exercise the extent table and
+#      the automatic fallback in M2M/rom/sdblock.asm
+#
+# FRAG3.VHD   3 runs of 2 clusters  -> 3 extents, must still be mapped
+# FRAG16.VHD  12 isolated clusters  -> 12 extents, must fall back
+FRAG3_RUNS  = [(1400, 2), (1500, 2), (1600, 2)]
+FRAG16_RUNS = [(1700 + 10*i, 1) for i in range(12)]
+
+def chain(runs):
+    "cluster numbers of a file, in file order"
+    out = []
+    for start, n in runs:
+        out += list(range(start, start+n))
+    return out
+
+def link(runs):
+    cl = chain(runs)
+    for i, c in enumerate(cl):
+        setf(c, 0x0FFFFFFF if i == len(cl)-1 else cl[i+1])
+    return len(cl) * SPC * BPS
+
+FRAG3_BYTES  = link(FRAG3_RUNS)
+FRAG16_BYTES = link(FRAG16_RUNS)
+assert max(chain(FRAG3_RUNS) + chain(FRAG16_RUNS)) <= N+1
+
 for k in range(NFAT):
     f.seek((PSTART+RSVD+k*FATSZ)*BPS); f.write(fat)
 
@@ -89,6 +115,31 @@ def mkent(off, name, ext, attr, clus, size):
     rd[off:off+32] = e
 mkent(0, 'QNICEBEN','CH ', 0x08, 0, 0)
 mkent(32, 'FREEDOS','VHD', 0x20, 3, FILE_BYTES)
+mkent(64, 'FRAG3', 'VHD', 0x20, FRAG3_RUNS[0][0],  FRAG3_BYTES)
+mkent(96, 'FRAG16', 'VHD', 0x20, FRAG16_RUNS[0][0], FRAG16_BYTES)
+# a small ROM-sized file whose length is not a multiple of 512, to exercise
+# the "whole blocks fast, tail byte-wise" split of SDB_FREAD_FAST
+ROM_RUNS   = [(1900, 1)]
+ROM_BYTES  = 16384 + 300
+SMALL_RUNS = [(1950, 1)]
+SMALL_BYTES = 1536 + 100
+# A file whose length is an exact multiple of the cluster size, i.e. one that
+# ends exactly on a cluster boundary. Seeking such a file to its very end
+# makes FAT32$FILE_SEEK walk one step past the last cluster, pick up the
+# end-of-chain marker as a cluster number and hand it to FAT32$RW_SIC, whose
+# range check lets it through - which on real hardware makes the SD
+# controller latch its error state. M2M/rom/sdblock.asm must never seek
+# there; see the "stop one block short" rule in SDB_FREAD_FAST.
+EXACT_RUNS  = [(1970, 1)]
+EXACT_BYTES = SPC * BPS
+link(ROM_RUNS)
+link(SMALL_RUNS)
+link(EXACT_RUNS)
+for k in range(NFAT):                       # re-write the FATs, link() above
+    f.seek((PSTART+RSVD+k*FATSZ)*BPS); f.write(fat)
+mkent(128, 'TESTROM', 'BIN', 0x20, ROM_RUNS[0][0], ROM_BYTES)
+mkent(160, 'SMALL', 'BIN', 0x20, SMALL_RUNS[0][0], SMALL_BYTES)
+mkent(192, 'EXACT', 'BIN', 0x20, EXACT_RUNS[0][0], EXACT_BYTES)
 f.seek(datalba*BPS); f.write(rd)
 
 # ---- file content: byte i = i & 0xFF, only first few sectors + markers
@@ -97,5 +148,24 @@ buf = bytes(range(256))*2
 f.seek(fstart*BPS); f.write(buf*8)          # first 8 sectors patterned
 # marker at LBA 20000 of the file
 f.seek((fstart+20000)*BPS); f.write(b'MARK20000'.ljust(512, b'\x5A'))
+
+# ---- content of the fragmented files and of the test ROM: byte at file
+#      offset k is (k*31 + 17) & 0xFF, so a block that is fetched from the
+#      wrong LBA cannot accidentally compare equal
+def fill(runs, nbytes, seed):
+    off = 0
+    for start, ncl in runs:
+        lba = datalba + (start-2)*SPC
+        for s in range(ncl*SPC):
+            if off >= nbytes: return
+            blk = bytes(((off + i)*31 + 17 + seed) & 0xFF for i in range(BPS))
+            f.seek((lba+s)*BPS); f.write(blk)
+            off += BPS
+
+fill(FRAG3_RUNS,  FRAG3_BYTES,  0)
+fill(FRAG16_RUNS, FRAG16_BYTES, 0)
+fill(ROM_RUNS,    ROM_BYTES,    0)
+fill(SMALL_RUNS,  SMALL_BYTES,  0)
+fill(EXACT_RUNS,  EXACT_BYTES,  0)
 f.close()
 print("image", OUT, "file data starts at abs LBA", fstart, "part LBA", PSTART)

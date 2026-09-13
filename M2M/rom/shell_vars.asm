@@ -161,6 +161,40 @@ VDRIVES_ITERSIZ .BLOCK  VDRIVES_MAX
 VDRIVES_FL_4K   .BLOCK  VDRIVES_MAX
 VDRIVES_FL_OFS  .BLOCK  VDRIVES_MAX
 
+; ----------------------------------------------------------------------------
+; Direct SD card block access (sdblock.asm)
+; ----------------------------------------------------------------------------
+
+; Block maps: they translate "block N of the image file" into an absolute SD
+; card LBA so that HANDLE_DRV_RD/WR and the CRT/ROM auto loader can bypass
+; the byte-wise FAT32 library. See sdblock.asm for the layout.
+;
+; The QNICE assembler cannot evaluate expressions in .BLOCK, so the size of
+; SDB_VD_MAPS is spelled out: SDB_M_SIZE (40) * SDB_VD_MAX_N (3) = 120.
+; Keep SDB_VD_MAX_N in sdblock.asm in sync with this and with VDRIVES_MAX.
+SDB_VD_MAPS     .BLOCK  120             ; one map per virtual drive
+SDB_RM_MAP      .BLOCK  40              ; map for the CRT/ROM loader
+SDB_NULL_MAP    .BLOCK  1               ; stays 0: forces the FAT32 fallback
+SDB_DUMMY_FDH   .BLOCK  FAT32$FDH_STRUCT_SIZE   ; stays 0: never dirty, see
+                                                ; SDB_ORPHAN
+
+; how to put the FAT32 library's sector buffer back (SDB_GUARD_IN/OUT)
+SDB_G_LBA       .BLOCK  2               ; the sector the library expects
+SDB_G_VAL       .BLOCK  1               ; 0 = there is nothing to restore
+
+; what the last SDB_FREAD_FAST did, also readable without the serial log
+SDB_FF_STAT     .BLOCK  1               ; SDB_B_OK or the reason it stopped
+SDB_FF_BLKS     .BLOCK  1               ; blocks it transferred
+
+; scratch space used while a map is being built
+SDB_S_BLEFT     .BLOCK  2               ; blocks that are not mapped yet
+SDB_S_RBLK      .BLOCK  2               ; blocks in the current extent
+SDB_S_CLU       .BLOCK  2               ; current cluster
+SDB_S_RSTART    .BLOCK  2               ; first cluster of the current extent
+SDB_S_NEXT      .BLOCK  2               ; successor that ended the extent
+SDB_S_FCLBA     .BLOCK  2               ; LBA of the buffered FAT sector
+SDB_S_FCVAL     .BLOCK  1               ; is SDB_S_FCLBA valid?
+
 ; System to handle manually and automatically loaded cartridges and ROMs
 ; See also globals.vhd: There are multiple types of "byte streaming devices"
 ; that are able to receive the CRT/ROM data. All need to obey to a certain
