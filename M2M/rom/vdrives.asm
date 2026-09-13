@@ -18,6 +18,10 @@
 ; and an array of RAM buffers for the disk images
 VD_INIT         SYSCALL(enter, 1)
 
+                ; no image layout is known yet: everything falls back to the
+                ; byte-wise FAT32 library path until the maps are built
+                RSUB    SDB_INVAL_ALL, 1
+
                 ; initialize the double-indirectly located file handles for
                 ; the virtual drive system
                 MOVE    HNDL_VD_FILES, R8

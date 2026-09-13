@@ -717,12 +717,42 @@ _CRMA_2         MOVE    CRTROM_AUT_DEV, R2      ; R2: target device
                 ADD     0x1000, R4
                 MOVE    M2M$RAMROM_DATA, R5     ; R5: target address
 
+                ; Fast path: resolve the layout of the ROM file once and then
+                ; stream all of its whole 512-byte blocks straight from the
+                ; SD card into the target device. The byte loop below then
+                ; only has to pick up the last partial block (usually none,
+                ; ROM images tend to be a multiple of 512 bytes). If the file
+                ; cannot be mapped nothing happens here and the byte loop
+                ; does all of the work, exactly as before.
+                MOVE    CRTROM_AUT_FILE, R8
+                MOVE    SDB_RM_MAP, R9
+                RSUB    SDB_MAP_BUILD, 1
+                MOVE    CRTROM_AUT_FILE, R8
+                MOVE    SDB_RM_MAP, R9
+                MOVE    R2, R10                 ; R10: target device
+                MOVE    R3, R11                 ; R11: target 4k window
+                MOVE    R5, R12                 ; R12: target address
+                RSUB    SDB_FREAD_FAST, 1
+                RBRA    _CRMA_3, !C             ; nothing transferred
+                MOVE    R11, R3                 ; continue behind the blocks
+                MOVE    R12, R5
+
 _CRMA_3         MOVE    CRTROM_AUT_FILE, R8     ; read next byte from SD card
                 SYSCALL(f32_fread, 1)
                 CMP     FAT32$EOF, R10          ; end of file?
                 RBRA    _CRMA_EOF, Z
                 CMP     0, R10                  ; other read error?
                 RBRA    _CRMA_4, Z              ; no
+
+#ifdef SDB_DEBUG
+                ; log the error code that the byte loop sees, so that a
+                ; failure right behind the fast path can be identified
+                MOVE    SDB_L_CRMA, R8
+                RSUB    SDB_LOGS, 1
+                MOVE    R10, R8
+                RSUB    SDB_LOGH, 1
+                RSUB    SDB_LOGNL, 1
+#endif
 
                 ; In case of a read error: check if this ROM is optional. In
                 ; this case we try the next ROM otherwise we go fatal
