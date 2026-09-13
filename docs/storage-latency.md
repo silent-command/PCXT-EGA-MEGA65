@@ -75,3 +75,20 @@ under 2,880 so the seek term is small there.
 `M2M/rom` and `M2M/vhdl` are part of this repo (only `M2M/QNICE` and
 `CORE/PCXT-EGA_MiSTer` are submodules), and `shell.asm` is already patched by
 this port, so all three fixes are ours to make.
+
+## Hardware baseline, 2026-09-13
+Measured on the R6 with the V0.7.1 build, from the serial log after a JTAG
+load (no keyboard needed, the core loads its ROMs by itself):
+
+```
+[   1.8s] Using config file: /m2m/m2mcfg
+LOADING ROM #0000[   2.0s] : OK      pcxt.rom,     16 KB
+LOADING ROM #0001[   2.2s] : OK      ega_bios.rom, 16 KB
+LOADING ROM #0002[   2.3s] : OK      xtide.rom,    12 KB
+```
+
+About 0.2 s per 16 KB, i.e. ~80 KB/s, the same rate the emulator predicts for
+the per-byte `f32_fread` path. The CRT/ROM autoload loop in
+`M2M/rom/crts-and-roms.asm` (`_CRMA_3`) has the same shape as the vdrive loop,
+so it is the one part of this path that can be measured on hardware without
+touching the keyboard.
