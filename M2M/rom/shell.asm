@@ -9,6 +9,11 @@
 ; done by sy2002 in 2023 and licensed under GPL v3
 ; ****************************************************************************
 
+; Build switches for the direct SD block access (sdblock.asm). This has to be
+; the very first include: the C preprocessor runs once, top to bottom, so a
+; #define that appears later is not visible to the #ifdef blocks above it.
+#include "sdblock_cfg.asm"
+
 ; ----------------------------------------------------------------------------
 ; Main Program
 ;
@@ -743,6 +748,11 @@ _LI_FOPEN_OK    MOVE    R5, R8
                 MOVE    R8, R9                  ; R9: block map
                 MOVE    R5, R8                  ; R5: file handle
                 RSUB    SDB_MAP_BUILD, 1
+#ifdef SDB_DEBUG
+                MOVE    R1, R8                  ; R1: virtual drive number
+                MOVE    R0, R9                  ; R0: its buffer device id
+                RSUB    SDB_DBG_ARM, 1          ; log the next 8 requests
+#endif
                 RBRA    _LI_FREAD_EOF, 1        ; nothing to load
 _LI_BUFFERED
 
@@ -1109,6 +1119,14 @@ _HDR_SD_1       MOVE    R11, R8
                 RSUB    VD_DRV_READ, 1
                 MOVE    R8, R3                  ; R3: byte position, high
 
+#ifdef SDB_DEBUG
+                MOVE    R11, R8                 ; virtual drive
+                MOVE    R0, R9                  ; VD_SIZEB
+                MOVE    R2, R10                 ; byte position, low
+                MOVE    R3, R12                 ; ..and high
+                RSUB    SDB_DBG_RD0, 1
+#endif
+
                 ; Fast path: if the layout of the image file is known (see
                 ; sdblock.asm) the block is one SD card read at a computed
                 ; LBA plus a tight copy loop - no f32_fread, no O(LBA) seek.
@@ -1180,6 +1198,9 @@ _HDR_SEND_DONE  MOVE    R11, R8                 ; virtual drive ID
                 XOR     R10, R10
                 RSUB    VD_DRV_WRITE, 1
 
+#ifdef SDB_DEBUG
+                RSUB    SDB_DBG_RD1, 1
+#endif
                 SYSCALL(leave, 1)
                 RET
 

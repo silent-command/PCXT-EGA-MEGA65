@@ -8,6 +8,7 @@
 ;   5 = NEW:  the real M2M/rom/sdblock.asm write path (SDB_VD_WRBLK);
 ;             needs a writable image, run.sh points it at sd_rw.img
 ;   6 = current shell.asm write loop (f32_fwrite per byte + f32_fflush)
+#include "../../M2M/rom/sdblock_cfg.asm"
 #include "../../M2M/QNICE/dist_kit/sysdef.asm"
 #include "../../M2M/QNICE/dist_kit/monitor.def"
 #include "../../M2M/rom/sysdef.asm"

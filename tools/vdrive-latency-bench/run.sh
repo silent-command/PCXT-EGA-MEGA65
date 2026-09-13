@@ -26,13 +26,23 @@ cd "$D"
 cp -f sd.img sd_rw.img
 MON="$Q/monitor/monitor.out"
 
-build () { cc -xc -E "$1" 2>/dev/null | sed '/^#.*/d' > _pp.asm; ./qasm _pp.asm "$2" >/dev/null; }
+# -DSDB_NODEBUG turns the serial log off no matter how M2M/rom/sdblock_cfg.asm
+# is set, so that the cycle counts below are always those of the shipping
+# build. $3 can override it to build the logging variant.
+build () { cc -xc -E ${3:--DSDB_NODEBUG} "$1" 2>/dev/null | sed '/^#.*/d' > _pp.asm; ./qasm _pp.asm "$2" >/dev/null; }
 
 # ---------------------------------------------------------------------------
 build fastpath.asm fastpath.out
 echo "=== correctness: fast path vs. f32_fread, byte for byte ==="
 printf "LOAD $MON\nLOAD fastpath.out\nRUN 8000\nQUIT\n" | ./qnice -a sd_rw.img \
   | sed -e 's/^\(\[[0-9A-F]*\] Q> \)*//' -e '/^HALT instruction/d' -e '/^$/d' -e '/^\[/d'
+cp -f sd.img sd_rw.img
+
+# the same checks again, but with the serial log compiled in, so that the
+# logging code itself is known to assemble and not to disturb the results
+build fastpath.asm fastpath_dbg.out -DFORCE_LOG
+printf "LOAD $MON\nLOAD fastpath_dbg.out\nRUN 8000\nQUIT\n" | ./qnice -a sd_rw.img \
+  | sed -e 's/^\(\[[0-9A-F]*\] Q> \)*//' | grep -E "summary|FAIL" | sed 's/^/with SDB_DEBUG: /'
 cp -f sd.img sd_rw.img
 
 # ---------------------------------------------------------------------------

@@ -77,7 +77,7 @@ entity main is
       -- Debug counters for the firmware log (rom_loader readback 6/7, m2m-rom.asm DBG_CORE_STATUS)
       dbg_bus_reads_o         : out std_logic_vector(15 downto 0);   -- reads in F0000-FFFFF (BIOS fetches)
       dbg_vsync_o             : out std_logic_vector(15 downto 0);   -- pixel enables per frame / 64
-      dbg_keys_o              : out std_logic_vector(15 downto 0);   -- last read address, bits 21..6
+      dbg_keys_o              : out std_logic_vector(15 downto 0);   -- hdd= : block acks of vdrive 2 (16 bit, free running)
       dbg_flags_o             : out std_logic_vector(7 downto 0);    -- hold/pause state, see p_dbg
 
       -- On-Screen-Menu selections (clk_main_i domain)
@@ -338,6 +338,12 @@ architecture synthesis of main is
    signal dbg_hrd, dbg_hrv, dbg_hwr : std_logic_vector(15 downto 0);
    signal mreq7_q, mreq6_q, blkwr_q, blkack_q : std_logic := '0';
    signal wr_req_cnt, rd_req_cnt, blk_wr_cnt, blk_ack_cnt : unsigned(7 downto 0) := (others => '0');
+   -- hard disk (vdrive 2) block acknowledges: a full 16 bits, so that a whole
+   -- FreeDOS boot or "dir" can be counted without wrapping. Read it off the
+   -- status line before and after, and divide the wall clock time by the
+   -- difference to get the real cost of one sector.
+   signal hdd_ack_q           : std_logic := '0';
+   signal hdd_ack_cnt         : unsigned(15 downto 0) := (others => '0');
    signal ce_cnt              : unsigned(21 downto 0) := (others => '0');
    signal ce_per_frame        : std_logic_vector(15 downto 0) := (others => '0');
    signal vs_q                : std_logic := '0';
@@ -649,17 +655,19 @@ begin
    -- Status line (rom_loader regs 6/7/8, printed by the firmware at start and on every OSM selection)
    dbg_bus_reads_o <= dbg_hrd;                                                       -- bist= : HyperRAM self test {done, mismatches}
    dbg_vsync_o     <= std_logic_vector(wr_req_cnt) & std_logic_vector(rd_req_cnt);  -- req=  : {FDD write requests, FDD read requests}
-   dbg_keys_o      <= std_logic_vector(blk_ack_cnt) & std_logic_vector(blk_wr_cnt); -- blk=  : {block acks, block writes} for drive A
+   dbg_keys_o      <= std_logic_vector(hdd_ack_cnt);                                -- hdd=  : block acks of vdrive 2, the hard disk
 
    p_dbg_wr : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
          mreq7_q <= mgmt_req(7); mreq6_q <= mgmt_req(6);
          blkwr_q <= blk_wr(0);   blkack_q <= blk_ack(0);
+         hdd_ack_q <= blk_ack(2);
          if mgmt_req(7) = '1' and mreq7_q = '0' then wr_req_cnt <= wr_req_cnt + 1; end if;
          if mgmt_req(6) = '1' and mreq6_q = '0' then rd_req_cnt <= rd_req_cnt + 1; end if;
          if blk_wr(0)   = '1' and blkwr_q = '0' then blk_wr_cnt <= blk_wr_cnt + 1; end if;
          if blk_ack(0)  = '1' and blkack_q = '0' then blk_ack_cnt <= blk_ack_cnt + 1; end if;
+         if blk_ack(2)  = '1' and hdd_ack_q = '0' then hdd_ack_cnt <= hdd_ack_cnt + 1; end if;
       end if;
    end process;
 

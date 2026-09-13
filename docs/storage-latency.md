@@ -4,8 +4,15 @@
 FreeDOS takes about 57 seconds to boot from the hard-disk image on hardware,
 and the first `dir` at the C:\> prompt takes about 40 seconds. Every later
 `dir` is instant, because DOS keeps the free-cluster count in the drive
-parameter block and the FAT sectors in its buffers. CPU speed makes no
-difference, which already rules out the emulated 8088 and the ISA bus.
+parameter block and the FAT sectors in its buffers.
+
+> **The original note here said "CPU speed makes no difference, which already
+> rules out the emulated 8088 and the ISA bus." That was wrong, and it is what
+> sent this whole investigation down the wrong road.** Re-measured properly:
+> the same boot takes 64 s at 4.77 MHz and 35 s at "Max". The machine is
+> CPU-bound. See "What it actually was, 2026-09-13" at the end. Everything
+> between here and there is still worth reading as a description of the
+> storage path, but not as a diagnosis of the boot time.
 
 ## What a sector costs (measured)
 `tools/vdrive-latency-bench/` runs the real QNICE monitor ROM and FAT32
@@ -31,6 +38,10 @@ The RTL is not the bottleneck: `mgmt_bridge.sv` issues exactly one block
 request per sector and `vd_glue.vhd` adds only clock-crossing flops.
 
 ## What the hardware timing says
+**Superseded - see "What it actually was, 2026-09-13" at the end of this
+document. The boot is CPU-bound, not I/O-bound, and the reasoning below was
+wrong. It is kept because the mistake is instructive.**
+
 A FreeDOS boot reads roughly 350-600 sectors (kernel, COMMAND.COM, the
 CONFIG.SYS drivers). At 57 seconds that is over 100 ms per sector, about ten
 times the firmware cost above. Two candidates for the difference, to be
@@ -47,6 +58,11 @@ settled with the `hdd=` sector counter on the status line:
 A first `dir` should read only about 87 sectors on this image (2 root-directory
 sectors plus the 85-sector FAT walk for "bytes free"), so the 40 seconds is
 the same per-sector problem, not a different one.
+
+Neither candidate was it. The `hdd=` counter later said 623 sectors for a
+boot plus a `dir`, and the per-request timing said 15.3 ms each: about 9.5 s
+of disk activity inside 103 s of wall clock. The unexamined step was dividing
+wall-clock time by sector count and assuming the sectors explained it.
 
 ## The image
 `sdcard/pcxt/freedos.vhd`: MBR partition type 06 at LBA 17, 87,091 sectors;
@@ -68,6 +84,9 @@ or a small cluster table, then a block is one `SD$READ_BLOCK` at a computed
 LBA. Random access at the end of the image drops from ~1.9 s to under a
 millisecond. It applies symmetrically to `HANDLE_DRV_WR`, which today also
 pays an `f32_fflush` (an extra SD block write) per block.
+
+(Both of those are real and were implemented. What they buy is bulk transfer
+rate, not boot time: see the end of this document.)
 
 Floppies use the same path and cost the same per sector; their LBAs stay
 under 2,880 so the seek term is small there.
@@ -231,18 +250,186 @@ They now match the monitor, at a cost of about one instruction per byte.
 Every bail-out reason is recorded in the map (`SDB_M_BAIL`) and in
 `SDB_FF_STAT`, so it can be read out even without the serial log.
 
+---
+
+## Hardware run 2: the map is right, the vdrive is still slow
+
+The instrumented build produced, at mount of the hard disk image:
+
+```
+SDB: build fdh=81B4 dev=814A spc=0008 size=02A97600 clus=00046ED8
+SDB: map ext=0001 tblk=000154BB lba0=00244DE4 bail=0000
+```
+
+512-byte sectors, **4 KB clusters (spc=8)**, one extent, 87,227 whole blocks,
+no bail - on two independently written copies of the image. The ROM auto load
+got measurably faster on the same build, so `sdblock.asm` itself works. The
+FreeDOS boot and the first `dir` did not change at all.
+
+Note what `spc=8` means for "Hardware run 1": a 16 KB ROM is exactly 4
+clusters, so it *did* end on a cluster boundary and the seek-past-the-chain
+really was reachable. That story holds.
+
+For the vdrive there are only two possibilities, and they need different
+answers:
+
+* `HANDLE_DRV_RD` refuses the fast path on every request, or
+* it takes it, and the time goes somewhere the firmware does not control -
+  in which case the premise of this work is wrong for the vdrive path.
+
+The second is not far-fetched. This document's own first measurement already
+said so: a boot reads 350-600 sectors in 57 s, i.e. **over 100 ms per
+sector**, while the whole firmware byte loop only ever cost 10.45 ms. Even
+before this work, 90 % of the time per sector was somewhere else. Removing
+the 10 % is invisible. The `VD_SD_SEEK` term was the candidate for the other
+90 % - and that term is now provably gone, so if the boot time is unchanged,
+it was never the seek either.
+
+### What the third instrumented build measures
+
+Per virtual drive block request (`SDB_DBG_RD0` / `SDB_DBG_RD1` in
+`sdblock.asm`, hooked into `HANDLE_DRV_RD`):
+
+```
+SDB: rd drv=0002 sz=0200 pos=02A97400 st=0000 lba=00244DE4 fw=0000889C gap=00003A1F
+```
+
+* `drv`, `sz` (`VD_SIZEB`), `pos` (`VD_BYTES_H:L`) - the request as the core
+  posed it.
+* `st` - the decision, from `SDB_RD_STAT`: **0 = fast path taken**, 1 =
+  `VD_SIZEB` was not 512, 2 = position not block aligned, 3 = no usable map
+  for this drive or handle, 4 = block outside the mapped file, 5 = the
+  library's buffer could not be made restorable, 6 = SD card error. This
+  alone settles possibility one.
+* `lba` - the LBA it computed, when it was taken.
+* `fw` - QNICE cycles spent **inside `HANDLE_DRV_RD`**, i.e. everything the
+  firmware controls. 50,000 cycles = 1 ms. 0.7 ms is about `0000 88B8`;
+  10 ms is about `0007 A120`.
+* `gap` - QNICE cycles between the **end of the previous request and the
+  start of this one**: the core, the bridge, the SD controller's own latency
+  and the poll interval of the Shell main loop. **If `gap` dwarfs `fw`, the
+  firmware was never the bottleneck** and the remaining work is in
+  `mgmt_bridge.sv` / `vd_glue.vhd` / `sd_spi.vhd`, not here.
+
+The first 8 requests after each mount are logged, plus one in every 512 after
+that, so the steady state is visible without flooding the serial line and
+without changing the timing.
+
+### Hardware sector counter
+
+`CORE/vhdl/main.vhd` now counts rising edges of `blk_ack(2)` - the hard disk -
+into a free-running 16-bit counter and publishes it alone as the third status
+word, relabelled `hdd=` in `CORE/m2m-rom/m2m-rom.asm`. The status line prints
+on every OSM selection, so: open the OSM, note `hdd=`, boot, open the OSM,
+note it again. Wall clock divided by the difference is the true cost of one
+sector, with no arithmetic about how many sectors DOS "should" read.
+
+The 8-bit `blk=` counters for floppy A are still maintained internally, they
+are just no longer published.
+
+---
+
+## Hardware run 3: 165 ms per sector, and why no `SDB: rd` line appeared
+
+The `hdd=` counter did its job: **623 sectors across a 64 s boot plus a 39 s
+`dir`, i.e. about 165 ms per 512-byte sector.** The firmware byte loop that
+this whole exercise replaced only ever cost 10.45 ms, so **94 % of a sector
+has always been somewhere the firmware does not control**, and the 0.70 ms
+the fast path now costs is 0.4 % of it. That is the headline, and it was
+already visible in the very first measurement at the top of this document
+(350-600 sectors in 57 s is over 100 ms per sector); it just had not been
+confronted.
+
+### The logging bug
+
+Not one `SDB: rd` line printed, while the map lines printed normally. Cause:
+`#define SDB_DEBUG` lived in `sdblock.asm`, which `shell.asm` includes at its
+**end**. The C preprocessor runs once, top to bottom, over the concatenated
+source, so while it was processing `HANDLE_DRV_RD`, `LOAD_IMAGE` and
+`crts-and-roms.asm` - all of them *above* that include - the macro did not
+exist yet and every `#ifdef SDB_DEBUG` block in them was silently dropped.
+Only the logging inside `sdblock.asm` itself, which comes after the define,
+survived. `grep -c "RSUB SDB_DBG_RD0" m2m-rom.lis` said `0`.
+
+The switch now lives in its own file, `M2M/rom/sdblock_cfg.asm`, included as
+the **first line of shell.asm**, so it is visible everywhere. The built ROM is
+now checked for the call sites rather than assumed:
+
+```
+SDB_DBG_ARM 1   SDB_DBG_RD0 1   SDB_DBG_RD1 1   SDB_SDRD 5   SDB_SDWR 1
+```
+
+### "Successfully loaded disk image to buffer RAM" is a red herring
+
+`LOAD_IMAGE` prints `LOG_STR_LOADOK` at `_LI_FREAD_EOF` for every virtual
+drive, and the SD-direct branch jumps there too, so the wording appears even
+though nothing was loaded into buffer RAM. Drive 2 really is SD-direct: the
+map build only runs in the SD-direct branch, and it ran. To remove the doubt
+from the log rather than from the reasoning, every mount now prints
+
+```
+SDB: mount drv=0002 buf=AAAA
+```
+
+where `buf=AAAA` is `VD_BUF_SDDIRECT`, and every request line carries `drv=`.
+
+### What the next build measures
+
+The `SDB: rd` line now decomposes a sector completely:
+
+```
+SDB: rd drv=0002 sz=0200 pos=02A97400 st=0000 lba=00244DE4 fw=00042F80 gap=0096ACA0 sdn=0002 sdcyc=00041A70 sdlast=00020D38
+```
+
+* `st=0000` means the fast path was taken (the codes are listed below).
+* `fw` - cycles inside `HANDLE_DRV_RD`, **including** the card accesses.
+* `sdn` - how many SD card block accesses this one request made, `sdcyc` how
+  many cycles they took together, `sdlast` how long the last single one took.
+  Every card access of the fast path goes through `SDB_SDRD` / `SDB_SDWR`,
+  which is where the timing is taken.
+* `gap` - cycles between the end of the previous request and the start of
+  this one: the core, the bridge and the poll interval of the Shell main
+  loop. Nothing the firmware does is in here.
+
+50,000 cycles = 1 ms. `fw - sdcyc` is the pure firmware cost (expect about
+`0000 88B8`). The three numbers `sdcyc`, `fw - sdcyc` and `gap` add up to the
+165 ms, and whichever one is large is the answer.
+
+### How it came out
+
+The prediction made here before the measurement was that neither the card
+alone nor the firmware would explain 165 ms and that `gap` would be the
+largest of the three. That is what happened: 0.40 ms firmware, 3.03 ms of
+card accesses, 11.8 ms of gap. The full decomposition and what it means is in
+"What it actually was, 2026-09-13" at the end of this document; the second of
+those card accesses has since been removed, see "The second SD access,
+removed".
+
 ## Serial log for the next hardware run
 
-`M2M/rom/sdblock.asm` has, near the top:
+`M2M/rom/sdblock_cfg.asm` is the single switch, and shell.asm includes it as
+its very first line so that every `#ifdef SDB_DEBUG` in the tree sees it:
 
 ```
-;#define SDB_DEBUG
+#define SDB_DEBUG
 ```
 
-**Remove the leading `;` and rebuild** (`CORE/m2m-rom/make_rom.sh`) to get a
-log on the serial console at boot - no keyboard involved, since the ROM auto
-loader runs by itself. Put the `;` back to switch it off. The default build
-contains none of it.
+**It is currently OFF** (`;#define SDB_DEBUG`), so the tree builds the
+shipping firmware and `m2m-rom.rom` matches. Remove the `;` and rebuild
+(`CORE/m2m-rom/make_rom.sh`) to get the instrumented one. Nothing else has to
+change.
+
+Whichever way it is set, check the built listing rather than trusting it -
+this is the one-pass preprocessor trap, and it is silent:
+
+```
+grep -c "RSUB SDB_DBG_RD0," CORE/m2m-rom/m2m-rom.lis   # 1 with the log, 0 without
+grep -c "RSUB SDB_SDRD,"    CORE/m2m-rom/m2m-rom.lis   # 3, always: the fast path itself
+```
+
+The log goes to the serial console at boot - no keyboard involved, since the
+ROM auto loader runs by itself, and the vdrive lines appear as soon as an
+image is mounted.
 
 What it prints, per ROM file:
 
@@ -333,19 +520,27 @@ real `SD$READ_BLOCK` / `SD$WRITE_BLOCK` time (0.4-1 ms) has to be added to
 both columns - and note that the guard means the vdrive path now issues
 **two** SD reads per block where the old path issued one.
 
-## Expected effect on hardware
-* **CRT/ROM auto load** is the keyboard-free check. The baseline above is
-  ~0.2 s per 16 KB file, which the bench predicts as 240 ms of firmware plus
-  32 SD block reads, so on this card the firmware dominates. After the change
-  the firmware part is 28.4 ms, so the gap between the
-  `LOADING ROM #nnnn : OK` timestamps should fall from ~0.2 s to roughly
-  **0.04-0.07 s**. Whatever is left *is* the SD block read time, which makes
-  this also a direct measurement of it.
-* **Sequential vdrive read** of one sector: ~10.9-11.5 ms before, ~1.5-2.7 ms
-  after (0.7 ms firmware plus two SD reads), i.e. roughly **4-7x**.
-* **Random vdrive read**, which is what a FreeDOS boot does: the O(LBA)
-  `VD_SD_SEEK` term disappears completely. At LBA 5,000 that alone was about
-  105 ms and near the end of the image about 1.9 s; it is now 0.
+## Effect on hardware, measured
+What these predictions got right and wrong is settled at the end of this
+document; the short version is that the per-sector transfer numbers held up
+and the boot-time conclusion drawn from them did not.
+
+* **CRT/ROM auto load**, the keyboard-free check: ~0.2 s per 16 KB file
+  before, ~0.07 s after, i.e. 88 KB/s to 220 KB/s. Less than the 8x the
+  emulator predicts for the firmware alone, because the emulator's SD card
+  costs nothing and the real one does not; the card is now the limit on this
+  path.
+* **One vdrive sector**: about 12 ms of firmware plus card time before,
+  **3.4 ms** after the first version and **about 1.9 ms** once the restoring
+  read was dropped (0.40 ms firmware plus one ~1.5 ms card access). Bulk I/O
+  - copying files, loading large programs, floppy transfers - is roughly
+  3.5x faster, now closer to 6x.
+* The O(LBA) `VD_SD_SEEK` term disappears completely: at LBA 5,000 it was
+  about 105 ms on its own, near the end of the image about 1.9 s, and it is
+  now 0. This turned out to matter far less than expected, because DOS reads
+  are mostly sequential and the term was rarely paid.
+* **Boot time is not affected**, because it was never disk-bound. See "What
+  it actually was".
 * **Writes** lose the per-byte library work, the read-before-modify and the
   `f32_fflush` block write.
 
@@ -379,16 +574,19 @@ both columns - and note that the guard means the vdrive path now issues
   card fixes it.
 
 ## Budget
-QNICE **ROM**: `END_OF_ROM` moved from `0x58DE` to `0x5E15`, i.e. **+1335
-words (2670 bytes)**. Free ROM space goes from 5922 to **4587 words**. With
-`SDB_DEBUG` enabled it is `0x6036`, i.e. **4042 words still free**, so the
-logging build fits comfortably.
+QNICE **ROM**: `END_OF_ROM` moved from `0x58DE` to `0x5E2F` in the shipping
+build, i.e. **+1361 words (2722 bytes)**; free ROM space goes from 5922 to
+**4561 words**. With `SDB_DEBUG` on it is `0x61E4`, i.e. **3612 words still
+free**, so the logging build fits comfortably.
 
-QNICE **RAM**: `HEAP` moved from `0x8200` to `0x82BF`, i.e. **+191 words (382
+QNICE **RAM**: `HEAP` moved from `0x8200` to `0x82D2`, i.e. **+210 words (420
 bytes)**: 3 x 40 words of virtual-drive block map, 40 words for the CRT/ROM
-map, 12 words for `SDB_DUMMY_FDH`, 1 word for `SDB_NULL_MAP`, 5 words of
-guard and status state and 13 words of map-build scratch. "Free QNICE memory"
-in the boot log goes from 736 to **545 words**. Nothing overflows.
+map, 12 words for `SDB_DUMMY_FDH`, 1 word for `SDB_NULL_MAP`, 3 words of
+guard and status state, 3 words of per-request status, 11 words of
+measurement state, 7 words of SD card timing and 13 words of map-build
+scratch. "Free QNICE memory" in the boot log goes from 736 to **526 words**.
+Nothing overflows. The RAM cost is the same with and without `SDB_DEBUG`, on
+purpose: `SDB_RD_STAT` is readable in the shipping build too.
 
 If more headroom is needed, `SDB_MAX_EXT` (8) is the dial: each extent costs
 4 words per map. `SDB_M_SIZE` and `SDB_VD_MAX_N` in `sdblock.asm` and the
@@ -413,8 +611,15 @@ because the QNICE assembler segfaults on an expression in `.BLOCK`.
   `HANDLE_DRV_WR` with the old code kept as the fallback
 * `M2M/rom/shell_vars.asm` - the maps, the dummy handle, the guard state
 * `M2M/rom/vdrives.asm` - `SDB_INVAL_ALL` from `VD_INIT`
+* `M2M/rom/sdblock_cfg.asm` - new, the single SDB_DEBUG switch, included as
+  the first line of shell.asm so the preprocessor sees it everywhere
 * `M2M/rom/crts-and-roms.asm` - fast path in the ROM auto loader, plus the
   `SDB_DEBUG` hook that logs the error code the byte loop sees
+* `CORE/vhdl/main.vhd` - `hdd_ack_cnt`, a free-running 16-bit counter of
+  `blk_ack(2)` rising edges, published as `dbg_keys_o` in place of the two
+  8-bit floppy-A counters
+* `CORE/m2m-rom/m2m-rom.asm` - `DBG_STR_8` relabelled from `" blk="` to
+  `" hdd="`
 * `tools/vdrive-latency-bench/` - `fastpath.asm` (correctness),
   `romload.asm` (ROM loader cost), `bench_env.asm` (shell variable stubs),
   variants 4-6 in `loop_variants.asm`, fragmented / short / exact-cluster
@@ -454,3 +659,93 @@ arose. The fix leaves at least one whole block to the byte loop so the
 hand-over position is always strictly inside the file, resets the SD
 controller after any failed block access, and no longer touches the FAT32
 library's buffered-sector bookkeeping at all.
+
+## What it actually was, 2026-09-13
+The per-request instrumentation finally decomposed a sector, on hardware,
+with the fast path active (50,000 QNICE cycles = 1 ms):
+
+| stage | time per 512-byte sector |
+|---|---|
+| firmware work in `HANDLE_DRV_RD` | 0.40 ms |
+| SD card accesses (two: the data block and the restoring read) | 3.03 ms |
+| gap between one request finishing and the next arriving | 11.8 ms |
+| total | ~15.3 ms |
+
+A FreeDOS boot plus one `dir` served 623 sectors (`hdd=` counter), so **all
+disk activity together is about 9.5 s of the 103 s those two took**. The card
+is not slow (about 1.5 ms per access, no retry storm, no `SD ERROR` lines) and
+the firmware is now negligible.
+
+The remaining ~93 s is the emulated 8088 running FreeDOS's startup and
+FreeCom's directory code, with no disk access at all. Confirmed directly: the
+same boot from the same image takes **64 s at 4.77 MHz and 35 s at "Max"**.
+The machine is CPU-bound, not I/O-bound.
+
+So the premise behind this whole investigation was wrong. The error was
+dividing wall-clock time by sector count and assuming the sectors explained
+it; the first measurement in this document said 10.45 ms of firmware per
+sector against an apparent 100+ ms, and that gap should have been treated as
+evidence that most of the time was not disk at all.
+
+What the work is still worth: a sector costs about 3.4 ms of firmware plus
+card time instead of about 12 ms, so bulk I/O (copying files, loading large
+programs, floppy access) is roughly 3.5x faster, and the CRT/ROM autoload at
+startup is measurably quicker. It is not a fix for boot time.
+
+## The second SD access, removed
+That cheap win has been taken. `SDB_GUARD_OUT` used to read back the sector
+the FAT32 library believed was in the hardware buffer, which was a second SD
+card access - about 1.5 ms of the 3.03 ms - for something the library's own
+mechanism does for nothing. It now simply tells both device handles that the
+buffer contents are unknown (`SDB_ORPHAN`), by pointing
+`FAT32$DEV_BUFFERED_FDH` at an all-zero, never-dirty dummy handle. That is
+exactly what `FAT32$READ_FDH` already does to itself: it compares
+`FAT32$DEV_BUFFERED_FDH` against the handle it was called for and re-reads
+through `FAT32$RW_SIC` whenever they differ.
+
+`_SDB_OWNER` treats the dummy as "nobody owns the buffer", so the request
+after an orphaned one finds nothing to flush and nothing to mark, and is not
+refused. The dummy is used rather than the obvious 0 because `FAT32$FLUSH`
+returns immediately when called with `R8 = 0` and leaves `R9` - its error
+code - untouched, and `FAT32$FILE_SEEK` checks that stale `R9` right after
+calling it; a seek would then silently do nothing.
+
+This cannot reintroduce what made hardware run 1 fatal: orphan-marking issues
+no SD access at all, so it cannot produce an LBA, wild or otherwise. Every
+guard from that round stays - stopping one whole block short of the end of a
+file, verifying `FAT32$FDH_ACCESS` after every seek, validating every LBA in
+`SDB_CLULBA`, and resetting the controller after any failed access. The
+change is also strictly *safer* than the restore it replaces: restoring could
+only ever satisfy one of the two device handles that share the single
+hardware buffer, while marking tells both.
+
+Expected per sector: 0.40 ms firmware plus one ~1.5 ms card access, i.e.
+about **1.9 ms instead of 3.4 ms**, and a request `sdn=0001` instead of
+`sdn=0002`. The shipping ROM shows it directly: `RSUB SDB_SDRD,` went from 5
+call sites to 3.
+
+Bench, before and after, in QNICE cycles for one 512-byte block (the emulator's
+SD card is instantaneous, so this only shows the guard arithmetic that also
+went away; the real saving is the card access):
+
+| path | before | after |
+|---|---|---|
+| vdrive read | 35,063 (0.701 ms) | **33,689 (0.674 ms)** |
+| vdrive write | 34,019 (0.680 ms) | **32,645 (0.653 ms)** |
+| 16 KB ROM load | 1,421,449 (28.43 ms) | 1,419,748 (28.39 ms) |
+
+All checks pass, including three that exist specifically for this change:
+
+* **T7a** - after a map build that gives up half way, the very next
+  `f32_fread` must still return the right bytes.
+* **T7b** - a fast vdrive read must not disturb a second, unrelated open file
+  handle on the same device.
+* **T8** - the library reads a *different* sector immediately after the fast
+  path overwrote the buffer. Without the marking it would serve our block.
+
+Those three were verified to be sensitive by disabling `SDB_GUARD_OUT` and
+confirming all three fail. That negative control was worth running: T8 as
+first written compared blocks 4 and 6 of the test image, which are
+byte-identical (the generator patterns the first eight sectors the same way),
+so it passed with the protection removed. It now compares the `MARK20000`
+sector against the `00..FF` patterned one.
