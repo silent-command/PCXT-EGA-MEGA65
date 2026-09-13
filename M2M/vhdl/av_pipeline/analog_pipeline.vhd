@@ -12,6 +12,10 @@ use ieee.numeric_std.all;
 
 entity analog_pipeline is
    generic (
+      -- PCXT-EGA addition (docs/analog-video.md): build CORE/vhdl/analog_line_doubler.vhd in beside
+      -- video_mixer, for the 350-line EGA/MDA rasters. Default false, so a core that does not use it
+      -- is bit-for-bit unchanged and pays no block RAM for it.
+      G_ANALOG_LINE_DOUBLER   : boolean := false;
       G_VGA_DX                : natural;                 -- Actual format of video from Core (in pixels).
       G_VGA_DY                : natural;
       G_FONT_FILE             : string;
@@ -31,6 +35,9 @@ entity analog_pipeline is
       video_vs_i              : in  std_logic;
       video_hblank_i          : in  std_logic;
       video_vblank_i          : in  std_logic;
+      -- PCXT-EGA addition: 1 = line-double this stream (G_ANALOG_LINE_DOUBLER). Video clock domain.
+      -- Default '0' so cores that do not drive it behave exactly as before.
+      video_analog_dbl_i      : in  std_logic := '0';
       audio_clk_i             : in  std_logic;
       audio_rst_i             : in  std_logic;
       audio_left_i            : in  signed(15 downto 0); -- Signed PCM format
@@ -84,6 +91,24 @@ architecture synthesis of analog_pipeline is
    signal vga_blue           : std_logic_vector(7 downto 0);
    signal vga_hs             : std_logic;
    signal vga_vs             : std_logic;
+
+   -- PCXT-EGA addition: the 350-line line doubler and the mux that hands it the stream
+   signal dbl_active         : std_logic;
+   signal dbl_ce             : std_logic;
+   signal dbl_red            : std_logic_vector(7 downto 0);
+   signal dbl_green          : std_logic_vector(7 downto 0);
+   signal dbl_blue           : std_logic_vector(7 downto 0);
+   signal dbl_hs             : std_logic;
+   signal dbl_vs             : std_logic;
+   signal dbl_hblank         : std_logic;
+   signal dbl_vblank         : std_logic;
+   signal src_red            : std_logic_vector(7 downto 0);
+   signal src_green          : std_logic_vector(7 downto 0);
+   signal src_blue           : std_logic_vector(7 downto 0);
+   signal src_hs             : std_logic;
+   signal src_vs             : std_logic;
+   signal src_de             : std_logic;
+   signal src_ce_ovl         : std_logic;
 
    -- registers used to implement the phase-shifting of the VGA output signals
    signal vga_red_ps         : std_logic_vector(7 downto 0);
@@ -156,14 +181,78 @@ begin
          VGA_DE      => mix_vga_de
       ); -- i_video_mixer
 
+   --------------------------------------------------------------------------------------------------
+   -- PCXT-EGA addition: 350-line line doubler, in parallel with video_mixer
+   --
+   -- It sits BESIDE video_mixer rather than in front of it, because video_mixer cannot carry the
+   -- doubled pixel enable: with a real clock enable on ce_pix it reduces CE_PIXEL to the RISING EDGE
+   -- of ce_pix (video_mixer.sv:185-194, "fs_osc ? (~old_ce & ce_pix) : ce_pix"), so two enables on
+   -- adjacent video clocks become one pixel. Doubling the 16.257 MHz EGA dot clock gives 32.5 MHz in a
+   -- 57.27 MHz domain, i.e. enables 1 or 2 clocks apart, and the 1-clock gaps - 24 % of them - would
+   -- each lose a column: CORE/rtl/tb/analog_pipeline_350_tb.sv measured 486 of 640 columns surviving
+   -- when the doubler was placed in front of the mixer. Everything downstream of this mux samples on
+   -- a LEVEL (vga_recover_counters.vhd:48) or on every clock, so the doubled stream passes intact.
+   --
+   -- With G_ANALOG_LINE_DOUBLER = false, or video_analog_dbl_i = '0', src_* is video_mixer's output
+   -- and this block is a plain rename.
+   --------------------------------------------------------------------------------------------------
+
+   gen_analog_dbl : if G_ANALOG_LINE_DOUBLER generate
+      i_analog_line_doubler : entity work.analog_line_doubler
+         port map (
+            video_clk_i    => video_clk_i,
+            video_rst_i    => video_rst_i,
+            video_dbl_i    => video_analog_dbl_i,
+            video_ce_i     => video_ce_i,
+            video_ce_ovl_i => video_ce_ovl_i,
+            video_red_i    => video_red_i,
+            video_green_i  => video_green_i,
+            video_blue_i   => video_blue_i,
+            video_hs_i     => video_hs_i,
+            video_vs_i     => video_vs_i,
+            video_hblank_i => video_hblank_i,
+            video_vblank_i => video_vblank_i,
+            video_ce_o     => dbl_ce,
+            video_ce_ovl_o => open,
+            video_red_o    => dbl_red,
+            video_green_o  => dbl_green,
+            video_blue_o   => dbl_blue,
+            video_hs_o     => dbl_hs,
+            video_vs_o     => dbl_vs,
+            video_hblank_o => dbl_hblank,
+            video_vblank_o => dbl_vblank,
+            video_active_o => dbl_active
+         ); -- i_analog_line_doubler
+   else generate
+      dbl_active <= '0';
+      dbl_ce     <= '0';
+      dbl_red    <= (others => '0');
+      dbl_green  <= (others => '0');
+      dbl_blue   <= (others => '0');
+      dbl_hs     <= '0';
+      dbl_vs     <= '0';
+      dbl_hblank <= '1';
+      dbl_vblank <= '1';
+   end generate gen_analog_dbl;
+
+   src_red     <= dbl_red   when dbl_active = '1' else mix_r;
+   src_green   <= dbl_green when dbl_active = '1' else mix_g;
+   src_blue    <= dbl_blue  when dbl_active = '1' else mix_b;
+   src_hs      <= dbl_hs    when dbl_active = '1' else vga_hs;
+   src_vs      <= dbl_vs    when dbl_active = '1' else vga_vs;
+   src_de      <= ((not dbl_hblank) and (not dbl_vblank)) when dbl_active = '1' else mix_vga_de;
+   -- the overlay re-samples the picture on this enable, so while doubling it has to run at the
+   -- doubled pixel rate instead of the core's free-running clk/2
+   src_ce_ovl  <= dbl_ce    when dbl_active = '1' else video_ce_ovl_i;
+
    -- The MEGA65 VDAC (ADV7125BCPZ170) does not like non-zero color values outside the visible window.
    -- This is why we explicitly set R, G, B to zero outside of "data enable".
-   vga_data_enable : process(mix_r, mix_g, mix_b, mix_vga_de)
+   vga_data_enable : process(src_red, src_green, src_blue, src_de)
    begin
-      if mix_vga_de = '1' then
-         vga_red   <= mix_r;
-         vga_green <= mix_g;
-         vga_blue  <= mix_b;
+      if src_de = '1' then
+         vga_red   <= src_red;
+         vga_green <= src_green;
+         vga_blue  <= src_blue;
       else
          vga_red   <= (others => '0');
          vga_green <= (others => '0');
@@ -181,13 +270,13 @@ begin
       )
       port map (
          vga_clk_i         => video_clk_i,
-         vga_ce_i          => video_ce_ovl_i,
+         vga_ce_i          => src_ce_ovl,
          vga_red_i         => vga_red,
          vga_green_i       => vga_green,
          vga_blue_i        => vga_blue,
-         vga_hs_i          => vga_hs,
-         vga_vs_i          => vga_vs,
-         vga_de_i          => mix_vga_de,
+         vga_hs_i          => src_hs,
+         vga_vs_i          => src_vs,
+         vga_de_i          => src_de,
          vga_cfg_scaling_i => video_osm_cfg_scaling_i,
          vga_cfg_shift_i   => 0,
          vga_cfg_enable_i  => video_osm_cfg_enable_i,

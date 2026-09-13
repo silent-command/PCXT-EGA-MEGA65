@@ -129,7 +129,7 @@ From `docs/emu-signal-map.md` section 4.3, `ega_dot_clock.v:11-19`,
 | CGA/EGA 200-line modes, boot splash, BIOS hold | 15.7 kHz / 60 Hz | 14.318 MHz, exactly 4 | 31.4 kHz, in spec | yes, native |
 | Mode 13h+ TV profile (`status[10]` = 1) | 15.7 kHz / 60 Hz, CGA geometry (`vga_mode13_timing.v:7-18`) | 14.318 MHz equivalent, exactly 4 | 31.4 kHz, in spec | yes, native |
 | Mode 13h+ native profile (`status[10]` = 0) | 31.5 kHz / 70 Hz (25.2 MHz clock; 360-wide: 31.4 kHz on 28.636) | 12.6 MHz, ~4.5 clocks and asynchronous (or 4) | 63 kHz: must not be doubled | no |
-| EGA 350-line modes, MDA 720x350 (`ega_hifreq_mode`) | 18.4-21.9 kHz / 60 Hz | 16.257 MHz from an NCO, alternating 3 and 4 clocks | see below | no (as upstream without the 480i option) |
+| EGA 350-line modes, MDA 720x350 (`ega_hifreq_mode`) | 18.4-21.9 kHz / 60 Hz | 16.257 MHz from an NCO, alternating 2 and 4 clocks (measured) | 43.7 kHz by `analog_line_doubler.vhd`, in spec; the framework doubler corrupts it | no (as upstream without the 480i option) |
 
 Mode 13h: the doubler must follow `video_mode13_o` (`pcxt_core.sv:2117`,
 `vga_private_active` = mode 13h, planar-16 and the unchained profiles,
@@ -139,23 +139,68 @@ changes once per mode set (`vga_mode13_ctrl.v:16-23`), not aligned to vblank;
 the clock mux switches at the same moment, so the raster is discontinuous
 there anyway and the doubler switching adds nothing visible.
 
-350-line modes: 2 x 21.8 kHz = 43.6 kHz would be inside the range of most
-multisync monitors, but the framework doubler cannot produce it correctly
-from this input. The 16.257 MHz dot enable is an NCO in the 28.636 MHz domain
-(`ega_dot_clock.v:11-19`; 59609/105000 restarted per line) and arrives in
-`clk_57_ps` as pulses 3 or 4 clocks apart. `scandoubler.v:64-91` latches a
-single `pixsz` (3 or 4, whichever the last visible pixel had), resamples the
-input at that fixed spacing (`:85-89`), so ~12 % of the columns are skipped
-(pixsz 4) or ~17 % duplicated (pixsz 3), and replays at `pixsz2` = 1 or 2
-clocks per pixel instead of the 1.76 the doubled 16.257 MHz stream needs
-(`:135-143`). The syncs would be right (they are measured in clocks), the
-pixels would not. `video_mixer.sv:27` says as much. The core's own line
-doubler is no help either: `ega_top.v:1043-1050` forces it off because
-2 x 16.257 MHz cannot be made in the 28.636 MHz domain. So for now the
-350-line modes stay at their native 21.8 kHz on the analog output in every
-menu setting; most LCD monitors need >= 30 kHz and will report "out of range"
-there, multisync CRTs and some LCDs may accept it. Section 7 sketches what a
-correct doubler for these modes would take.
+350-line modes: 2 x 21.86 kHz = 43.72 kHz is inside the range of nearly every
+multisync input, and since this change `CORE/vhdl/analog_line_doubler.vhd`
+produces it. Neither doubler the port already had can:
+
+* The **framework** doubler measures ONE integer pixel size - the number of
+  `clk_57_ps` clocks between two `ce_pix` pulses in the visible area
+  (`scandoubler.v:64-91`) - and then resamples the input at that fixed spacing
+  (`:85-89`) and replays at `pixsz2` (`:126-144`). The 16.257 MHz dot enable is
+  an NCO in the 28.636 MHz domain (`ega_dot_clock.v:11-19`, 59609/105000,
+  restarted once per CRTC line) whose *toggle* is crossed into `clk_57_ps` with
+  one synchroniser and an XOR (`pcxt_core.sv:1762-1771`), so the enables land
+  on alternate video clocks only and are **2 or 4 clocks apart** - measured
+  194375 gaps of 2 against 618071 of 4 over the bench run, mean 3.5215, i.e.
+  16.2635 MHz. (An earlier draft of this document said 3 or 4; the toggle
+  crossing makes odd gaps impossible.) With a fixed `pixsz` the 24 % of short
+  dots are lost: `analog_pipeline_350_tb` case A measures the framework
+  doubler producing correct sync (43.72 kHz, 728 lines/frame, 700 active
+  lines) but only **488 of the 640 columns**, 214200 column faults over two
+  frames. `video_mixer.sv:27` states the precondition that is being violated.
+* The **core's own** generic doubler `rtl/video/video_scandoubler.v` is forced
+  off for these modes (`ega_top.v:1043-1050`) because 2 x 16.257 MHz cannot be
+  made in the 28.636 MHz domain it runs in. It also regenerates HS from
+  hard-coded pulse widths (`HS_START_80`/`HS_WIDTH_80` = 748/110 source dots,
+  `:96-99`) chosen for a 912-dot CGA line, not from the measured input.
+
+`analog_line_doubler.vhd` never looks at a dot clock. Per source line it
+measures the number of pixel enables and the number of video clocks between
+two HS rising edges, stores the line - colour *and* hs/vs/hblank/vblank, one
+entry per source pixel - in a ping-pong line buffer, and replays it twice
+during the following source line, each replay spread over half the measured
+line length by a Bresenham rate divider (add `line_pix` per clock modulo
+`line_clk/2`). That divider emits exactly `line_pix` pulses in exactly
+`line_clk/2` clocks, so no column is skipped or duplicated whatever the dot
+clock is, and because sync, blanking and colour come out of the same buffer
+entry the regenerated HS keeps the input geometry exactly, at half the
+duration. Measured (`analog_pipeline_350_tb` case C, all three sampling
+phases): 43.72 kHz, 728 lines/frame, 700 active lines, 640 columns per line,
+the frame period bit-identical to the input, zero column faults.
+
+**It has to sit beside `video_mixer`, not in front of it.** With a real clock
+enable on `ce_pix`, `video_mixer` reduces `CE_PIXEL` to the *rising edge* of
+`ce_pix` (`video_mixer.sv:185-194`, `fs_osc ? (~old_ce & ce_pix) : ce_pix`), so
+two enables on adjacent video clocks become one pixel. A doubled 16.257 MHz
+enable is 32.5 MHz in a 57.27 MHz domain, i.e. gaps of 1 or 2 clocks with
+about 24 % ones - the first version of this module was placed in front of the
+mixer and the bench measured 486 of 640 columns surviving. Everything
+downstream of the mux in `analog_pipeline.vhd` samples on a *level*
+(`vga_recover_counters.vhd:48`) or on every clock, so the doubled stream passes
+through intact. That also means the overlay enable has to follow: while the
+doubler owns the stream, `vga_ce_i` is its pixel enable instead of the
+free-running `clk/2` of `analog_video_ctl.vhd`, which is slower than 32.5 MHz
+and would drop columns by itself.
+
+Cost, out-of-context synthesis of `analog_line_doubler` on the XC7A200T:
+2 RAMB36E1 (a 2048 x 28 bit ping-pong buffer: 24 bits of colour plus
+hs/vs/hblank/vblank, 1024 dots per line), 141 LUTs, 79 registers, no warnings.
+The buffers are only built when `G_ANALOG_LINE_DOUBLER` is true.
+
+Not doubled, deliberately: the 15 kHz menu items. 43.6 kHz is no more use to a
+15.7 kHz set than 21.8 kHz is, and those settings are meant to stay exactly as
+they were (`analog_pipeline_350_tb` case D checks that the 15 kHz output is
+still the pixel-exact native 21.86 kHz raster).
 
 ### Validity matrix
 
@@ -169,7 +214,7 @@ correct doubler for these modes would take.
 | 200-line modes, splash | `sd=1` (31.4 kHz) | `sd=0`, `r15=1`, `cs` per adaptor |
 | Mode 13h native | `sd=0` (31.5 kHz; `sd=1` gives 63 kHz) | never; select `tv13=1` instead |
 | Mode 13h TV profile | `sd=1` (31.4 kHz) | `sd=0`, `r15=1`, `cs` per adaptor |
-| 350-line modes | none clean (21.8 kHz native, doubled stream corrupt) | none (needs a frame/line-rate converter) |
+| 350-line modes | `sd=0` + `analog_line_doubler` on (43.7 kHz, 700 lines, pixel-exact); `sd=1` is corrupt (488 of 640 columns) | none (needs a frame/line-rate converter) |
 
 So a VGA monitor is served by `sd = NOT video_mode13` with `tv13 = 0`
 (mode 13h at its real 70 Hz), and a TV by `sd = 0`, `r15 = 1`, `tv13 = 1`
@@ -267,11 +312,14 @@ Default "VGA: 31 kHz": a modern LCD gets 31.4 kHz in every 200-line mode and
 
 | Menu item | `qnice_scandoubler_o` | `qnice_retro15kHz_o` | `qnice_csync_o` | `osm_vga13_tv_i` |
 |---|---|---|---|---|
-| VGA: 31 kHz | `NOT video_mode13` | 0 | 0 | 0 |
+| VGA: 31 kHz | `NOT video_mode13 AND NOT video_mode350` | 0 | 0 | 0 |
 | VGA: 15 kHz | 0 | 1 | 0 | 1 |
 | VGA: 15 kHz + CSync | 0 | 1 | 1 | 1 |
 
-plus, in every setting, `video_ce_ovl = clk_57_ps / 2` (free running).
+plus `video_analog_dbl = video_mode350 AND NOT vga_15khz` (the analog line
+doubler of section 2, video clock domain), and in every setting
+`video_ce_ovl = clk_57_ps / 2` (free running; `analog_pipeline.vhd` overrides
+it with the doubler's own pixel enable while the doubler owns the stream).
 
 ### Glue: `CORE/vhdl/analog_video_ctl.vhd`
 
@@ -293,6 +341,8 @@ entity analog_video_ctl is
       qnice_csync_o       : out std_logic;
       video_clk_i         : in  std_logic;   -- clk_57_ps
       video_mode13_i      : in  std_logic;   -- pcxt_core video_mode13_o, asynchronous
+      video_mode350_i     : in  std_logic;   -- pcxt_core video_mode350_o, asynchronous
+      video_analog_dbl_o  : out std_logic;   -- -> av_pipeline video_analog_dbl_i
       video_ce_ovl_o      : out std_logic    -- clk_57_ps / 2
    );
 end entity;
@@ -369,8 +419,25 @@ constant C_MENU_VGA_15KHZ_CS : natural := 64;
       );
 ```
 
-Build: add `vhdl/analog_video_ctl.vhd` to `vhd_extra` in
-`CORE/add-core-sources.tcl:16` (the list that carries the port's own VHDL).
+The 350-line doubler adds to this, in the same places:
+
+* `main.vhd`: new port `video_mode350_o` driven by the core's `video_mode350_o`
+  (`ega_top.v:1383`, was `open`);
+* `mega65.vhd`: `video_mode350_i => main_video_mode350` and
+  `video_analog_dbl_o => video_analog_dbl_o` on `i_analog_video_ctl`, and a new
+  output port `video_analog_dbl_o`;
+* `M2M/vhdl/top_mega65-r6.vhd`: `G_ANALOG_LINE_DOUBLER => true` on
+  `i_framework` and `video_analog_dbl_i => video_analog_dbl` between the core
+  and the framework;
+* `M2M/vhdl/framework.vhd` and `M2M/vhdl/av_pipeline/av_pipeline.vhd`: the same
+  generic and port forwarded down, both defaulting to `false` / `'0'` so an
+  unmodified M2M core is bit-for-bit unchanged and builds no line buffers;
+* `M2M/vhdl/av_pipeline/analog_pipeline.vhd`: the `gen_analog_dbl` generate
+  beside `i_video_mixer` and the `src_*` mux in front of `i_video_overlay`.
+
+Build: add `vhdl/analog_video_ctl.vhd` and `vhdl/analog_line_doubler.vhd` to
+`vhd_extra` in `CORE/add-core-sources.tcl:16` (the list that carries the port's
+own VHDL).
 Constraints: none needed beyond the existing asynchronous group between
 `clk_25` and the 28/57 MHz family (`CORE/CORE.xdc:35-42`) and QNICE;
 `qnice_mode13_meta/qnice_mode13` carry `ASYNC_REG`, and
@@ -379,14 +446,14 @@ Constraints: none needed beyond the existing asynchronous group between
 
 ### Caveats to document for users
 
-* 350-line EGA modes (640x350, MDA/Hercules-style text): 21.8 kHz on the VGA
-  connector in every setting; a 15 kHz TV shows nothing, a 31 kHz LCD most
-  likely "out of range", a multisync CRT may lock. HDMI is unaffected. The
-  boot splash, DOS text mode on a CGA/5153 monitor profile and all 200-line
-  games are fine. Note that with the default "EGA monitor 5154" profile the
-  EGA BIOS puts DOS text mode (mode 3) into the 350-line raster; users of the
-  15 kHz output should pick "CGA monitor 5153" in the Display submenu so
-  text mode stays at 200 lines.
+* 350-line EGA modes (640x350, MDA/Hercules-style text): 43.7 kHz on the VGA
+  connector in the 31 kHz setting (`analog_line_doubler.vhd`, section 2), which
+  most multisync inputs accept; 21.86 kHz in the 15 kHz settings, where a
+  15 kHz TV shows nothing and a 31 kHz LCD reports no signal. With the default
+  "EGA monitor 5154" profile the EGA BIOS puts DOS text mode (mode 3) into the
+  350-line raster, so users of the 15 kHz output should still pick "CGA monitor
+  5153" in the Display submenu to keep text mode at 200 lines. HDMI is
+  unaffected either way.
 * Selecting a 15 kHz item switches mode 13h to its 60 Hz TV raster on HDMI
   as well (the core has one raster for both outputs). If that is unwanted,
   `osm_vga13_tv_i` can become its own toggle ("Mode 13h: 60 Hz TV raster")
@@ -419,16 +486,205 @@ Constraints: none needed beyond the existing asynchronous group between
 
 ## 7. Later options (not part of this proposal)
 
-* A correct line doubler for the 350-line modes: the core's
-  `video_scandoubler.v` (line buffers of `H_TOTAL_MAX` pixels, `ce_pix` and a
-  `ce_2x` at exactly twice the dot rate) re-instantiated in the `clk_57_ps`
-  domain after the retime, with a 2x NCO for the 16.257 MHz modes
-  (2 x 59609/105000 of 57.27 MHz = 32.5 MHz, under the clock, so it is
-  feasible there even though it is not at 28.636 MHz). Output 43.6 kHz,
-  700 lines, positive syncs. New module of a few hundred lines plus the
-  framework `qnice_scandoubler` set to 0 for those modes.
+* ~~A correct line doubler for the 350-line modes~~ - DONE, see section 2:
+  `CORE/vhdl/analog_line_doubler.vhd`, `qnice_scandoubler` cleared for those
+  modes by `analog_video_ctl.vhd`. It resamples from the measured line
+  geometry rather than from a 2x NCO as this section originally sketched, which
+  makes it independent of which dot clock the raster uses, and it sits beside
+  `video_mixer` inside `analog_pipeline.vhd` rather than in front of it,
+  because the mixer cannot carry a pixel enable with 1-clock gaps.
 * 350 lines on a 15 kHz TV without a frame store: both rasters run at 60 Hz,
   so a 240p converter needs only a few BRAM line buffers (write at 21.8 kHz
   lines, read at 15.7 kHz lines, drop every third line, 233 lines out),
   locked to the input vsync. Simpler than upstream's DDRAM 480i path but
   still a new video module with its own testing.
+
+## 8. "No signal" on the VGA connector: what the implemented design says
+
+Reported from hardware: a VGA monitor on a normal cable reports "no signal"
+and goes to standby at the M2M welcome screen, at the BIOS screen and at the
+DOS prompt, with "VGA: 31 kHz", "EGA monitor 5154" and "Full color" selected.
+HDMI is correct throughout, and the same monitor and cable work with other
+cores on the same MEGA65.
+
+### What was checked in the implemented design (nothing is wrong there)
+
+All of this is from `CORE/CORE-R6.runs/impl_1/mega65_r6_routed.dcp` and
+`CORE/CORE-R6.runs/synth_1/runme.log` of the build that was on the board:
+
+* **Pins.** `vga_hs_o` = W12, `vga_vs_o` = V14, R/G/B on the eight pins each,
+  `vdac_clk_o` = AA9, `vdac_sync_n_o` = V10, `vdac_blank_n_o` = W11,
+  `vdac_psave_n_o` = W16, all `LVCMOS33` OBUFs. Identical to
+  `M2M/MEGA65-R3/R4/R6.xdc`, which differ only by `vdac_psave_n_o` existing
+  from R4 on.
+* **Clocks.** `report_clocks`: `clk_57_ps` = 17.460 ns (57.273 MHz), waveform
+  `{4.365 13.095}`, driven by `BUFGCTRL_X0Y6` from `i_mmcm_a/CLKOUT2` with
+  2527 loads. `check_timing`: 0 pins with no clock, 0 constant clocks, 0
+  unconstrained internal endpoints. Timing is met (`WNS` +0.203 ns overall,
+  +6.761 ns inside `clk_57_ps`).
+* **The analog chain survives synthesis.** `i_analog_pipeline` 1945 cells, of
+  which `i_video_mixer` 1188 (`sd/` 1091), `i_video_overlay` 1229,
+  `vga_recover_counters` 168, `i_csync` 92, `VGA_OUT_PHASE_SHIFTED` 28.
+  `vga_hs_o_reg` is an `FDRE` with `IS_C_INVERTED = 1'b1` (the `falling_edge`
+  of `analog_pipeline.vhd:226` is real) clocked by `video_clk_i`, `CE` tied to
+  `<const1>`, `D` from a `LUT3` `INIT = 8'h74` over
+  `{vga_hs_ps, video_csync_i, vga_cs_ps}` - which is exactly
+  `vga_hs_ps when not video_csync_i else not vga_cs_ps`.
+* **`video_ce_ovl` is alive.** `CORE/i_analog_video_ctl/video_ce_2x_reg` is an
+  `FDRE` clocked by `video_clk_i` with `CE` tied high and `D` driven by a
+  `LUT1 INIT = 2'h1` (an inverter) from its own output: a real toggle at
+  57.27/2 = 28.6 MHz. The net is routed with a flat fanout of 35 and reaches
+  `i_analog_pipeline/i_video_overlay/vga_ce_i`, which is the one gate the
+  analog path has that HDMI does not (`av_pipeline.vhd`).
+* The only registers synthesis removed in the analog path are the unused
+  `vga_pix_x/pix_y/col/row` copies in `video_overlay` stages 2..9 and the
+  matching `vga_osm` pipeline fields - dead by construction, not a symptom.
+
+So the fault is not a missing connection, an optimised-away register, a wrong
+polarity, a lost clock or a timing failure.
+
+### What does explain two of the three symptoms
+
+**The BIOS screen and the DOS prompt are 350-line rasters.** With the default
+"EGA monitor 5154" profile the EGA BIOS puts its own screens and mode 3 into
+the 640x350 raster, which scans at 21.86 kHz (measured end to end in
+`analog_pipeline_350_tb`, section 2). That is far under the ~30 kHz an LCD
+needs, and a monitor whose sync separator never locks reports "no signal"
+rather than "out of range". This is the known limitation of section 2, and it
+is what `analog_line_doubler.vhd` addresses - not a new fault.
+
+**The M2M welcome screen is not explained.** Two candidates were checked and
+both are ruled out:
+
+* *The core is not held in reset there.* `M2M/rom/shell.asm:127` calls
+  `RP_SYSTEM_START`, which ends with `AND M2M$CSR_UN_RESET, @R7`
+  (`M2M/rom/gencfg.asm:55`) after wasting `RESET_COUNTER` loops; only then, at
+  `shell.asm:134-137`, is the welcome screen drawn. (The comment at
+  `shell.asm:138-142` mentioning "RESET_KEEP" refers to a config item this M2M
+  version does not have; `CORE/vhdl/config.vhd:214-224` has
+  `RESET_COUNTER = 100` and `WELCOME_ACTIVE = true` only.) So the core is
+  running, and on the analog side that means its own boot splash - a 200-line
+  raster the framework scandoubler takes to 31.4 kHz.
+* *`video_retime_reset` is not stuck.* `pcxt_core.sv:585` does clear the whole
+  output retime stage - `VGA_HS_video_ps/_hdmi`, `VGA_VS_*`, `CE_PIXEL_*` all
+  go to 0 (`:1993-2033`) - but only while
+  `RESET | status[0] | buttons[1] | !pll_locked | !pll_system_locked | splash_pending`,
+  and `splash_pending` clears itself after `SPLASH_BOOT_WAIT` = 14_318_000
+  cycles of `clk_14_318`, i.e. one second (`:1011, 1029-1046`). Note that
+  `splashscreen` is deliberately *excluded* from `video_retime_reset`
+  (`:584-585`), so the splash itself does have a raster.
+
+Why HDMI can be perfect while the analog output is not, in any of these cases:
+`digital_pipeline` runs its own timing generator and ascal re-times the core's
+frames onto it, so HDMI produces a complete raster with the OSM on it almost
+regardless of what the core's sync looks like. The analog side has no raster
+generator at all (section 1) - the connector carries the core's own sync,
+gated by the one signal HDMI does not use, `video_ce_ovl`.
+
+A cheap hardware test that discriminates before any new bitstream: select
+**"CGA monitor 5153"** in the Display submenu so DOS text mode stays a
+200-line raster, which the framework scandoubler takes to 31.4 kHz. If a
+picture appears there, the analog path works and only the 350-line rasters are
+missing.
+
+### The probe (diagnostic build only)
+
+To settle it from the board rather than by inference, a probe measures the sync
+**at the pins** and publishes it on the core's serial status line. The same
+diagnostic build also repurposes the third status word for an unrelated
+investigation (how many hard-disk sectors a FreeDOS boot really reads), so that
+one bitstream answers both. Every line the probe adds or changes is tagged
+`DIAG-PROBE`; `tools/revert-diag-probe.ps1` removes them all (`-WhatIf` to
+preview). It must not ship.
+
+* `M2M/vhdl/top_mega65-r6.vhd`: `vga_hs_o`/`vga_vs_o` are driven from internal
+  signals `vga_hs_probe`/`vga_vs_probe` (the framework writes those), their
+  rising edges are counted in `qnice_clk` through 2-FF synchronisers, and
+  `video_ce_ovl` - 28.6 MHz, too fast to edge-count at 50 MHz without aliasing
+  - is first divided in the video clock domain into a 27.3 Hz toggle whose
+  13.66 rising edges per second are then counted in `qnice_clk`.
+* `CORE/vhdl/mega65.vhd`: two new input ports `dbg_vga_i` / `dbg_ctl_i`
+  (default `'0'`) replace `main_dbg_bus_reads` / `main_dbg_vsync` on
+  `rom_loader`'s `dbg_a_i` / `dbg_b_i`, i.e. QNICE registers 6 and 7.
+* `CORE/vhdl/main.vhd`: `p_dbg_wr` counts `blk_wr(2)` / `blk_ack(2)` - virtual
+  drive 2, the hard disk (`mgmt_bridge.sv:67`) - instead of drive 0 (floppy A),
+  `blk_ack_cnt` is widened from 8 to 16 bits so a whole boot fits without
+  wrapping, and `dbg_keys_o` carries that 16-bit ack count alone.
+* `CORE/m2m-rom/m2m-rom.asm`: `DBG_STR_6` becomes `" vga="`, `DBG_STR_7`
+  `" ctl="`, `DBG_STR_8` `" hdd="`.
+
+Reading the three words, from two status lines a few seconds apart:
+
+| Field | Bits | Meaning |
+|---|---|---|
+| `vga=` high byte | 15..8 | HSYNC rising edges / 256. Advances 122.6/s at 31.4 kHz, 85.4/s at 21.86 kHz, 61.3/s at 15.7 kHz. Frozen = no HSYNC. |
+| `vga=` low byte | 7..0 | VSYNC rising edges. Advances 60/s, wraps every 4.27 s. Frozen = no VSYNC. |
+| `ctl=` bit 15 | | `qnice_scandoubler` (1 = the framework doubler is on) |
+| `ctl=` bit 14 | | `qnice_csync` |
+| `ctl=` bit 13 | | `qnice_retro15kHz` |
+| `ctl=` bit 12 | | live HSYNC pin level |
+| `ctl=` bit 11 | | live VSYNC pin level |
+| `ctl=` bit 10 | | live `video_ce_ovl` level (sampled at 50 MHz, so aliased: only "not stuck" is meaningful) |
+| `ctl=` bits 9..0 | | counter advancing 13.66/s while `video_ce_ovl` toggles; frozen = the overlay enable is dead |
+| `hdd=` | 15..0 | hard-disk sectors served since power-on: rising edges of `blk_ack(2)`, one per 512-byte block the firmware completes. Read it before and after a FreeDOS boot, and before and after a single `dir`, to separate "DOS is issuing far more reads than expected" from "each read costs far more than the firmware accounts for". |
+
+What the outcomes mean:
+
+* both `vga=` bytes advancing at the rates above, at the welcome screen and at
+  the DOS prompt, with `ctl=` bits 9..0 advancing: the analog path works and
+  the problem is the monitor's lock range - i.e. only the 350-line rasters are
+  really missing, and the doubler of section 2 is the whole fix.
+* `vga=` frozen at the welcome screen but advancing once the core runs: the
+  core is emitting no sync during the M2M screen after all, and the next place
+  to look is `video_retime_reset` / the CSR reset (`pcxt_core.sv:584-596`).
+* `vga=` frozen everywhere while `ctl=` bits 9..0 advance: sync is being lost
+  inside `analog_pipeline` despite everything the netlist says.
+* `ctl=` bits 9..0 frozen: `video_ce_ovl` is dead, which alone freezes
+  `vga_recover_counters` (`vga_recover_counters.vhd:46-54`) and hence every
+  analog output, while leaving HDMI untouched.
+
+### If the probe says the sync is there
+
+Then the signal is present and the monitor is refusing it, and the leading
+suspect is already written up in `docs/analog-video-bench.md` section 3: the
+connector carries **positive HS and positive VS** in the 31 kHz setting
+(`analog_pipeline.vhd:222-239` registers the syncs without inverting them, and
+the core emits positive pulses in every raster - section 1). In the IBM VGA
+monitor-ID scheme H+/V+ is the *reserved* combination (H+/V- = 400 lines,
+H-/V+ = 350, H-/V- = 480), and MiSTer's own `sys_top.v:1521-1522` emits
+`~vga_hs` / `~vga_vs`. Analog CRTs lock regardless; an LCD scaler that
+identifies the mode from polarity plus frequency can refuse a 31.4 kHz /
+59.9 Hz / 524-line H+/V+ timing outright. The one-line experiment is
+`vga_hs_o <= not vga_hs_ps` / `vga_vs_o <= not vga_vs_ps` in the non-csync
+branch of `analog_pipeline.vhd:235-236` (the csync branch is already
+active-low; nothing downstream of that register depends on the positive
+polarity, and `csync.sv` and `scandoubler.v` upstream of it keep their
+positive inputs). The second suspect is the HS pulse width: 2.23 us at
+31.4 kHz, against 3.8 us in the VESA 640x480 timing.
+
+## 9. Hardware status, 2026-09-12: analog output parked
+
+Measured on the R6 with a VGA cable straight into an LCD monitor (the same
+monitor, cable and socket show a picture with the MEGA65's own core):
+
+* The analog path is alive. A diagnostic build counted the sync edges at pins
+  W12/V14 and got about 21.88 kHz; the framework's own timing print in the
+  same serial log agreed: 21.844 kHz, 640x350, 62.4 Hz, 16.252 MHz pixel rate.
+  So the sync, the DAC clock, the overlay enable and the pin drivers are all
+  working, and "no signal" is the monitor correctly refusing a 21.8 kHz raster.
+* The welcome screen puts no sync on the pins at all, so the monitor stays
+  asleep until the core is started with Space.
+* Enabling the line doubler of section 7 (G_ANALOG_LINE_DOUBLER, 43.72 kHz,
+  700 lines, simulation-clean over the whole pixel sequence) did NOT produce a
+  picture on that monitor. Why is unknown: it was not investigated further
+  because the owner chose to stop work on the analog output.
+
+The doubler and its benches stay in the tree, disabled at
+`M2M/vhdl/top_mega65-r6.vhd` (`G_ANALOG_LINE_DOUBLER => false`), so the analog
+path is bit-for-bit what it was before. Anyone picking this up again should
+start by re-applying the diagnostic probe (`tools/revert-diag-probe.ps1`
+removes it; the probe itself is in the history of this commit's parent) and
+reading the sync rate with the doubler on: if the pins really carry 43.7 kHz
+and the monitor still refuses it, the next suspects are the sync polarity
+(both positive here; MiSTer's `sys_top.v:1521-1522` inverts both) and the
+non-standard 700-line geometry.

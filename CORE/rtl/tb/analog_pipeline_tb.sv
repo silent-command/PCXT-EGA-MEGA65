@@ -72,6 +72,7 @@ module analog_pipeline_tb #(
     logic qn_csync = 1'b0;
     logic qn_sd, qn_retro, qn_cs;
     logic ce_ovl;
+    logic analog_dbl;                 // must stay 0 here: this bench drives no 350-line raster
 
     analog_video_ctl i_ctl (
         .qnice_clk_i         (qclk),
@@ -82,6 +83,8 @@ module analog_pipeline_tb #(
         .qnice_csync_o       (qn_cs),
         .video_clk_i         (clk),
         .video_mode13_i      (1'b0),
+        .video_mode350_i     (1'b0),
+        .video_analog_dbl_o  (analog_dbl),
         .video_ce_ovl_o      (ce_ovl)
     );
 
@@ -152,9 +155,14 @@ module analog_pipeline_tb #(
     logic       vga_hs, vga_vs, vdac_clk, vdac_syncn, vdac_blankn;
     logic [15:0] osm_vram_addr;
 
+    // analog_line_doubler is inside analog_pipeline (gen_analog_dbl); this bench never drives a
+    // 350-line raster, so it stays in bypass and every case below also proves the bypass is a
+    // transparent, zero-latency copy of video_mixer's output.
+
     // analog_pipeline_wrap.vhd = the unmodified analog_pipeline with video_osm_cfg_scaling_i (a
     // "natural range 0 to 8", which xelab cannot bind from Verilog) tied to 0
     analog_pipeline_wrap #(
+        .G_ANALOG_LINE_DOUBLER (1),
         .G_VGA_DX    (720),
         .G_VGA_DY    (576),
         .G_FONT_FILE (FONT_FILE),
@@ -172,6 +180,7 @@ module analog_pipeline_tb #(
         .video_vs_i              (vs_r),
         .video_hblank_i          (hb_r),
         .video_vblank_i          (vb_r),
+        .video_analog_dbl_i      (analog_dbl),
         .audio_clk_i             (qclk),
         .audio_rst_i             (1'b0),
         .audio_left_i            (16'd0),

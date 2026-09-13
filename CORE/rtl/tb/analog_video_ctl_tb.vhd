@@ -13,6 +13,9 @@
 --   6 50 asynchronous mode13 edges at odd spacings in 31 kHz mode: always settled within 4 QNICE
 --     clocks, one transition per edge
 --   7 video_ce_ovl_o alternates on every video clock
+--   8 mode350 rises: scandoubler drops, video_analog_dbl_o rises, retro15kHz/csync unchanged
+--   9 mode350 with 15 kHz selected: no doubling at all (scandoubler 0, analog_dbl 0)
+--  10 mode350 and mode13 together, and 40 asynchronous mode350 edges at odd spacings
 -- The last line is "AVC RESULT: PASS/FAIL checks=N errors=M".
 --
 -- Run: powershell -File CORE/rtl/tb/run_analog_video_ctl_tb.ps1
@@ -35,10 +38,12 @@ architecture sim of analog_video_ctl_tb is
    signal qnice_vga_15khz   : std_logic := '0';
    signal qnice_vga_csync   : std_logic := '0';
    signal video_mode13      : std_logic := '0';
+   signal video_mode350     : std_logic := '0';
    signal qnice_scandoubler : std_logic;
    signal qnice_retro15khz  : std_logic;
    signal qnice_csync       : std_logic;
    signal video_ce_ovl      : std_logic;
+   signal video_analog_dbl  : std_logic;
 
    -- transition counters, sampled per QNICE clock (what the framework's CDC sees)
    signal cnt_sd     : natural := 0;
@@ -62,6 +67,8 @@ begin
          qnice_csync_o       => qnice_csync,
          video_clk_i         => video_clk,
          video_mode13_i      => video_mode13,
+         video_mode350_i     => video_mode350,
+         video_analog_dbl_o  => video_analog_dbl,
          video_ce_ovl_o      => video_ce_ovl
       );
 
@@ -107,6 +114,18 @@ begin
          wait until rising_edge(video_clk);
          video_mode13 <= v;
       end procedure set_mode13;
+
+      -- ega_mode350 comes from clk_video_base, i.e. asynchronous to both consumers
+      procedure set_mode350(v : std_logic) is
+      begin
+         wait until rising_edge(video_clk);
+         video_mode350 <= v;
+      end procedure set_mode350;
+
+      procedure expect_dbl(v : std_logic; msg : string) is
+      begin
+         check(video_analog_dbl = v, msg & ": analog_dbl=" & std_logic'image(video_analog_dbl) & " expected " & std_logic'image(v));
+      end procedure expect_dbl;
 
       procedure snapshot is
       begin
@@ -216,6 +235,79 @@ begin
          ce_q := video_ce_ovl;
       end loop;
       check(ce_ok, "T7 video_ce_ovl_o does not alternate every video clock");
+
+      -- Test 8: the 350-line raster hands the analog output to analog_line_doubler
+      qnice_vga_15khz <= '0';
+      qnice_vga_csync <= '0';
+      wait_qnice(6);
+      expect('1', '0', '0', "T8 precondition 31 kHz");
+      expect_dbl('0', "T8 precondition");
+      snapshot;
+      set_mode350('1');
+      wait_qnice(4);
+      expect('0', '0', '0', "T8 mode350 on: framework scandoubler must be off");
+      expect_dbl('1', "T8 mode350 on");
+      wait_qnice(50);
+      expect_transitions(1, 0, 0, "T8");
+      snapshot;
+      set_mode350('0');
+      wait_qnice(4);
+      expect('1', '0', '0', "T8 mode350 off");
+      expect_dbl('0', "T8 mode350 off");
+      wait_qnice(50);
+      expect_transitions(1, 0, 0, "T8 off");
+
+      -- Test 9: the 15 kHz items keep their old behaviour - nothing is doubled, by either doubler
+      snapshot;
+      qnice_vga_15khz <= '1';
+      set_mode350('1');
+      wait_qnice(8);
+      expect('0', '1', '0', "T9 15 kHz + mode350");
+      expect_dbl('0', "T9 15 kHz + mode350");
+      qnice_vga_csync <= '1';
+      wait_qnice(6);
+      expect('0', '1', '1', "T9 15 kHz + csync + mode350");
+      expect_dbl('0', "T9 15 kHz + csync + mode350");
+      -- back to 31 kHz with mode350 still set: the doubler takes over again
+      qnice_vga_csync <= '0';
+      qnice_vga_15khz <= '0';
+      wait_qnice(8);
+      expect('0', '0', '0', "T9 back to 31 kHz with mode350");
+      expect_dbl('1', "T9 back to 31 kHz with mode350");
+
+      -- Test 10: mode350 together with mode13, then many asynchronous mode350 edges
+      set_mode13('1');
+      wait_qnice(6);
+      expect('0', '0', '0', "T10 mode350 + mode13");
+      expect_dbl('1', "T10 mode350 + mode13");   -- mode350 owns the analog raster
+      set_mode13('0');
+      set_mode350('0');
+      wait_qnice(6);
+      expect('1', '0', '0', "T10 both off");
+      expect_dbl('0', "T10 both off");
+
+      for i in 1 to 40 loop
+         snapshot;
+         set_mode350('1');
+         for j in 1 to (i mod 6) loop
+            wait until rising_edge(video_clk);
+         end loop;
+         wait_qnice(5);
+         expect('0', '0', '0', "T10 edge " & integer'image(i) & " on");
+         expect_dbl('1', "T10 edge " & integer'image(i) & " on");
+         wait_qnice(3);
+         expect_transitions(1, 0, 0, "T10 edge " & integer'image(i) & " on");
+         snapshot;
+         set_mode350('0');
+         for j in 1 to ((i * 5) mod 9) loop
+            wait until rising_edge(video_clk);
+         end loop;
+         wait_qnice(5);
+         expect('1', '0', '0', "T10 edge " & integer'image(i) & " off");
+         expect_dbl('0', "T10 edge " & integer'image(i) & " off");
+         wait_qnice(3);
+         expect_transitions(1, 0, 0, "T10 edge " & integer'image(i) & " off");
+      end loop;
 
       -- Result
       write(l, string'("AVC RESULT: "));

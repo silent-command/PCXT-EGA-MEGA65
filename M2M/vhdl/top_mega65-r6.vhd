@@ -297,6 +297,7 @@ architecture synthesis of mega65_r6 is
    signal main_audio_l           : signed(15 downto 0);
    signal main_audio_r           : signed(15 downto 0);
 
+
    -- Video output from Core
    signal video_clk              : std_logic;
    signal video_rst              : std_logic;
@@ -309,6 +310,8 @@ architecture synthesis of mega65_r6 is
    signal video_hs               : std_logic;
    signal video_hblank           : std_logic;
    signal video_vblank           : std_logic;
+   -- PCXT-EGA addition (docs/analog-video.md): 1 = line-double the VGA branch only
+   signal video_analog_dbl       : std_logic;
 
    -- Joysticks and Paddles
    signal main_joy1_up_n_in      : std_logic;
@@ -573,7 +576,12 @@ begin
 
    i_framework : entity work.framework
    generic map (
-      G_BOARD => "MEGA65_R6"
+      G_BOARD               => "MEGA65_R6",
+      -- PCXT-EGA 350-line analog line doubler: builds CORE/vhdl/analog_line_doubler.vhd into the
+      -- analog branch of av_pipeline. Set to true to build it (docs/analog-video.md).
+      -- Held at false while the "no signal on VGA in every mode" diagnostic build is in the tree,
+      -- so the analog path is bit-for-bit what it was before analog_line_doubler.vhd existed.
+      G_ANALOG_LINE_DOUBLER => false
    )
    port map (
       -- Connect to I/O ports
@@ -664,6 +672,7 @@ begin
       video_hs_i              => video_hs,
       video_hblank_i          => video_hblank,
       video_vblank_i          => video_vblank,
+      video_analog_dbl_i      => video_analog_dbl,
       main_joy1_up_n_o        => main_joy1_up_n_in,
       main_joy1_down_n_o      => main_joy1_down_n_in,
       main_joy1_left_n_o      => main_joy1_left_n_in,
@@ -834,6 +843,7 @@ begin
          video_hs_o              => video_hs,
          video_hblank_o          => video_hblank,
          video_vblank_o          => video_vblank,
+         video_analog_dbl_o      => video_analog_dbl,
 
          -- Audio output (Signed PCM)
          main_audio_left_o       => main_audio_l,

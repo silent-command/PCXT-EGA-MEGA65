@@ -11,6 +11,7 @@ use ieee.numeric_std.all;
 
 entity analog_pipeline_wrap is
    generic (
+      G_ANALOG_LINE_DOUBLER   : boolean := false;
       G_VGA_DX                : natural;
       G_VGA_DY                : natural;
       G_FONT_FILE             : string;
@@ -29,6 +30,7 @@ entity analog_pipeline_wrap is
       video_vs_i              : in  std_logic;
       video_hblank_i          : in  std_logic;
       video_vblank_i          : in  std_logic;
+      video_analog_dbl_i      : in  std_logic;
       audio_clk_i             : in  std_logic;
       audio_rst_i             : in  std_logic;
       audio_left_i            : in  std_logic_vector(15 downto 0);
@@ -57,6 +59,7 @@ begin
 
    i_analog_pipeline : entity work.analog_pipeline
       generic map (
+         G_ANALOG_LINE_DOUBLER   => G_ANALOG_LINE_DOUBLER,
          G_VGA_DX                => G_VGA_DX,
          G_VGA_DY                => G_VGA_DY,
          G_FONT_FILE             => G_FONT_FILE,
@@ -75,6 +78,7 @@ begin
          video_vs_i              => video_vs_i,
          video_hblank_i          => video_hblank_i,
          video_vblank_i          => video_vblank_i,
+         video_analog_dbl_i      => video_analog_dbl_i,
          audio_clk_i             => audio_clk_i,
          audio_rst_i             => audio_rst_i,
          audio_left_i            => signed(audio_left_i),
