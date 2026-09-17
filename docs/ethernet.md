@@ -192,7 +192,7 @@ With `FTPSRV` running on the XT (working drive C:), from the PC with the
 stock Windows `ftp` client, user mega65: `cd DRIVE_C`, `dir` lists the
 FreeDOS root, `put` of a text file lands on C:, `get FDCONFIG.SYS` returns
 the real file. A 200 KB random file round-trips byte-identical:
-10.3 KB/s PC to XT, 14.7 KB/s XT to PC at the 4.77 MHz setting. The XT
+10.3 KB/s PC to XT, 14.7 KB/s XT to PC at the 4.77 MHz setting. At the "Max" CPU setting: 19.2 KB/s PC to XT, 29.6 KB/s XT to PC, still byte-identical; the emulated CPU running mTCP is the limit, not the card. The XT
 answers pings from the PC (15-54 ms) while an mTCP program is running;
 with only the packet driver loaded there is no IP stack, so pings time out
 then, which is normal. Pings from the XT to the router work; pings from the
