@@ -322,3 +322,9 @@ debug readback in window 0 is unchanged.
 * Timing closure of the whole core with the new decode (one AND gate on the
   card enable and two on the IRQ lines; the MAC path is register-to-register
   between two clocks Vivado already times as related).
+
+## Beyond the LAN, 2026-09-17
+Owner-verified on v0.8: `PING 8.8.8.8` and `HTGET` of an external site from
+the XT work, and the mTCP tools reach external sites without issues. So
+routing through the gateway and DNS resolution are confirmed; the Ethernet
+goals (mTCP, file transfer to and from the PC) are complete.
