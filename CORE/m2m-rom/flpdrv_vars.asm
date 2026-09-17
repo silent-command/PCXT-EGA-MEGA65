@@ -13,3 +13,6 @@ FLP_CYC         .BLOCK 1                        ; IO$CYC_MID of the last probe
 FLP_N_RD        .BLOCK 1                        ; block requests served
 FLP_N_ERR       .BLOCK 1                        ; ... of which failed
 FLP_LAST_ERR    .BLOCK 1                        ; engine status of the last failure
+FLP_RO          .BLOCK 1                        ; 1 = mounted read-only (drive write protected)
+FLP_N_WR        .BLOCK 1                        ; block writes served
+FLP_VFY_ERR     .BLOCK 1                        ; 1 = a write failed its read-back: park the next request

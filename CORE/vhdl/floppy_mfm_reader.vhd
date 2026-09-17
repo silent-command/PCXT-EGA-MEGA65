@@ -14,7 +14,8 @@
 --     the CRC, zero after the CRC bytes (crc1581.vhdl, mfm_decoder.vhdl:380-383).
 -- Events (one-clock pulses): idam_o with idam_ok_o and id_*_o (stable at and after the pulse); dam_o when
 -- a data field starts (its bytes follow as data_valid_o / data_o); dam_end_o with dam_ok_o after the data
--- CRC. The data length follows the N of the last good IDAM (512 for N = 2).
+-- CRC. The data length follows the N of the last good IDAM (512 for N = 2). data_crc_o holds the two CRC
+-- bytes as received (phase 3: the engine compares them with the CRC it wrote, its read-after-write check).
 --
 -- MEGA65 port done by silent-command in 2026 and licensed under GPL v3
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
@@ -55,7 +56,8 @@ entity floppy_mfm_reader is
       data_valid_o   : out   std_logic;
       data_o         : out   std_logic_vector(7 downto 0);
       dam_end_o      : out   std_logic;          -- data CRC checked
-      dam_ok_o       : out   std_logic           -- ... and it was good (valid with dam_end_o)
+      dam_ok_o       : out   std_logic;          -- ... and it was good (valid with dam_end_o)
+      data_crc_o     : out   std_logic_vector(15 downto 0)   -- the two CRC bytes as received (valid with dam_end_o)
    );
 end entity floppy_mfm_reader;
 
@@ -102,6 +104,7 @@ architecture rtl of floppy_mfm_reader is
    signal crc           : std_logic_vector(15 downto 0) := (others => '1');
    signal id_c, id_h, id_r, id_n : std_logic_vector(7 downto 0) := (others => '0');
    signal data_left     : unsigned(10 downto 0) := (others => '0');
+   signal crc_rx        : std_logic_vector(15 downto 0) := (others => '0');
    signal sector_bytes  : unsigned(10 downto 0) := to_unsigned(512, 11);
 
 begin
@@ -248,9 +251,11 @@ begin
                   data_left <= data_left - 1;
                when D_DATA_CRC1 =>
                   crc <= crc16_byte(crc, byte_val); dec <= D_DATA_CRC2;
+                  crc_rx(15 downto 8) <= byte_val;
                when D_DATA_CRC2 =>
                   dec       <= D_IDLE;
                   dam_end_o <= '1';
+                  crc_rx(7 downto 0) <= byte_val;
                   if crc16_byte(crc, byte_val) = x"0000" then
                      dam_ok_o <= '1';
                   end if;
@@ -275,5 +280,6 @@ begin
    id_h_o       <= id_h;
    id_r_o       <= id_r;
    id_n_o       <= id_n;
+   data_crc_o   <= crc_rx;
 
 end architecture rtl;

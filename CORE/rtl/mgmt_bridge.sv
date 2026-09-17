@@ -42,6 +42,17 @@
 // core reset - but no garbage reaches DOS and the machine does not hang.
 // The still-pending request is parked (fd_hold) so that the hard disk keeps
 // being served; the hold clears when the request finally drops (core reset).
+// Floppy write errors (the internal drive's write path): floppy.v completes
+// a WRITE DATA sector as soon as its FIFO has been drained, long before the
+// firmware has written the disk, so a failed physical write (or a failed
+// read-back verify of an earlier one) can only be reported on the request
+// that follows. When the firmware acknowledges a floppy write block with
+// blk_err high, the bridge sets fd_dead: every later floppy request is
+// ignored until the chip reset, so the next DOS access (the next sector of
+// the same multi-sector write, the FAT update, or a read) times out in the
+// BIOS and DOS reports an error instead of believing the write succeeded.
+// The hold cannot be tied to the request dropping (as fd_hold is) because
+// for the last sector of a write the request has already dropped.
 //
 // Hard-disk geometry (replaces ARM 2.2's 128-entry size table): at mount the
 // bridge reads block 0 of the image through the block interface (the same
@@ -85,7 +96,7 @@ module mgmt_bridge #(
     output reg  [2:0]  blk_wr,
     output reg  [31:0] blk_lba,        // block number
     input  wire [2:0]  blk_ack,        // level: high while the block moves; complete when it falls
-    input  wire        blk_err,        // level, sampled when a floppy read's ack falls: the block carries no data (see header)
+    input  wire        blk_err,        // level, sampled when a floppy block's ack falls: read: the block carries no data; write: the write failed, park the drive (see header)
     // 512-byte sector buffer shared with the framework
     output reg  [8:0]  buf_addr,
     output reg  [7:0]  buf_wdata,
@@ -300,6 +311,8 @@ module mgmt_bridge #(
     logic        fd_is_wr, fd_drv;
     logic [14:0] fd_lba;
     logic        fd_hold;             // a floppy read failed: ignore its request until it drops
+    logic        fd_dead;             // a floppy write failed: ignore every floppy request until the reset
+    logic        fd_blk_wr;           // the block transfer in flight is a floppy write
     // mount strobes: the framework holds img_mounted for as long as the QNICE
     // firmware takes between its set and clear register writes, so only the
     // rising edge is a mount; a level would otherwise re-arm the mount on
@@ -414,6 +427,8 @@ module mgmt_bridge #(
             fd_drv    <= 1'b0;
             fd_lba    <= 15'd0;
             fd_hold   <= 1'b0;
+            fd_dead   <= 1'b0;
+            fd_blk_wr <= 1'b0;
             img_mounted_q <= 3'b000;
         end else begin
             // defaults: strobes are one clock wide
@@ -462,7 +477,7 @@ module mgmt_bridge #(
                 end else if (fd_wait[1] && fd_timer1 == 24'd0) begin
                     fd_idx <= 1'b1;
                     state  <= S_FDD_INSERT;
-                end else if (mgmt_req[7:6] != 2'b00 && !fd_hold) begin
+                end else if (mgmt_req[7:6] != 2'b00 && !fd_hold && !fd_dead) begin
                     state <= S_FDD_REQ;
                 end
             end
@@ -590,9 +605,12 @@ module mgmt_bridge #(
             end
             S_BLK_ACK_LO: begin
                 if (!blk_ack[blk_drv]) begin
-                    // a floppy read the firmware could not serve: no data for floppy.v (header)
+                    // a floppy read the firmware could not serve: no data for floppy.v (header);
+                    // a floppy write it could not do: the drive is dead until the reset
                     if (blk_err && seq_ret == S_FDD_RD_TX) state <= S_FDD_ERR;
                     else                                   state <= seq_ret;
+                    if (blk_err && fd_blk_wr) fd_dead <= 1'b1;
+                    fd_blk_wr <= 1'b0;
                 end
             end
 
@@ -1043,9 +1061,10 @@ module mgmt_bridge #(
                 // it long before this block write completed, and only ever
                 // re-raises it after advancing sd_sector to the next LBA.
                 if (fd_ok && !fd_ro[fd_drv]) begin
-                    blk_wr  <= fd_drv ? 3'b010 : 3'b001;
-                    seq_ret <= S_IDLE;
-                    state   <= S_BLK_ACK_HI;
+                    blk_wr    <= fd_drv ? 3'b010 : 3'b001;
+                    fd_blk_wr <= 1'b1;
+                    seq_ret   <= S_IDLE;
+                    state     <= S_BLK_ACK_HI;
                 end else begin
                     seq_ret <= S_FDD_WAIT;
                     state   <= S_FDD_WAIT;          // read-only / no media: nothing stored (no slow block follows)

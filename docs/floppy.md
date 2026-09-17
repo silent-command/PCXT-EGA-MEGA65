@@ -23,10 +23,10 @@ never learn the difference. Phases:
    seek; the firmware answers the FDC's block requests for drive A from it,
    re-reading a track when the FDC moves on; DSKCHG through the mount strobe,
    write protect by mounting read-only. Geometry from the ID headers of track 0.
-3. **Writes**: MFM encoder with write precompensation (mega65-core's
-   `mfm_bits_to_gaps.vhdl` has one, tuned on this mechanism), write gate around the
-   sector's data field only (from the IDAM's end to the end of the data CRC plus a
-   few bytes of gap), sector written back from the buffer.
+3. **Writes** (done 2026-09-17, "Phase 3" below): MFM encoder, write gate around the
+   sector's data field only (22 bytes after the ID CRC to the end of the data CRC
+   plus two bytes of gap), the sector taken from the FDC's block buffer, a
+   background read-after-write verify, the mount read-write unless the tab says no.
 4. **Formatting**: whole-track writes from the FDC's format command (the FDC already
    collects C/H/R/N per sector into its buffer for the image path).
 
@@ -254,10 +254,10 @@ edges, then 250 kbit/s). Good ID headers at 500 kbit/s = 1.44 MB: the FDC is tol
 uses that told SPT and only that, never the rate: sectors are 1-based, LBA 0 =
 C0 H0 R1, LBA 18 = C0 H1 R1 on 1.44 MB, LBA 36 = C1 H0 R1 (checked for every LBA
 of both geometries by `tools/vdrive-latency-bench/run_flp_chs.sh`, which runs the
-real routine in the QNICE emulator). The mount is read-only, so writes never
-reach the firmware: floppy.v answers them with its write-protect error and DOS
-prints "Write protect error writing drive A". The drive's own write-protect line
-is reported in the status register for later.
+real routine in the QNICE emulator). In phase 2 the mount was read-only, so
+writes never reached the firmware: floppy.v answered them with its write-protect
+error and DOS printed "Write protect error writing drive A"; since phase 3 the
+mount follows the drive's write-protect line.
 
 ### No disk, disk change
 With no readable disk at mount time the FDC is left unmounted (`media_present` = 0):
@@ -365,3 +365,264 @@ Follow-up on the same build: a second `DIR A:` and `COPY A:\*.* C:\` work,
 `DIR A:` takes a couple of seconds; with the disk ejected DOS shows its normal
 "Error reading drive A" Abort/Retry prompt, and after re-inserting the disk
 Retry recovers and `DIR A:` works again.
+
+---
+
+## Phase 3: writes, 2026-09-17
+DOS can `COPY` files onto the disk in the internal drive and `DEL` them, on a
+1.44 MB or 720 KB PC floppy, and the result reads back on this core; whether a
+PC reads it is for the board (end of this section). `floppy.v` is still
+untouched; the image-based drives are unaffected while the toggle is off (the
+firmware hooks all sit behind `FLP_OWNS_DRIVE`). **Not yet run on the board.**
+FORMAT (phase 4) is not designed out: the writer takes any byte sequence with
+marks, and a whole-track write is the same writer started at the index with a
+longer sequence.
+
+### The pieces
+| file | role |
+|---|---|
+| `CORE/vhdl/floppy_mfm_writer.vhd` | new: MFM encoder (clock bits per the MFM rule, A1 marks as raw 0x4489), the bit-cell timer at 50 / 100 clocks per raw bit, the WRITE DATA pulse, write precompensation, WRITE GATE |
+| `CORE/vhdl/floppy_sector_engine.vhd` | command 6 WRITE_SECTOR, a 512-byte write buffer loaded from the framework's block buffer, the splice timing, the background verify (below), error codes 7 (write protected) and 9 (track seen, sector not), the wait for pending verifies before the head moves |
+| `CORE/vhdl/floppy_mfm_reader.vhd` | `data_crc_o`: the two data-CRC bytes as received, for the verify |
+| `CORE/vhdl/floppy_drive_if.vhd` | `wgate_i` / `wdata_i` (active high) onto the two pins; WRITE GATE forced off while the drive is not selected |
+| `CORE/vhdl/vd_glue.vhd` | the core-side port of the block buffer can now be read by the engine (`flp_buf_rd_i` / `flp_buf_rdata_o`, one clock latency like the bridge's) |
+| `CORE/vhdl/rom_loader.vhd` | control bit 3 (clear verify-failed), read 12 (verify pending / failed, live), nine live flags; the clear pulses held low in reset |
+| `CORE/rtl/mgmt_bridge.sv` | `fd_dead`: a floppy *write* block acknowledged with `blk_err` parks every later floppy request until the chip reset |
+| `CORE/m2m-rom/flpdrv.asm` | `FLP_DRV_WR` (LBA -> C/H/R, WRITE_SECTOR, retry with recalibrate, acknowledge), the mount read-write unless the drive says write protect, the verify check, the cache-dirty bypass |
+| `M2M/rom/shell.asm` | the dirty-cache flush loop skips the internal drive like an SD-direct drive |
+| `CORE/vhdl/main.vhd`, `mega65.vhd`, `CORE-R6.xpr`, `add-core-sources.tcl` | plumbing, the new file |
+
+### The write timing: where the new data field starts, and why
+IBM System 34 puts 22 bytes of 4E (gap 2) between the ID field's CRC and the
+12 bytes of 00 that precede the data field's A1 A1 A1 FB. Gap 2 exists for
+the write splice: a controller that rewrites a data field cannot know the exact
+phase of the old sync field, so it starts writing *its own* sync field where
+the old one was, and the reader resynchronises on the 0x4489 marks; the 22
+bytes are what a controller is allowed to lose to its ID-field decode latency,
+speed differences between the drive that formatted the disk and the one
+writing, and head-switch and erase-turn-on delays.
+
+Two controllers, the same rule:
+* WD177x ("WD177x-Prog.txt", Write Sector): *"The 177x then counts off 22 bytes
+  from the CRC field. ... the controller writes 12 bytes of zeroes. The 177x then
+  writes a normal or deleted Data Address Mark ... writes the byte which the CPU
+  placed in the Data Register, and continues ... After the 177x writes the last
+  byte, it calculates and writes the 16-bit CRC. The chip then writes one $ff
+  byte"* and drops write gate.
+* mega65-core (`sdcardio.vhdl` `F011WriteSectorRealDriveWait` /
+  `F011WriteSectorRealDrive`, master, checked 2026-09-17): on `fdc_sector_found`
+  (the decoder's "data gap begins now" after the ID CRC check) it opens
+  `f_wgate` at once and writes 23 x 4E (its `fdc_write_byte_number` 0..22, i.e.
+  it rewrites gap 2 instead of waiting it out), 12 x 00, 3 x A1 with clock byte
+  FB (the missing clock), FB, 512 bytes, CRC, then 6 x 4E "really only to make
+  sure MFM writer has flushed last CRC byte before we disable f_wgate", and
+  closes the gate. Same splice point, different lead-in.
+
+Here: the engine counts `G_WR_GAP2_BYTES` (22) x 16 half cells from the
+reader's `idam` event less `G_WR_LEAD_HC` (4) half cells, opens WRITE GATE and
+starts the writer; the first raw bit reaches the head 3 half cells later (the
+writer's precompensation window) and the reader's `idam` comes 0..1 half cell
+(plus 5 clocks) after the CRC's last bit, so the first zero lands within about
+half a half cell of where the old sync field began, plus whatever the two
+drives' speeds differ over 22 bytes (1 % = 3.5 half cells). Everything before
+it in gap 2 stays as it was (WD style); the drive model measures the splice at
+21 (HD) / 22 (DD) bytes after the ID CRC (22 nominal, the model plays the HD disk 3 %
+slow and the DD disk 3 % fast). The field written: 12 x 00, 3 x A1 (raw 0x4489),
+FB, 512 bytes, CRC-16/CCITT 0x1021 preset FFFF over A1 A1 A1 FB and the data
+(the reader's polynomial), then `G_WR_TAIL_BYTES` (2) x 4E so that the CRC's
+last clock bit is defined and the last transition is on the disk before the
+gate closes (WD writes one FF, mega65-core 6 x 4E), then WRITE GATE off one data
+cell after the last transition. The old gap 3 stays; the model measures WRITE
+GATE off 122 (HD) / 61 (DD) bytes before the next sector's ID sync field (gap 3 is 108
+/ 80 bytes in the model, 84 / 80 in the uPD765's format tables; the field
+written is 530 bytes at the writer's rate, so it lands 3 % shorter or longer on
+the disk than the original at the model's spindle speeds).
+
+Bit cells: one raw MFM bit per half cell, 50 clocks (1 us) at 500 kbit/s and
+100 (2 us) at 250 kbit/s, exactly the cells the reader quantises against; the
+WRITE DATA pulse is low for half a raw bit (0.5 / 1 us) from the middle of the
+raw bit, mega65-core's `f_write` timing (`transition_point =
+cycles_per_interval / 2`, citing the SMSC FDC37C78 figure 7, "0.5 x WCLK");
+the drive acts on the falling edge. The A1 mark is the fixed raw 0x4489; every
+other byte gets its clock bits from the MFM rule with the previous byte's last
+data bit carried across (mega65-core `mfm_bits_to_gaps.vhdl` `bit_queue`).
+
+### Write precompensation: implemented, off by default
+Evidence: mega65-core has it (`mfm_bits_to_gaps.vhdl`: a 7-raw-bit window,
+three bits before and after the one being written, shifts of
+`write_precomp_magnitude` 4 / `_b` 8 cycles at 40.5 MHz, about 100 / 200 ns)
+but only applies it when bit 2 of the F011 command says so (`$84` "add 4 for
+write precompensation", `f011_write_precomp <= fastio_wdata(2)`), on every
+track alike, and by default writes this mechanism without it. The WD177x
+applies "1/8 of a cycle" when its ENP bit asks and documents that
+"programmers typically enable precompensation on the innermost tracks"; a PC's
+82077 defaults to 125 ns on all tracks in MFM. mega65-core's table writes a
+transition with a close neighbour *before* it *late* ("pulse will be pushed
+early, so write it a bit late"), the opposite of the classic peak-shift rule
+(read peaks of close transitions move apart, so such a transition reads late
+and is written early); whether their sign was tuned on this mechanism or is a
+slip is not recorded. With the two sources disagreeing on the sign, no board
+evidence yet, and the same drive proven to read what it writes without
+precompensation in mega65-core, the decision is: the writer implements the
+classic rule (`precomp_i` clocks early when the nearer neighbour is before,
+late when after, distances 2 / 3 / >= 4 half cells compared, mega65-core's
+window), the engine enables it from cylinder `G_PRECOMP_FROM_CYL` with
+`G_PRECOMP_CYCLES` clocks, and both default to 0 = off. The bench runs it at 4
+clocks (80 ns) from cylinder 20 to prove the path. Turning it on is a
+two-generic change once the board says whether inner tracks written without it
+read back on a PC.
+
+### The verify: in the background, by CRC signature
+A read-after-write inside the command would cost a revolution per sector
+(200 ms); DOS writes runs of consecutive sectors (a track's worth for a big
+COPY, then the FAT and the directory), floppy.v hands them over one at a time
+and the BIOS's INT 13h times out at about 2 s, so 18 sectors x (write + a
+revolution) would fail every large copy. Instead WRITE_SECTOR ends when WRITE
+GATE drops; the engine remembers the CRC it wrote for the slot, invalidates the
+slot and leaves the verify *pending*. The capture logic, which for reads fills
+the cache from every matching ID header, now also runs whenever the head is on
+the cached track: the written sector comes around on the next revolution, is
+captured like any invalid slot, and the verify passes when its data CRC checks
+*and* the CRC bytes read back equal the ones written: the data is
+byte-identical with probability 1 - 2^-16, and an unwritten old sector with a
+good CRC of its own (WRITE GATE having no effect: a polarity or drive problem)
+is caught, without a second buffer or a compare port on the cache. Meanwhile
+the next sector's WRITE_SECTOR is already accepted: consecutive sectors are
+written on the same revolution (the bench writes sectors 7 and 8 within 60 ms
+after sector 6; the ID header of the next sector follows the written field by
+about 3.4 ms at 500 kbit/s) and their verifies queue up (a bit per slot, 18
+CRCs). A pending verify fails after `G_VFY_INDEX` (2) index edges without the
+sector coming around, on a motor stop, a disk change or the index timeout; any
+command that must move the head, switch side or rate, recalibrate or DETECT
+first waits for the pending verifies (at most about two revolutions), so a
+write is never left unchecked by a seek. The 100 us side settle is skipped when
+neither side nor rate changes.
+
+Reporting: `vfy_pend` / `vfy_fail` are live in register 12; control bit 3
+clears the failure. The firmware (`FLP_VFY_CHECK`, from `FLP_POLL` and before
+every block request) latches a failure into `FLP_VFY_ERR` and acknowledges the
+*next* block request, read or write, with the block-error flag; the bridge then
+parks the drive (`fd_dead` for a write, `fd_hold` for a read) until the reset
+button. That is one request late, and it cannot be earlier: floppy.v completes
+a WRITE DATA sector the moment its FIFO is drained into the block buffer, before
+the request even reaches the firmware, and reports success to the BIOS; the
+only way DOS learns of a failed write is the following access timing out
+("Error writing drive A. Abort, Retry, Fail?"), which for a COPY is the next
+data sector, the FAT or the directory write. A write that fails outright
+(no index, the ID header never found, the recalibrate limit) is retried once
+with a recalibrate, then acknowledged with the block error the same way; a
+write-protect refusal is not retried.
+
+### The write-cache bypass and the mount
+The framework's vdrives keeps an image write cache: HANDLE_DRV_WR copies the
+block into the image buffer, vdrives marks the drive's cache dirty on the
+acknowledge, and HANDLE_IO flushes it to the SD card 2 s after the last write
+(`shell.asm` FLUSH_CACHE, vdrives.vhd's `cache_flush_de`). The physical drive
+has no image: `FLP_DRV_WR` writes the sector when the FDC delivers it (the
+bridge has already drained floppy.v's 512 bytes into the block buffer, which
+the engine reads through vd_glue in 512 clocks into its own write buffer), and
+`FLP_ACK` clears the dirty flag right after the acknowledge that set it; the
+flush loop in HANDLE_IO also skips the drive the way it skips SD-direct drives
+(otherwise it would try to flush a RAM cache through file handle 0). The block
+protocol of `docs/floppy-write-multisector.md` is unchanged: one acknowledge
+per block, the bridge returns to idle and dispatches the next sector's request,
+which floppy.v raised while we were still writing; the acknowledge is held for
+the same 16 instructions as for reads.
+
+The mount: `FLP_STROBE` reads the drive's write-protect line (valid while the
+drive is selected, which it always is with the toggle on) and mounts read-only
+when it is asserted, read-write otherwise; every re-mount (a disk change re-runs
+DETECT and mounts again) re-evaluates it, and the log line says which. With a
+read-only mount floppy.v refuses writes itself with the FDC's write-protect
+error, so DOS prints "Write protect error writing drive A" and nothing reaches
+the firmware; the engine refuses with error 7 anyway before touching WRITE
+GATE, for the case of a tab moved without a disk change (a write then parks the
+drive like any other failure). No disk: the FDC is unmounted, so no write
+request exists; a write on a drive whose disk vanished mid-way ends in "no
+index" after 1 s.
+
+### Benches
+* `run_floppy_sector_engine_tb.ps1`: the drive model (`floppy_drive_model.sv`)
+  now records writes: while WRITE GATE is low it stores every WRITE DATA
+  falling edge at its angular position in units of the disk's own raw bit
+  (fractional, so the writer's clock against the +-3 % spindle is kept and the
+  splice phase is real), erases the raw bits it passes, mutes RDATA, keeps the
+  recording per cylinder and side and replays it with jitter in place of the
+  erased bits on later revolutions. It checks WRITE GATE only with select, motor,
+  disk and no write protect; WRITE DATA only under WRITE GATE, 0.1..2.5 us wide,
+  transitions >= 1.5 half cells apart; WRITE GATE on inside gap 2 or the data
+  sync field and off inside the same sector's gap 3 at least 30 bytes before the
+  next ID sync field; no write across the index; `corrupt_next` drops one
+  recorded transition of the next write. Cases added after the phase-2 scenario:
+  one sector on the cached track, verify, then a forced re-read of the track
+  with every sector compared (17 originals, 1 written); a write-protected disk
+  refused before WRITE GATE; sector 0 / 19 / cylinder 83; a write after a seek
+  (cylinder 30, with precompensation); sectors 6, 7, 8 back to back and a read
+  of sector 7 before its verify; a write the model corrupts fails its verify, the
+  flag clears, the rewrite passes; a read of cylinder 31 right after a write on
+  30 waits for the verify; the wrong rate (no header) and no disk (no index); on
+  a DD disk at 250 kbit/s one sector, one after a side switch, sector 12 of 9
+  refused with error 9, both tracks re-read and compared.
+  Result: **PASS, 66805 checks** (1086 in phase 2; the model checks every one of the
+  ~3200 WRITE DATA pulses of each of the 10 writes for width and spacing), 69
+  revolutions, 764 good ID headers, 748 good data fields, 265 steps, about 15 s of
+  simulated time in roughly 50 minutes of xsim. What it found on the way: the
+  model's first "WRITE GATE off inside gap 3" check was wrong for a disk turning
+  slower than the writer assumes (the new field ends inside the tail of the old
+  one, which is what really happens); the read of a just-written sector is a cache
+  hit (the verify filled the slot), so the bench reads the next sector, as DOS does.
+* `run_vd_glue_tb.ps1` (new, with `vd_glue_wrap.vhd` flattening the vdrives
+  array ports for xsim): the block buffer in both directions: the bridge
+  writes, the engine loads through the new read port and the QNICE side sees
+  the same bytes; the engine's COPY writes and the bridge reads back; the
+  engine's address is ignored while it is idle; a block request and its
+  acknowledge cross. Result: **PASS, 8 checks**.
+* `run_rom_loader_tb.ps1`: the verify-clear pulse (alone, with the disk-change
+  clear, never spuriously: a start-up pulse from the X on the synchroniser
+  outputs was found, and the clear outputs are now held low in reset), the nine
+  live flags with register 12, a WRITE_SECTOR command through the window.
+  Result: **PASS** (4 commands, 2 + 2 clear pulses, 592 ROM words as before).
+* `run_mgmt_bridge_tb.sh`: test 17: a floppy write block acknowledged with
+  `blk_err`: the sector completes in floppy.v (DOS cannot learn of it there),
+  the drive is parked, the next read request stays pending with nothing fetched
+  and no IRQ, the hard disk is still served, the chip reset revives it, a good
+  write afterwards leaves the drive alive. Result: **PASS, 7246 checks** (5121
+  before).
+* `run_floppy_phy_spike_tb.ps1`: the spike on the extended model: **PASS, 1844 checks**
+  (1593 before; the model now also checks "no STEP under WRITE GATE" at each of its
+  251 steps).
+* `tools/vdrive-latency-bench/run_flp_chs.sh`: unchanged code, re-run: pass, 4320
+  conversions and 12 corner cases, 0 failures.
+* The firmware assembles (`make_rom.sh`, 26819 ROM lines).
+
+### Resources (Vivado 2026.1 out of context, `synth-vhdl-ooc.tcl`)
+`floppy_sector_engine` with its three modules: 1250 LUTs, 793 FFs, 4 RAMB36 +
+1 RAMB18 (was 620 / 541 / 4 in phase 2: the write buffer is the RAMB18; the 18
+remembered CRCs and their comparator, the per-slot index counters, the write
+byte sequencer with its CRC and the writer are the rest); `floppy_mfm_writer`
+alone: 112 LUTs, 71 FFs; `rom_loader`: 311 LUTs, 555 FFs (302 / 543). No
+latches, no `Synth 8-327` (the 77 warnings are the XPM memories' unconnected ports).
+
+### What only the board can prove
+* **The write splice on real media**: the model puts the splice where the maths
+  says; a real drive adds its erase-to-write turn-on time, and whether the sync
+  field written over the old one gives a clean 0x4489 on read-back is the first
+  thing the `FLP:` log ("write verify failed") tells after the first
+  `COPY CON A:\X.TXT`. `last_wr_lead` = 21 / 22 bytes in the model is the
+  number to move (`G_WR_LEAD_HC`) if it does not.
+* **Write current at HD versus DD**: 3.5" drives switch the write current from
+  the HD hole, some from the DENSITY pin (`G_DENSITY_HD` / `_DD`, still unproven
+  either way); a 720 KB disk written with HD current is unreadable elsewhere.
+  Write a 720 KB disk here, read it on a PC.
+* **Whether a PC reads what we wrote**: the same disk in a PC drive after a
+  `COPY`; then the inner tracks (a full disk) to decide the precompensation
+  generics.
+* **The verify against real margins**: a false "verify failed" on a good write
+  parks the drive; the log says which LBA, and `G_VFY_INDEX` can be raised to 3
+  if the read-back needs a second revolution on marginal media.
+* **The BIOS timeout on long writes**: a track's worth of consecutive sectors
+  should cost one to two revolutions plus the firmware's per-sector turnaround;
+  if the `FLP:` counters show a revolution per sector, the main loop's poll is
+  the place to look (the engine's part is 10 us for the load plus the gap).
+* **DOS after a failed write**: that the parked drive produces "Abort, Retry,
+  Fail?" and the reset button revives A:, as for reads.

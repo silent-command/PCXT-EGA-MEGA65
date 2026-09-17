@@ -1031,11 +1031,16 @@ _HANDLE_IO_3    MOVE    R0, R8
                 CMP     1, R8                   ; cache dirty?
                 RBRA    _HANDLE_IO_NXT3, !Z     ; no: next drive, if any
 
-                ; SD-direct drives write through: nothing to flush
+                ; SD-direct drives write through: nothing to flush; the
+                ; PCXT-EGA internal floppy drive has no image at all
+                ; (CORE/m2m-rom/flpdrv.asm writes the sector at once)
+                MOVE    R0, R8
+                RSUB    FLP_OWNS_DRIVE, 1
+                RBRA    _HANDLE_IO_CLN, C
                 MOVE    R0, R8
                 RSUB    VD_IS_SDDIRECT, 1
                 RBRA    _HANDLE_IO_FL, !C
-                MOVE    R0, R8
+_HANDLE_IO_CLN  MOVE    R0, R8
                 MOVE    VD_CACHE_DIRTY, R9
                 XOR     R10, R10
                 RSUB    VD_DRV_WRITE, 1
@@ -1249,8 +1254,9 @@ HANDLE_DRV_WR   SYSCALL(enter, 1)
 
                 MOVE    R8, R0                  ; R0: drive number
 
-                ; PCXT-EGA: the internal floppy drive is mounted read-only,
-                ; a write request is dropped (CORE/m2m-rom/flpdrv.asm)
+                ; PCXT-EGA: vdrive 0 is the internal floppy drive while the
+                ; "A: internal drive" toggle is on: the block is written to
+                ; the disk at once, no image cache (CORE/m2m-rom/flpdrv.asm)
                 RSUB    FLP_OWNS_DRIVE, 1
                 RBRA    _HDW_NOT_FLP, !C
                 RSUB    FLP_DRV_WR, 1

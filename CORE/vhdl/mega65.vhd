@@ -366,6 +366,7 @@ signal main_flp_arg0          : std_logic_vector(15 downto 0);
 signal main_flp_arg1          : std_logic_vector(15 downto 0);
 signal main_flp_enable        : std_logic;
 signal main_flp_chg_clr       : std_logic;
+signal main_flp_vfy_clr       : std_logic;
 signal main_flp_blk_err       : std_logic;
 signal main_flp_busy          : std_logic;
 signal main_flp_err           : std_logic_vector(7 downto 0);
@@ -379,7 +380,7 @@ signal main_flp_cache_head    : std_logic;
 signal main_flp_cache_rate    : std_logic;
 signal main_flp_head_track    : std_logic_vector(7 downto 0);
 signal main_flp_state         : std_logic_vector(7 downto 0);
-signal main_flp_live          : std_logic_vector(6 downto 0);
+signal main_flp_live          : std_logic_vector(8 downto 0);
 signal main_flp_res           : std_logic_vector(95 downto 0);
 signal main_flp_dbg           : std_logic_vector(95 downto 0);
 signal main_flp_cnt_index     : std_logic_vector(15 downto 0);
@@ -390,6 +391,8 @@ signal main_flp_last_chrn     : std_logic_vector(31 downto 0);
 signal main_flp_buf_addr      : std_logic_vector(8 downto 0);
 signal main_flp_buf_data      : std_logic_vector(7 downto 0);
 signal main_flp_buf_we        : std_logic;
+signal main_flp_buf_rd        : std_logic;
+signal main_flp_buf_rdata     : std_logic_vector(7 downto 0);
 
 begin
 
@@ -566,6 +569,8 @@ begin
          flp_buf_addr_i       => main_flp_buf_addr,
          flp_buf_data_i       => main_flp_buf_data,
          flp_buf_we_i         => main_flp_buf_we,
+         flp_buf_rd_i         => main_flp_buf_rd,
+         flp_buf_rdata_o      => main_flp_buf_rdata,
          flp_blk_err_i        => main_flp_blk_err,
 
          -- M2M Keyboard interface
@@ -646,8 +651,9 @@ begin
    -- rates into a track cache; the firmware (flpdrv.asm) commands it through i_rom_loader's
    -- register window when "A: internal drive" is on. Runs on the 50 MHz chipset clock; the drive
    -- inputs are asynchronous (synchronised inside, false paths in CORE.xdc). Reset is the clock-lock
-   -- reset only, like the Ethernet MAC. Never writes. The bring-up spike (floppy_phy_spike.vhd) is
-   -- no longer instantiated; it shares floppy_drive_if / floppy_mfm_reader with the engine.
+   -- reset only, like the Ethernet MAC. Phase 3 added WRITE_SECTOR (floppy_mfm_writer.vhd) with the block
+   -- buffer read back through vd_glue. The bring-up spike (floppy_phy_spike.vhd) is no longer
+   -- instantiated; it shares floppy_drive_if / floppy_mfm_reader with the engine.
    ---------------------------------------------------------------------------------------------
    i_floppy_sector_engine : entity work.floppy_sector_engine
       port map (
@@ -655,6 +661,7 @@ begin
          rst_i             => main_rst,
          enable_i          => main_flp_enable,
          chg_clr_i         => main_flp_chg_clr,
+         vfy_clr_i         => main_flp_vfy_clr,
          cmd_valid_i       => main_flp_cmd,
          cmd_i             => main_flp_cmd_code,
          cmd_cyl_i         => main_flp_arg0(7 downto 0),
@@ -682,6 +689,8 @@ begin
          track0_o          => main_flp_live(2),
          motor_o           => main_flp_live(3),
          index_seen_o      => main_flp_live(4),
+         vfy_pend_o        => main_flp_live(7),
+         vfy_fail_o        => main_flp_live(8),
          cnt_index_o       => main_flp_cnt_index,
          cnt_idam_ok_o     => main_flp_cnt_idam_ok,
          cnt_dam_ok_o      => main_flp_cnt_dam_ok,
@@ -690,6 +699,8 @@ begin
          buf_addr_o        => main_flp_buf_addr,
          buf_data_o        => main_flp_buf_data,
          buf_we_o          => main_flp_buf_we,
+         buf_rd_o          => main_flp_buf_rd,
+         buf_rdata_i       => main_flp_buf_rdata,
          f_density_o       => f_density_o,
          f_motora_o        => f_motora_o,
          f_selecta_o       => f_selecta_o,
@@ -856,6 +867,7 @@ begin
          flp_arg1_o        => main_flp_arg1,
          flp_enable_o      => main_flp_enable,
          flp_chg_clr_o     => main_flp_chg_clr,
+         flp_vfy_clr_o     => main_flp_vfy_clr,
          flp_blk_err_o     => main_flp_blk_err,
          flp_busy_i        => main_flp_busy,
          flp_res_i         => main_flp_res,

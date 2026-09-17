@@ -112,12 +112,15 @@ entity main is
       sd_buff_dout_i          : in  std_logic_vector(DW downto 0);
       sd_buff_din_o           : out vd_vec_array(2 downto 0)(DW downto 0);
       sd_buff_wr_i            : in  std_logic;
-      -- Internal floppy drive read path (docs/floppy.md, clk_main_i domain): the sector engine's COPY
-      -- writes a block into the vd_glue buffer; the firmware's block-error flag tells mgmt_bridge that
-      -- the floppy block it is acknowledging carries no data
+      -- Internal floppy drive (docs/floppy.md, clk_main_i domain): the sector engine's COPY writes a block
+      -- into the vd_glue buffer and its WRITE_SECTOR reads one back; the firmware's block-error flag tells
+      -- mgmt_bridge that the floppy block it is acknowledging failed (a read carries no data, a write parks
+      -- the drive)
       flp_buf_addr_i          : in  std_logic_vector(8 downto 0) := (others => '0');
       flp_buf_data_i          : in  std_logic_vector(7 downto 0) := (others => '0');
       flp_buf_we_i            : in  std_logic := '0';
+      flp_buf_rd_i            : in  std_logic := '0';
+      flp_buf_rdata_o         : out std_logic_vector(7 downto 0);
       flp_blk_err_i           : in  std_logic := '0';
 
       -- M2M Keyboard interface
@@ -677,6 +680,8 @@ begin
          flp_buf_addr_i => flp_buf_addr_i,
          flp_buf_data_i => flp_buf_data_i,
          flp_buf_we_i   => flp_buf_we_i,
+         flp_buf_rd_i   => flp_buf_rd_i,
+         flp_buf_rdata_o => flp_buf_rdata_o,
          qnice_clk_i    => clk_qnice_i,
          sd_lba_o       => sd_lba_o,
          sd_blk_cnt_o   => sd_blk_cnt_o,
