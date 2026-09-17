@@ -177,6 +177,23 @@ port (
    eth_txd_o               : out   std_logic_vector(1 downto 0);
    eth_txen_o              : out   std_logic;
 
+   -- Internal 3.5" floppy drive, drive A lines (PCXT-EGA addition: CORE/vhdl/floppy_phy_spike.vhd,
+   -- docs/floppy.md). Shugart interface, all active low, passed through raw by top_mega65-r6.vhd;
+   -- the drive B lines (f_motorb_o, f_selectb_o) stay tied off inactive in the top.
+   f_density_o             : out   std_logic;
+   f_motora_o              : out   std_logic;
+   f_selecta_o             : out   std_logic;
+   f_side1_o               : out   std_logic;
+   f_stepdir_o             : out   std_logic;
+   f_step_o                : out   std_logic;
+   f_wdata_o               : out   std_logic;
+   f_wgate_o               : out   std_logic;
+   f_index_i               : in    std_logic;
+   f_track0_i              : in    std_logic;
+   f_writeprotect_i        : in    std_logic;
+   f_rdata_i               : in    std_logic;
+   f_diskchanged_i         : in    std_logic;
+
    -- CBM-488/IEC serial port
    iec_reset_n_o           : out std_logic;
    iec_atn_n_o             : out std_logic;
@@ -339,6 +356,12 @@ signal main_eth_tx_full       : std_logic;
 signal main_eth_tx_wr         : std_logic;
 signal main_eth_tx_data       : std_logic_vector(8 downto 0);
 signal main_eth_tx_done       : std_logic;
+
+-- Floppy drive spike (docs/floppy.md): its three status words replace the bist= / req= / hdd= words on
+-- the serial status line for the duration of the spike (see i_rom_loader below), qnice_clk domain.
+signal qnice_flp_stat_a       : std_logic_vector(15 downto 0);
+signal qnice_flp_stat_b       : std_logic_vector(15 downto 0);
+signal qnice_flp_stat_c       : std_logic_vector(15 downto 0);
 
 begin
 
@@ -586,6 +609,53 @@ begin
       ); -- i_eth_mac
 
    ---------------------------------------------------------------------------------------------
+   -- Floppy drive physical-layer spike (PCXT-EGA addition, see floppy_phy_spike.vhd and
+   -- docs/floppy.md): drives the internal 3.5" drive (select, motor, seek) and decodes MFM from
+   -- RDATA at both rates, counting index pulses, sync marks and CRC-checked IDAMs / DAMs. Runs on
+   -- the 50 MHz chipset clock; the drive inputs are asynchronous (synchronised inside, false paths
+   -- in CORE.xdc). Reset is the clock-lock reset only, like the Ethernet MAC. Never writes.
+   ---------------------------------------------------------------------------------------------
+   i_floppy_phy_spike : entity work.floppy_phy_spike
+      port map (
+         clk_i             => main_clk,
+         rst_i             => main_rst,
+         f_density_o       => f_density_o,
+         f_motora_o        => f_motora_o,
+         f_selecta_o       => f_selecta_o,
+         f_side1_o         => f_side1_o,
+         f_stepdir_o       => f_stepdir_o,
+         f_step_o          => f_step_o,
+         f_wdata_o         => f_wdata_o,
+         f_wgate_o         => f_wgate_o,
+         f_index_i         => f_index_i,
+         f_track0_i        => f_track0_i,
+         f_writeprotect_i  => f_writeprotect_i,
+         f_rdata_i         => f_rdata_i,
+         f_diskchanged_i   => f_diskchanged_i,
+         stat_clk_i        => qnice_clk_i,
+         stat_a_o          => qnice_flp_stat_a,
+         stat_b_o          => qnice_flp_stat_b,
+         stat_c_o          => qnice_flp_stat_c,
+         dbg_index_o       => open,
+         dbg_syncs_o       => open,
+         dbg_idam_o        => open,
+         dbg_idam_ok_o     => open,
+         dbg_dam_o         => open,
+         dbg_dam_ok_o      => open,
+         dbg_chrn_o        => open,
+         dbg_max_r_o       => open,
+         dbg_flags_o       => open,
+         dbg_state_o       => open,
+         dbg_track_o       => open,
+         dbg_runs_o        => open,
+         dbg_steps_o       => open,
+         dbg_last_gap_o    => open,
+         dbg_byte_o        => open,
+         dbg_byte_valid_o  => open,
+         dbg_sync_mark_o   => open
+      ); -- i_floppy_phy_spike
+
+   ---------------------------------------------------------------------------------------------
    -- Audio and video settings (QNICE clock domain)
    ---------------------------------------------------------------------------------------------
 
@@ -719,9 +789,15 @@ begin
          rom_wait_i        => main_rom_wait,
          eth_mac_o         => main_eth_mac,
          eth_mac_valid_o   => main_eth_mac_valid,
-         dbg_a_i           => main_dbg_bus_reads,
-         dbg_b_i           => main_dbg_vsync,
-         dbg_c_i           => main_dbg_keys,
+         -- Floppy spike (docs/floppy.md): the status words " fidx=", " fchr=", " fst=" (m2m-rom.asm
+         -- DBG_STR_6..8) for the duration of the spike. The originals, to restore together with the
+         -- labels " bist=", " req=", " hdd=":
+         --    dbg_a_i           => main_dbg_bus_reads,
+         --    dbg_b_i           => main_dbg_vsync,
+         --    dbg_c_i           => main_dbg_keys,
+         dbg_a_i           => qnice_flp_stat_a,
+         dbg_b_i           => qnice_flp_stat_b,
+         dbg_c_i           => qnice_flp_stat_c,
          dbg_flags_i       => main_dbg_flags
       ); -- i_rom_loader
    --

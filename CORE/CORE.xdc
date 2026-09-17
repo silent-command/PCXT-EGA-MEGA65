@@ -169,3 +169,16 @@ set_false_path -from [get_ports {eth_mdio_io}]
 set_max_delay -datapath_only 20.0 -from [get_cells {CORE/i_eth_mac/i_rx_fifo/wr_gray_reg[*] CORE/i_eth_mac/i_tx_fifo/wr_gray_reg[*]}] -to [get_cells {CORE/i_eth_mac/i_rx_fifo/wr_gray_meta_reg[*] CORE/i_eth_mac/i_tx_fifo/wr_gray_meta_reg[*]}]
 set_max_delay -datapath_only 20.0 -from [get_cells {CORE/i_eth_mac/i_rx_fifo/rd_gray_reg[*] CORE/i_eth_mac/i_tx_fifo/rd_gray_reg[*]}] -to [get_cells {CORE/i_eth_mac/i_rx_fifo/rd_gray_meta_reg[*] CORE/i_eth_mac/i_tx_fifo/rd_gray_meta_reg[*]}]
 set_false_path -to [get_pins {CORE/i_eth_mac/tx_eof_meta_reg/D CORE/i_eth_mac/tx_done_meta_reg/D CORE/i_eth_mac/link_meta_reg/D}]
+
+## Internal floppy drive (CORE/vhdl/floppy_phy_spike.vhd, docs/floppy.md). The drive's outputs are
+## open-collector levels and pulses from a mechanism with its own clock (INDEX ~2 ms every 200 ms,
+## RDATA 0.15-1 us low pulses every 2-8 us, TRACK0 / WPT / DSKCHG static): asynchronous to every
+## FPGA clock. Each enters a two-flop ASYNC_REG synchroniser in the 50 MHz chipset clock and RDATA
+## is then filtered over three samples; a flux transition is timed to one 20 ns clock, which is 2 %
+## of the 1 us HD half cell against a +-50 % classification window. The outputs (SELECT, MOTOR,
+## DIR, STEP, SIDE1, DENSITY, WGATE, WDATA) are millisecond-scale levels and a 12 us STEP pulse,
+## driven from registers; DIR is held 10 us before a STEP pulse by the RTL. No timing to constrain
+## beyond the IOB placement of the flops that drive the pins.
+set_false_path -from [get_ports {f_index_i f_track0_i f_writeprotect_i f_rdata_i f_diskchanged_i}]
+set_false_path -to   [get_ports {f_density_o f_motora_o f_selecta_o f_side1_o f_stepdir_o f_step_o f_wdata_o f_wgate_o}]
+set_property IOB TRUE [get_ports {f_stepdir_o f_step_o}]
