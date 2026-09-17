@@ -21,7 +21,7 @@
 #   -Trace       write every bus event from the start of ram_test_block(32 KB) to ooc/ramtest_sys_tb/trace.txt (-testplusarg TRACELOW: from POST 04)
 #
 # Full log: CORE/ooc/ramtest_sys_tb/run_<speed>[_repro].log
-param([int]$Speed = 3, [int]$RamKB = 64, [switch]$Repro, [switch]$NoPatch, [switch]$NoCompile, [int]$Ring = 512, [switch]$FullLowTest, [switch]$Trace, [switch]$Model, [int]$CycFrom = 0, [int]$CycTo = 0, [string]$Work = 'ramtest_sys_tb')
+param([string]$Bios = "", [int]$Speed = 3, [int]$RamKB = 64, [switch]$Repro, [switch]$NoPatch, [switch]$NoCompile, [int]$Ring = 512, [switch]$FullLowTest, [switch]$Trace, [switch]$Model, [int]$CycFrom = 0, [int]$CycTo = 0, [string]$Work = 'ramtest_sys_tb')
 $ErrorActionPreference = 'Continue'
 $vivado = 'C:\AMDDesignTools\2026.1\Vivado'
 $bin    = "$vivado\bin"
@@ -36,6 +36,7 @@ $vhdl    = Join-Path $core 'vhdl'
 $m2m     = Resolve-Path (Join-Path $core '..\M2M\vhdl\memory')
 $hr      = Resolve-Path (Join-Path $core '..\M2M\vhdl\controllers\hyperram')
 $bios    = Join-Path $sub 'SW\8088_bios\binaries\bios-xt.bin'
+if ($Bios -ne "") { $bios = (Resolve-Path $Bios).Path }   # -Bios: run another XT BIOS image
 
 # the overlay as shipped, or the pre-fix copy kept in rtl/tb/repro for the reproduction run
 function Ov($name) {

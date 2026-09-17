@@ -1,0 +1,45 @@
+diff --git a/src/bios.asm b/src/bios.asm
+index 7b0a5a0..31b48fe 100644
+--- a/src/bios.asm
++++ b/src/bios.asm
+@@ -274,6 +274,7 @@ mouse_data	equ	28h	; 8 bytes - mouse data buffer
+ %include	"scancode.inc"		; keyboard scancodes translation func.
+ %include	"serial1.inc"		; serial port services & detection
+ %include	"printer1.inc"		; parallel printer services & detection
++%include	"gameport.inc"		; game adapter detection
+ %ifdef PS2_MOUSE
+ %ifndef SECOND_PIC
+ %error "PS2_MOUSE depends on SECOND_PIC. Please fix config.inc."
+@@ -1111,6 +1112,7 @@ low_ram_ok:
+ 	call	detect_serial		; detect serial ports and print findings
+ 	call	detect_parallel		; detect parallel ports and print
+ 					; findings
++	call	detect_gameport		; detect game adapter and print findings
+ 	call	detect_floppy		; detect floppy drive types
+ 	call	print_floppy		; print floppy drive types
+ 
+diff --git a/src/config.inc b/src/config.inc
+index 9fa0ce6..878244c 100644
+--- a/src/config.inc
++++ b/src/config.inc
+@@ -23,7 +23,7 @@
+ ;=========================================================================
+ 
+ %define DATE		'09/29/23'	; BIOS release date MM/DD/YY
+-%define VERSION		'1.0.0'		; BIOS version
++%define VERSION		'1.0.0m'		; BIOS version
+ 
+ ; Machine type is defined in the Makefile
+ ;%define MACHINE_XI8088			; Xi 8088
+diff --git a/src/messages.inc b/src/messages.inc
+index eaa6c09..7ae828b 100644
+--- a/src/messages.inc
++++ b/src/messages.inc
+@@ -93,6 +93,7 @@ msg_serial	db	'Serial Ports:               ', 00h
+ msg_serial_com	db	'COM', 00h
+ msg_parallel	db	'Parallel Ports:             ', 00h
+ msg_parallel_lpt db	'LPT', 00h
++msg_gameport	db	'Game Port:                  ', 00h
+ msg_ram_testing	db	'Testing RAM (ESC to skip):  ', 00h
+ msg_ram_error	db	0Dh, 0Ah, 'ERROR: Faulty memory detected at ', 00h
+ msg_ram_total	db      0Dh, 'Total Conventional RAM:     ', 00h
