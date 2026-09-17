@@ -30,9 +30,9 @@ create_generated_clock -name clk_50      [get_pins CORE/clk_gen/i_mmcm_b/CLKOUT1
 create_generated_clock -name clk_50_ps   [get_pins CORE/clk_gen/i_mmcm_b/CLKOUT2]   ;# 50 MHz, +90 deg, Ethernet MAC
 
 # Ethernet reference clock: clk_50 forwarded to the KSZ8081RND (XI pin) through the ODDR in
-# CORE/vhdl/eth_phy_spike.vhd. Declared on the port so that the RMII pin delays are timed
+# CORE/vhdl/eth_mac.vhd (grown from eth_phy_spike.vhd). Declared on the port so that the RMII pin delays are timed
 # against the clock as it leaves the FPGA (ODDR and OBUF delays included).
-create_generated_clock -name eth_clock -source [get_pins CORE/i_eth_spike/i_refclk_oddr/C] -divide_by 1 [get_ports eth_clock_o]
+create_generated_clock -name eth_clock -source [get_pins CORE/i_eth_mac/i_refclk_oddr/C] -divide_by 1 [get_ports eth_clock_o]
 
 ## Clock groups
 ## On MiSTer the chipset/CPU pair and the video family were declared exclusive
@@ -127,7 +127,7 @@ set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode13_meta_reg/D}]
 set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode350_meta_reg/D}]
 set_false_path -to [get_pins {CORE/i_analog_video_ctl/video_15khz_meta_reg/D}]
 
-## Ethernet PHY spike (CORE/vhdl/eth_phy_spike.vhd). Numbers: KSZ8081RNA/RND datasheet
+## Ethernet MAC (CORE/vhdl/eth_mac.vhd, the PHY side is the verified eth_phy_spike.vhd). Numbers: KSZ8081RNA/RND datasheet
 ## DS00002199E table 7-2 "RMII timing parameters (50 MHz input to XI pin)" - the RND powers up in
 ## that mode and the R6 feeds the FPGA's 50 MHz into XI. tOD (REF_CLK rising to CRS_DV/RXD/RXER
 ## valid) 8 ns min / 13 ns max; TXD/TXEN setup t1 = 4 ns, hold t2 = 2 ns at the PHY.
@@ -139,7 +139,7 @@ set_false_path -to [get_pins {CORE/i_analog_video_ctl/video_15khz_meta_reg/D}]
 ##
 ## Receive: the capture flops (IOB, clocked by clk_50_ps = clk_50 + 90 deg) sample 25 ns after the
 ## internal clk_50 edge that produced the pin clock edge; the data is valid from about 17 ns to
-## about 32 ns after it (see the header of eth_phy_spike.vhd). Vivado's default relationship for
+## about 32 ns after it (see the header of eth_phy_spike.vhd, kept in the tree). Vivado's default relationship for
 ## eth_clock (edges 0, 20) -> clk_50_ps (edges 5, 25) is the 5 ns edge, so the setup check is moved
 ## to the 25 ns edge with a 2-cycle multicycle. The hold check stays on the 5 ns edge, which is the
 ## physically right one: the previous cycle's data must still be there.
@@ -152,15 +152,20 @@ set_multicycle_path 2 -setup -from [get_clocks eth_clock] -to [get_clocks clk_50
 set_output_delay -clock [get_clocks eth_clock] -max  4.5 [get_ports {eth_txd_o[*] eth_txen_o}]
 set_output_delay -clock [get_clocks eth_clock] -min -1.5 [get_ports {eth_txd_o[*] eth_txen_o}]
 
-## MDC/MDIO are self-timed by the spike at 1.25 MHz (MDIO driven at the MDC falling edge, sampled
+## MDC/MDIO are self-timed by the MAC at 1.25 MHz (MDIO driven at the MDC falling edge, sampled
 ## 60 ns before the rising edge through a two-flop synchroniser; the PHY needs 10 ns setup / 4 ns
 ## hold and answers 5..222 ns after the rising edge). RST# and the LED are static levels.
 set_false_path -to   [get_ports {eth_mdc_o eth_mdio_io eth_reset_o eth_led2_o}]
 set_false_path -from [get_ports {eth_mdio_io}]
 
-## Status crossing clk_50_ps -> qnice_clk (toggle handshake in eth_phy_spike.vhd). The framework's
-## QNICE clock comes from the same 100 MHz primary, so without these Vivado would time the crossing
-## as a related path. The two-flop synchronisers are false paths; the 48-bit snapshot bus only has to
-## settle before the request toggle has passed the two destination flops (>= one qnice period).
-set_false_path -to [get_pins {CORE/i_eth_spike/stat_req_meta_reg/D CORE/i_eth_spike/src_ack_meta_reg/D}]
-set_max_delay -datapath_only 20.0 -from [get_cells {CORE/i_eth_spike/src_snap_reg[*]}] -to [get_cells {CORE/i_eth_spike/stat_hold_reg[*]}]
+## MAC <-> card crossings, clk_50_ps <-> clk_50 (eth_mac.vhd). The two are MMCM B siblings, so Vivado
+## would time these as related paths with a 5 ns requirement. Everything that crosses is either a
+## gray-coded FIFO pointer (eth_afifo: wr_gray -> wr_gray_meta in the read clock, rd_gray ->
+## rd_gray_meta in the write clock) or a single toggle / level (tx_eof_tgl, tx_done_tgl, link_up)
+## into two ASYNC_REG flops. A gray pointer changes one bit per source edge, which is only safe when
+## the bus skew stays below one source period: datapath-only max delay of 20 ns. The single bits are
+## false paths. The FIFO memories are block RAM with a clock per port; the pointer protocol keeps
+## the two ports off the same address, there is no timed path between them.
+set_max_delay -datapath_only 20.0 -from [get_cells {CORE/i_eth_mac/i_rx_fifo/wr_gray_reg[*] CORE/i_eth_mac/i_tx_fifo/wr_gray_reg[*]}] -to [get_cells {CORE/i_eth_mac/i_rx_fifo/wr_gray_meta_reg[*] CORE/i_eth_mac/i_tx_fifo/wr_gray_meta_reg[*]}]
+set_max_delay -datapath_only 20.0 -from [get_cells {CORE/i_eth_mac/i_rx_fifo/rd_gray_reg[*] CORE/i_eth_mac/i_tx_fifo/rd_gray_reg[*]}] -to [get_cells {CORE/i_eth_mac/i_rx_fifo/rd_gray_meta_reg[*] CORE/i_eth_mac/i_tx_fifo/rd_gray_meta_reg[*]}]
+set_false_path -to [get_pins {CORE/i_eth_mac/tx_eof_meta_reg/D CORE/i_eth_mac/tx_done_meta_reg/D CORE/i_eth_mac/link_meta_reg/D}]

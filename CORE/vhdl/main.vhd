@@ -133,7 +133,19 @@ entity main is
       pot1_x_i                : in  std_logic_vector(7 downto 0);
       pot1_y_i                : in  std_logic_vector(7 downto 0);
       pot2_x_i                : in  std_logic_vector(7 downto 0);
-      pot2_y_i                : in  std_logic_vector(7 downto 0)
+      pot2_y_i                : in  std_logic_vector(7 downto 0);
+
+      -- NE1000 Ethernet card (docs/ethernet.md): enable and station address, plus the byte streams
+      -- of the MAC (eth_mac.vhd in mega65.vhd), all in the clk_main_i domain
+      eth_enable_i            : in  std_logic;
+      eth_mac_addr_i          : in  std_logic_vector(47 downto 0);
+      eth_rx_empty_i          : in  std_logic;
+      eth_rx_rd_o             : out std_logic;
+      eth_rx_data_i           : in  std_logic_vector(8 downto 0);
+      eth_tx_full_i           : in  std_logic;
+      eth_tx_wr_o             : out std_logic;
+      eth_tx_data_o           : out std_logic_vector(8 downto 0);
+      eth_tx_done_i           : in  std_logic
    );
 end entity main;
 
@@ -249,7 +261,16 @@ architecture synthesis of main is
          led_disk_o                : out std_logic;
          dbg_de_o                  : out std_logic;
          dbg_hb_o                  : out std_logic;
-         dbg_vb_o                  : out std_logic
+         dbg_vb_o                  : out std_logic;
+         ne1000_en_i               : in  std_logic;
+         ne1000_mac_i              : in  std_logic_vector(47 downto 0);
+         eth_rx_empty_i            : in  std_logic;
+         eth_rx_rd_o               : out std_logic;
+         eth_rx_data_i             : in  std_logic_vector(8 downto 0);
+         eth_tx_full_i             : in  std_logic;
+         eth_tx_wr_o               : out std_logic;
+         eth_tx_data_o             : out std_logic_vector(8 downto 0);
+         eth_tx_done_i             : in  std_logic
       );
    end component pcxt_core;
 
@@ -571,7 +592,18 @@ begin
          led_disk_o                => led_disk_o,
          dbg_de_o                  => raw_de,
          dbg_hb_o                  => raw_hb,
-         dbg_vb_o                  => raw_vb
+         dbg_vb_o                  => raw_vb,
+
+         -- NE1000 at 320h, IRQ 5 (ne1000.sv inside the chipset), MAC streams from mega65.vhd
+         ne1000_en_i               => eth_enable_i,
+         ne1000_mac_i              => eth_mac_addr_i,
+         eth_rx_empty_i            => eth_rx_empty_i,
+         eth_rx_rd_o               => eth_rx_rd_o,
+         eth_rx_data_i             => eth_rx_data_i,
+         eth_tx_full_i             => eth_tx_full_i,
+         eth_tx_wr_o               => eth_tx_wr_o,
+         eth_tx_data_o             => eth_tx_data_o,
+         eth_tx_done_i             => eth_tx_done_i
       ); -- i_pcxt_core
 
    ---------------------------------------------------------------------------

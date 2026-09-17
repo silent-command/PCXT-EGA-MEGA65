@@ -193,8 +193,22 @@ module pcxt_core
     // 3.10 debug: raw chipset video signals before the mixer/retime stages
     output wire        dbg_de_o,
     output wire        dbg_hb_o,
-    output wire        dbg_vb_o
+    output wire        dbg_vb_o,
+    // 3.11 NE1000 Ethernet card (docs/ethernet.md): enable, station address PROM contents and the
+    // MAC streams of eth_mac.vhd (chipset clock, 9-bit FIFO entries, bit 8 = end of frame). The card
+    // itself is inside PERIPHERALS (CORE/rtl/ne1000.sv) at I/O 320h, its interrupt is IRQ 5 below.
+    input  wire        ne1000_en_i,
+    input  wire [47:0] ne1000_mac_i,
+    input  wire        eth_rx_empty_i,
+    output wire        eth_rx_rd_o,
+    input  wire  [8:0] eth_rx_data_i,
+    input  wire        eth_tx_full_i,
+    output wire        eth_tx_wr_o,
+    output wire  [8:0] eth_tx_data_o,
+    input  wire        eth_tx_done_i
     );
+
+    wire        ne1000_irq;
 
     ///////// MEGA65: MiSTer framework signals the body still refers to /////////
     // Declared here under their upstream names; the ports feed them (inputs)
@@ -1287,7 +1301,9 @@ module pcxt_core
 		.address_latch_enable               (address_latch_enable),
 	//  .io_channel_check                   (),
 		.io_channel_ready                   (1'b1),
-		.interrupt_request                  (0),    // use?	-> It does not seem to be necessary.
+		// External IRQ lines of the 8259 (Peripherals.sv ORs bit 7 and bit 5 with the Sound Blaster):
+		// IRQ 5 carries the NE1000 (the SB should then sit on IRQ 7, osm_sb_irq7_i).
+		.interrupt_request                  ({2'b00, ne1000_irq, 5'b00000}),
 	//  .io_read_n                          (io_read_n),
 		.io_read_n_ext                      (1'b1),
 	//  .io_read_n_direction                (io_read_n_direction),
@@ -1403,6 +1419,17 @@ module pcxt_core
 		.crt_v_offset                       (eff_crt_v),
 		.vsync_width_osd                    (vsync_width_osd),
 		.hsync_width_osd                    (hsync_width_osd)
+		,
+		.ne1000_en                          (ne1000_en_i),
+		.ne1000_mac                         (ne1000_mac_i),
+		.ne1000_irq                         (ne1000_irq),
+		.eth_rx_empty                       (eth_rx_empty_i),
+		.eth_rx_rd                          (eth_rx_rd_o),
+		.eth_rx_data                        (eth_rx_data_i),
+		.eth_tx_full                        (eth_tx_full_i),
+		.eth_tx_wr                          (eth_tx_wr_o),
+		.eth_tx_data                        (eth_tx_data_o),
+		.eth_tx_done                        (eth_tx_done_i)
 	);
 
     wire [15:0] SDRAM_DQ_IN;
