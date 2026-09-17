@@ -22,6 +22,7 @@ options, `C_MENU_*`). Change `config.vhd` and both decoders together.
 | Input | Joystick 1 / Joystick 2 | `osm_joy1_i` / `osm_joy2_i` | MEGA65 ports 1 and 2 on the game port at 201h, digital mode |
 | Input | Swap joysticks | `osm_joy_swap_i` | |
 | Input | Write-protect A: / B: | `osm_floppy_wp_i` | in addition to a read-only image |
+| Input | A: internal drive | firmware only (`CORE/m2m-rom/flpdrv.asm` reads bit 76 of `M2M$CFM_DATA`) | the MEGA65's own 3.5" drive as A:, read-only (docs/floppy.md). On: an image on A: is unmounted, the disk is detected (1.44 MB / 720 KB) and mounted, the Drive A line shows "Internal drive" and is inert; no disk gives DOS "Not ready" and the drive is probed every 2 s. Off: back to images. Applied at start from the saved settings |
 | Input | Mouse: Off / C1351 / Amiga | `m65_mouse_ps2` -> core PS/2 mouse -> serial mouse on COM1 | a Commodore 1351 (proportional mode) or an Amiga/Atari ST mouse in joystick port 1; use CTMOUSE or another serial mouse driver in DOS |
 | Network | Off / IRQ 5 / IRQ 7 (default IRQ 5) | `osm_eth_enable`, `osm_eth_irq7` -> `pcxt_core` `ne1000_en_i`, `ne1000_irq7_i` | the NE1000 at port 320h (docs/ethernet.md). Off: the port reads FFh like an empty slot and no interrupt is raised. The card is also held off until the firmware has delivered its MAC (`rom_loader.vhd` `eth_mac_valid_o`). IRQ 5 and IRQ 7 are the two lines the Sound Blaster can sit on ("Sound Blaster IRQ 7" off/on); the XT's 8259 is edge-triggered, so give the card the line the SB is not using. Packet driver: `NE1000 0x60 5 0x320` or `NE1000 0x60 7 0x320`; live |
 
@@ -30,15 +31,17 @@ only chooses where the FM chip answers. Game Blaster (C/MS) is not exposed.
 
 Menu line numbers (the bit numbers) are listed above `OPTM_ITEMS` in
 config.vhd; the framework toggles moved from lines 83..85 to 91..93 when the
-Network submenu (lines 82..89) was added, and `C_MENU_*` in mega65.vhd moved
-with them. Group ids are `OPTM_G_NETWORK` = 22, the three after it renumbered.
+Network submenu (lines 82..89) was added, and again to 92..94 when "A: internal
+drive" became line 76 (mouse 78..80, network 86..88); `C_MENU_*` in mega65.vhd,
+the decoders in main.vhd and `FLP_MENU_LINE` / `FLP_MENU_GRP` in flpdrv.asm move
+with them. Group ids: `OPTM_G_FLP_INT` = 21, `OPTM_G_NETWORK` = 23.
 
 ## Remembering settings
 
 The framework saves menu choices to `/m2m/m2mcfg` on the SD card, but only
 if that file already exists and is exactly `OPTM_SIZE` bytes (see config.vhd;
-the release script generates it). OPTM_SIZE is 98 since the Network submenu
-(it was 90): a card carrying the old 90-byte file gets "corrupt config file"
+the release script generates it). OPTM_SIZE is 99 since "A: internal drive"
+(98 with the Network submenu, 90 before): a card carrying an old file gets "corrupt config file"
 in the serial log and no settings are saved until the file is replaced. A file of OPTM_SIZE bytes of 0xFF means "use the defaults". `sdcard/m2m/m2mcfg` in this repo
 is that file; copy the `m2m` folder next to `pcxt`. Regenerate it whenever
 the menu changes size:

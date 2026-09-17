@@ -13,7 +13,7 @@ set fs [current_fileset]
 set lists [core_file_lists $core_dir]
 
 # CORE/vhdl additions of the port (the template files are already listed)
-set vhd_extra [list [file join $core_dir vhdl mem_bram.vhd] [file join $core_dir vhdl rom_loader.vhd] [file join $core_dir vhdl ps2_tx.vhd] [file join $core_dir vhdl vd_glue.vhd] [file join $core_dir vhdl mem_backend.vhd] [file join $core_dir vhdl analog_video_ctl.vhd] [file join $core_dir vhdl analog_line_doubler.vhd] [file join $core_dir vhdl m65_mouse_ps2.vhd] [file join $core_dir vhdl eth_mac.vhd] [file join $core_dir vhdl floppy_phy_spike.vhd] [file join $core_dir .. M2M vhdl memory avm_cache.vhd]]
+set vhd_extra [list [file join $core_dir vhdl mem_bram.vhd] [file join $core_dir vhdl rom_loader.vhd] [file join $core_dir vhdl ps2_tx.vhd] [file join $core_dir vhdl vd_glue.vhd] [file join $core_dir vhdl mem_backend.vhd] [file join $core_dir vhdl analog_video_ctl.vhd] [file join $core_dir vhdl analog_line_doubler.vhd] [file join $core_dir vhdl m65_mouse_ps2.vhd] [file join $core_dir vhdl eth_mac.vhd] [file join $core_dir vhdl floppy_drive_if.vhd] [file join $core_dir vhdl floppy_mfm_reader.vhd] [file join $core_dir vhdl floppy_phy_spike.vhd] [file join $core_dir vhdl floppy_sector_engine.vhd] [file join $core_dir .. M2M vhdl memory avm_cache.vhd]]
 
 proc add_if_missing {files} {
     set added 0

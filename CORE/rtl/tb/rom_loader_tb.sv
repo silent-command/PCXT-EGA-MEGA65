@@ -20,6 +20,14 @@
 // back, that the other device ids cannot write them, that a rewrite (valid
 // low, new words, valid high) and a core reset both end with a fresh copy.
 //
+// Floppy engine registers (window 0xFFFD, see rom_loader.vhd): a stub engine on the core side goes busy
+// for a while after each command pulse and then presents result words; the bench checks that a command
+// write reaches the core as one pulse with the code and arguments written before it, that the busy bit is
+// set by the write itself and only clears after the stub finished (no window in which a fast firmware
+// could see "idle" too early), that the result words read back exactly once the busy bit is clear, that a
+// command written while busy is dropped, that the enable / block-error levels and the disk-change clear
+// pulse cross, that the live flags read back, and that floppy-window writes never produce a ROM word.
+//
 // Run with run_rom_loader_tb.ps1 (xsim, mixed language).
 `timescale 1ns / 1ps
 
@@ -48,6 +56,15 @@ module rom_loader_tb;
     wire  [47:0] eth_mac;
     wire         eth_mac_valid;
 
+    // floppy engine side (core clock)
+    wire         flp_cmd, flp_enable, flp_chg_clr, flp_blk_err;
+    wire  [3:0]  flp_cmd_code;
+    wire  [15:0] flp_arg0, flp_arg1;
+    logic        flp_busy = 1'b0;
+    logic [95:0] flp_res = 96'h0;
+    logic [6:0]  flp_live = 7'h0;
+    logic [95:0] flp_dbg = 96'h0;
+
     rom_loader #(.G_TIMEOUT(20000), .G_WORD_TIMEOUT(5000)) dut (
         .qnice_clk_i(qnice_clk), .qnice_rst_i(qnice_rst),
         .qnice_dev_id_i(dev_id), .qnice_dev_addr_i(dev_addr), .qnice_dev_data_i(dev_data),
@@ -56,8 +73,69 @@ module rom_loader_tb;
         .core_clk_i(core_clk), .core_rst_i(core_rst),
         .rom_download_o(rom_download), .rom_index_o(rom_index), .rom_wr_o(rom_wr),
         .rom_addr_o(rom_addr), .rom_data_o(rom_data), .rom_wait_i(rom_wait),
-        .eth_mac_o(eth_mac), .eth_mac_valid_o(eth_mac_valid)
+        .eth_mac_o(eth_mac), .eth_mac_valid_o(eth_mac_valid),
+        .flp_cmd_o(flp_cmd), .flp_cmd_code_o(flp_cmd_code), .flp_arg0_o(flp_arg0), .flp_arg1_o(flp_arg1),
+        .flp_enable_o(flp_enable), .flp_chg_clr_o(flp_chg_clr), .flp_blk_err_o(flp_blk_err),
+        .flp_busy_i(flp_busy), .flp_res_i(flp_res), .flp_live_i(flp_live), .flp_dbg_i(flp_dbg)
     );
+
+    //------------------------------------------------------------------------
+    // Floppy engine stub and checks
+    //------------------------------------------------------------------------
+    integer      flp_errors = 0;
+    integer      flp_cmds = 0, flp_clrs = 0;
+    logic [3:0]  flp_last_code;
+    logic [15:0] flp_last_a0, flp_last_a1;
+    integer      flp_busy_len = 0;          // core clocks the stub stays busy after a command
+    logic [95:0] flp_next_res = 96'h0;      // what it presents at the end
+    logic        flp_cmd_d = 1'b0;
+    integer      flp_busy_cnt = 0;
+    always @(posedge core_clk) begin
+        flp_cmd_d <= flp_cmd;
+        if (flp_cmd && flp_cmd_d) begin flp_errors = flp_errors + 1; $display("%0t ERROR FLP: cmd pulse wider than one clock", $time); end
+        if (flp_chg_clr) flp_clrs = flp_clrs + 1;
+        if (flp_cmd) begin
+            flp_cmds = flp_cmds + 1;
+            flp_last_code = flp_cmd_code; flp_last_a0 = flp_arg0; flp_last_a1 = flp_arg1;
+            if (flp_busy_len > 0) begin flp_busy <= 1'b1; flp_busy_cnt <= flp_busy_len; end
+            else flp_res <= flp_next_res;
+        end
+        else if (flp_busy) begin
+            if (flp_busy_cnt <= 1) begin flp_busy <= 1'b0; flp_res <= flp_next_res; end
+            flp_busy_cnt <= flp_busy_cnt - 1;
+        end
+    end
+    // combinational readback of window 0xFFFD register r through the QNICE bus
+    task automatic flp_read(input [3:0] r, output [15:0] v);
+        dev_id   = 16'h0110;
+        dev_addr = {16'hFFFD, 8'h00, r};
+        #1;
+        v = dev_data_o;
+    endtask
+    task automatic flp_expect(input [3:0] r, input [15:0] exp, input string what);
+        logic [15:0] v;
+        flp_read(r, v);
+        if (v !== exp) begin flp_errors = flp_errors + 1; $display("%0t ERROR FLP %s: reg %0d = %04h, expected %04h", $time, what, r, v, exp); end
+    endtask
+    task automatic flp_write(input [3:0] r, input [15:0] v);
+        qnice_write(16'h0110, {16'hFFFD, 8'h00, r}, v);
+    endtask
+    // the firmware's command sequence: args, then the command; returns the busy bit right after the write
+    task automatic flp_command(input [3:0] code, input [15:0] a0, input [15:0] a1, output logic busy_now);
+        logic [15:0] v;
+        flp_write(4'd1, a0);
+        flp_write(4'd2, a1);
+        flp_write(4'd0, {12'h0, code});
+        flp_read(4'd0, v);
+        busy_now = v[15];
+    endtask
+    task automatic flp_wait_idle(input string what);
+        logic [15:0] v;
+        integer n = 0;
+        flp_read(4'd0, v);
+        while (v[15] && n < 100000) begin @(posedge qnice_clk); #1; flp_read(4'd0, v); n = n + 1; end
+        if (v[15]) begin flp_errors = flp_errors + 1; $display("%0t ERROR FLP %s: busy never cleared", $time, what); end
+    endtask
 
     //------------------------------------------------------------------------
     // MAC register checks: valid must never be high with a MAC other than the
@@ -295,10 +373,87 @@ module rom_loader_tb;
         core_rst  = 1'b0;
         repeat (20) @(posedge core_clk);
         mac_check(1'b0, "after QNICE reset");
+        //--------------------------------------------------------------------
+        // floppy engine registers
+        //--------------------------------------------------------------------
+        begin
+            logic busy_now;
+            logic [15:0] v;
+            integer cmds0, clrs0;
+            rx_before = words_sent;
+            mac_check(1'b0, "before the floppy tests (valid was dropped by the QNICE reset)");
+            // idle: nothing enabled, status shows no busy
+            flp_expect(4'd0, 16'h0000, "idle status");
+            if (flp_enable !== 1'b0 || flp_blk_err !== 1'b0) begin flp_errors = flp_errors + 1; $display("ERROR FLP: enable/blk_err not low after reset"); end
+            // control levels cross, the clear bit is a pulse
+            clrs0 = flp_clrs;
+            flp_write(4'd3, 16'h0001);                       // enable
+            repeat (10) @(posedge core_clk);
+            if (flp_enable !== 1'b1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: enable did not cross"); end
+            flp_write(4'd3, 16'h0007);                       // enable + clear + blk_err
+            repeat (10) @(posedge core_clk);
+            if (flp_blk_err !== 1'b1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: blk_err did not cross"); end
+            if (flp_clrs != clrs0 + 1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: %0d clear pulses (1)", flp_clrs - clrs0); end
+            flp_write(4'd3, 16'h0001);                       // enable only
+            repeat (10) @(posedge core_clk);
+            if (flp_blk_err !== 1'b0 || flp_clrs != clrs0 + 1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: blk_err not cleared / stray clear pulse"); end
+            // live flags
+            flp_live = 7'b1010101;
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd0, {1'b0, 7'b1010101, 8'h00}, "live flags");
+            flp_live = 7'b0000000;
+            repeat (10) @(posedge qnice_clk);
+            // a command with a busy engine: busy set by the write, results only after the stub finished
+            cmds0 = flp_cmds;
+            flp_busy_len = 400;
+            flp_next_res = 96'h5A5A_1234_ABCD_0003_0102_0000 | 96'h0000_0000_0000_0000_0000_0007;
+            flp_command(4'd2, 16'h0345, 16'h1206, busy_now);
+            if (!busy_now) begin flp_errors = flp_errors + 1; $display("ERROR FLP: busy not set by the command write"); end
+            repeat (20) @(posedge core_clk);
+            if (flp_cmds != cmds0 + 1 || flp_last_code !== 4'd2 || flp_last_a0 !== 16'h0345 || flp_last_a1 !== 16'h1206) begin
+                flp_errors = flp_errors + 1; $display("ERROR FLP: command pulse/args: n=%0d code=%0h a0=%04h a1=%04h", flp_cmds - cmds0, flp_last_code, flp_last_a0, flp_last_a1);
+            end
+            flp_read(4'd0, v);
+            if (!v[15]) begin flp_errors = flp_errors + 1; $display("ERROR FLP: busy cleared while the engine is busy"); end
+            flp_command(4'd1, 16'h0000, 16'h0000, busy_now);  // dropped: still busy
+            repeat (20) @(posedge core_clk);
+            if (flp_cmds != cmds0 + 1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: a command while busy was not dropped"); end
+            flp_wait_idle("READ_TRACK stub");
+            flp_expect(4'd0, 16'h0007, "result word 0 (err)");
+            flp_expect(4'd1, 16'h0102, "result word 1");
+            flp_expect(4'd2, 16'h0003, "result word 2");
+            flp_expect(4'd3, 16'hABCD, "result word 3");
+            flp_expect(4'd4, 16'h1234, "result word 4");
+            flp_expect(4'd5, 16'h5A5A, "result word 5");
+            flp_dbg = 96'h0006_0005_0004_0003_0002_0001;
+            #1;
+            flp_expect(4'd6, 16'h0001, "debug word 6");
+            flp_expect(4'd11, 16'h0006, "debug word 11");
+            // a command the engine never picks up (disabled engine, stub stays idle): busy clears by itself
+            cmds0 = flp_cmds;
+            flp_busy_len = 0;
+            flp_next_res = 96'h0000_0000_0000_0000_0000_0006;
+            flp_command(4'd3, 16'h0000, 16'h0001, busy_now);
+            if (!busy_now) begin flp_errors = flp_errors + 1; $display("ERROR FLP: busy not set by the second command write"); end
+            flp_wait_idle("COPY on an idle engine");
+            flp_expect(4'd0, 16'h0006, "result after a command the engine ignored");
+            if (flp_cmds != cmds0 + 1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: second command pulse missing"); end
+            // other device ids cannot reach the window (for them 0xFFFD is ROM data: an even address only
+            // latches a low byte), and the window never makes ROM words
+            qnice_write(16'h0111, {16'hFFFD, 12'h002}, 16'h0000);
+            repeat (10) @(posedge core_clk);
+            flp_expect(4'd0, 16'h0006, "control/result untouched by another device id");
+            if (flp_enable !== 1'b1) begin flp_errors = flp_errors + 1; $display("ERROR FLP: another device id changed the control register"); end
+            repeat (200) @(posedge core_clk);
+            if (words_sent != rx_before) begin flp_errors = flp_errors + 1; $display("ERROR FLP: floppy-window writes produced ROM words"); end
+            flp_write(4'd3, 16'h0000);
+            $display("FLP register checks: errors=%0d (%0d commands, %0d clear pulses)", flp_errors, flp_cmds, flp_clrs);
+        end
+
         $display("MAC register checks: errors=%0d", mac_errors);
         $display("words delivered=%0d (expected %0d), errors=%0d, pending=%0d, max QNICE stall=%0d cycles, dropped=%0d, download=%0d",
                  words_rx, words_sent, errors, exp_addr_q.size(), max_stall, dut.c_words_drop, rom_download);
-        if (words_rx == words_sent && errors == 0 && exp_addr_q.size() == 0 && dut.c_words_drop == 0 && mac_errors == 0) $display("RESULT: PASS");
+        if (words_rx == words_sent && errors == 0 && exp_addr_q.size() == 0 && dut.c_words_drop == 0 && mac_errors == 0 && flp_errors == 0) $display("RESULT: PASS");
         else $display("RESULT: FAIL");
         $finish;
     end

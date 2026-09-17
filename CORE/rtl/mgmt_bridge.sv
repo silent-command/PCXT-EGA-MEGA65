@@ -32,6 +32,17 @@
 // floppy mounts, floppy request.  Only one floppy request can exist at a
 // time (one floppy.v serves both drives), so A/B priority never arises.
 //
+// Floppy read errors (docs/floppy.md, the internal drive): floppy.v has no
+// way to report a read error - the ARM sends 512 bytes no matter what and
+// its SD state machine leaves S_SD_READ_WAIT_FOR_DATA only on fifo_full or
+// the chip reset (not on the DOR software reset). When the firmware
+// acknowledges a floppy block with blk_err high, the block is NOT streamed:
+// floppy.v keeps waiting, the BIOS's INT 13h times out (error 80h), DOS
+// prints "Not ready reading drive A" and drive A stays dead until the next
+// core reset - but no garbage reaches DOS and the machine does not hang.
+// The still-pending request is parked (fd_hold) so that the hard disk keeps
+// being served; the hold clears when the request finally drops (core reset).
+//
 // Hard-disk geometry (replaces ARM 2.2's 128-entry size table): at mount the
 // bridge reads block 0 of the image through the block interface (the same
 // blk_rd/blk_ack/buffer path an IDE read uses, so it waits on the SD card
@@ -74,6 +85,7 @@ module mgmt_bridge #(
     output reg  [2:0]  blk_wr,
     output reg  [31:0] blk_lba,        // block number
     input  wire [2:0]  blk_ack,        // level: high while the block moves; complete when it falls
+    input  wire        blk_err,        // level, sampled when a floppy read's ack falls: the block carries no data (see header)
     // 512-byte sector buffer shared with the framework
     output reg  [8:0]  buf_addr,
     output reg  [7:0]  buf_wdata,
@@ -221,7 +233,7 @@ module mgmt_bridge #(
         S_IDE_OK_REGS, S_IDE_ABORT_REGS,
         // floppy (MGMT 5.3, ARM 4.4-4.6)
         S_FDD_EJECT, S_FDD_INSERT,
-        S_FDD_REQ, S_FDD_DISPATCH, S_FDD_DISPATCH2, S_FDD_RD_TX, S_FDD_WR_STORE, S_FDD_WAIT
+        S_FDD_REQ, S_FDD_DISPATCH, S_FDD_DISPATCH2, S_FDD_RD_TX, S_FDD_WR_STORE, S_FDD_WAIT, S_FDD_ERR
     } state_t;
 
     state_t state, bus_ret, seq_ret;
@@ -287,6 +299,7 @@ module mgmt_bridge #(
     logic        fd_idx;              // drive being (un)mounted
     logic        fd_is_wr, fd_drv;
     logic [14:0] fd_lba;
+    logic        fd_hold;             // a floppy read failed: ignore its request until it drops
     // mount strobes: the framework holds img_mounted for as long as the QNICE
     // firmware takes between its set and clear register writes, so only the
     // rising edge is a mount; a level would otherwise re-arm the mount on
@@ -400,6 +413,7 @@ module mgmt_bridge #(
             fd_is_wr  <= 1'b0;
             fd_drv    <= 1'b0;
             fd_lba    <= 15'd0;
+            fd_hold   <= 1'b0;
             img_mounted_q <= 3'b000;
         end else begin
             // defaults: strobes are one clock wide
@@ -409,6 +423,7 @@ module mgmt_bridge #(
             img_mounted_q <= img_mounted;
             if (fd_timer0 != 24'd0) fd_timer0 <= fd_timer0 - 24'd1;
             if (fd_timer1 != 24'd0) fd_timer1 <= fd_timer1 - 24'd1;
+            if (mgmt_req[7:6] == 2'b00) fd_hold <= 1'b0;
 
             case (state)
             // ---------------------------------------------------------- dispatcher
@@ -447,7 +462,7 @@ module mgmt_bridge #(
                 end else if (fd_wait[1] && fd_timer1 == 24'd0) begin
                     fd_idx <= 1'b1;
                     state  <= S_FDD_INSERT;
-                end else if (mgmt_req[7:6] != 2'b00) begin
+                end else if (mgmt_req[7:6] != 2'b00 && !fd_hold) begin
                     state <= S_FDD_REQ;
                 end
             end
@@ -574,7 +589,11 @@ module mgmt_bridge #(
                 end
             end
             S_BLK_ACK_LO: begin
-                if (!blk_ack[blk_drv]) state <= seq_ret;
+                if (!blk_ack[blk_drv]) begin
+                    // a floppy read the firmware could not serve: no data for floppy.v (header)
+                    if (blk_err && seq_ret == S_FDD_RD_TX) state <= S_FDD_ERR;
+                    else                                   state <= seq_ret;
+                end
             end
 
             // ---------------------------------------------------------- divider
@@ -1034,6 +1053,10 @@ module mgmt_bridge #(
             end
             S_FDD_WAIT: begin                      // read path (and the discarded-write path): the request
                 if (mgmt_req[7:6] == 2'b00) state <= S_IDLE;   // bit fell on the 512th transfer just performed (MGMT 5.3 step 6)
+            end
+            S_FDD_ERR: begin                       // park the request, keep serving everything else
+                fd_hold <= 1'b1;
+                state   <= S_IDLE;
             end
 
             default: state <= S_IDLE;
