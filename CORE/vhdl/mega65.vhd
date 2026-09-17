@@ -289,9 +289,9 @@ constant C_MENU_HDMI_720_5994  : natural := 26;
 constant C_MENU_SVGA_800_60    : natural := 27;
 constant C_MENU_VGA_15KHZ      : natural := 63;
 constant C_MENU_VGA_15KHZ_CS   : natural := 64;
-constant C_MENU_CRT_EMULATION  : natural := 83;
-constant C_MENU_HDMI_ZOOM      : natural := 84;
-constant C_MENU_IMPROVE_AUDIO  : natural := 85;
+constant C_MENU_CRT_EMULATION  : natural := 91;
+constant C_MENU_HDMI_ZOOM      : natural := 92;
+constant C_MENU_IMPROVE_AUDIO  : natural := 93;
 
 -- analog VGA modes (docs/analog-video.md)
 signal main_video_mode13       : std_logic;   -- core's private 31.5 kHz raster active (async)
@@ -326,11 +326,12 @@ signal main_dbg_keys          : std_logic_vector(15 downto 0);
 signal main_dbg_flags         : std_logic_vector(7 downto 0);
 
 -- NE1000 Ethernet card (docs/ethernet.md): the MAC (eth_mac.vhd, PHY pins, clk_50_ps) exchanges byte
--- streams with the card inside main.vhd in the main_clk domain. The station address is locally
--- administered for now; reading the MEGA65's own MAC from the SD card configuration comes later,
--- which is why it is a port of main and not a generic there.
-constant C_ETH_MAC_ADDR       : std_logic_vector(47 downto 0) := x"024D36350001";
-constant C_ETH_ENABLE         : std_logic := '1';              -- OSM item to follow
+-- streams with the card inside main.vhd in the main_clk domain. The station address comes from the
+-- firmware through rom_loader.vhd (the MEGA65's own MAC from the SD card's configuration sector, or
+-- the locally administered default 02:4D:36:35:00:01, m2m-rom.asm ETH_SET_MAC); main_eth_mac_valid
+-- rises once all six bytes are there and gates the card. The menu (main.vhd) decides on/off and IRQ.
+signal main_eth_mac           : std_logic_vector(47 downto 0);
+signal main_eth_mac_valid     : std_logic;
 signal main_eth_rx_empty      : std_logic;
 signal main_eth_rx_rd         : std_logic;
 signal main_eth_rx_data       : std_logic_vector(8 downto 0);
@@ -534,9 +535,9 @@ begin
          pot2_x_i             => main_pot2_x_i,
          pot2_y_i             => main_pot2_y_i,
 
-         -- NE1000 Ethernet card: enable, station address, MAC streams (i_eth_mac below)
-         eth_enable_i         => C_ETH_ENABLE,
-         eth_mac_addr_i       => C_ETH_MAC_ADDR,
+         -- NE1000 Ethernet card: station address and its valid flag (i_rom_loader), MAC streams (i_eth_mac below)
+         eth_enable_i         => main_eth_mac_valid,
+         eth_mac_addr_i       => main_eth_mac,
          eth_rx_empty_i       => main_eth_rx_empty,
          eth_rx_rd_o          => main_eth_rx_rd,
          eth_rx_data_i        => main_eth_rx_data,
@@ -716,6 +717,8 @@ begin
          rom_addr_o        => main_rom_addr,
          rom_data_o        => main_rom_data,
          rom_wait_i        => main_rom_wait,
+         eth_mac_o         => main_eth_mac,
+         eth_mac_valid_o   => main_eth_mac_valid,
          dbg_a_i           => main_dbg_bus_reads,
          dbg_b_i           => main_dbg_vsync,
          dbg_c_i           => main_dbg_keys,

@@ -30,6 +30,19 @@
 --
 -- One instance serves all three ROMs: the device id selects the slot.
 --
+-- Ethernet station address (docs/ethernet.md): the firmware reads the
+-- MEGA65's MAC from the SD card's configuration sector (or falls back to a
+-- default) and writes it here, device G_DEV_PCXT, 4k window 0xFFFE:
+--   register 0..2 (word offsets): MAC bytes 0/1, 2/3, 4/5 (big-endian words)
+--   register 3: bit 0 = valid, bit 1 = source (1 = MEGA65 config), readback only
+-- The three words are captured into the core clock domain when the valid
+-- bit arrives there (a level, through xpm_cdc_single), so eth_mac_o only
+-- changes while eth_mac_valid_o is low and the card, which is held disabled
+-- until eth_mac_valid_o, never sees a half-written address. The window is
+-- one the auto-loader never touches (file offsets end at window 0x1FFF, the
+-- framework's CSR is 0xFFFF), and its writes are excluded from the byte
+-- pairing above. All four registers read back in the same window.
+--
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 -------------------------------------------------------------------------------------------------------------
 
@@ -60,6 +73,10 @@ entity rom_loader is
       qnice_dev_wait_o : out std_logic;
       qnice_dev_data_o : out std_logic_vector(15 downto 0);  -- status readback (see p_readback)
 
+      -- Ethernet station address for the NE1000 (core clock domain, see header)
+      eth_mac_o        : out std_logic_vector(47 downto 0);
+      eth_mac_valid_o  : out std_logic;
+
       -- Core side (pcxt_core ROM download port, clk_chipset domain)
       core_clk_i       : in  std_logic;
       core_rst_i       : in  std_logic;
@@ -85,9 +102,17 @@ architecture rtl of rom_loader is
    constant C_IDX_XTIDE : std_logic_vector(7 downto 0) := x"02";
    constant C_IDX_EGA   : std_logic_vector(7 downto 0) := x"03";
 
+   -- MAC register window (see header)
+   constant C_WIN_MAC   : std_logic_vector(15 downto 0) := x"FFFE";
+
    -- QNICE side
    signal q_selected    : std_logic;
    signal q_csr         : std_logic;                       -- access to the CRT/ROM control window (0xFFFF)
+   signal q_mac_win     : std_logic;                       -- access to the MAC register window (0xFFFE)
+   signal q_mac         : std_logic_vector(47 downto 0) := (others => '0');
+   signal q_mac_valid   : std_logic := '0';
+   signal q_mac_src     : std_logic := '0';
+   signal q_mac_rd      : std_logic_vector(15 downto 0);
    signal q_index       : std_logic_vector(7 downto 0);
    signal q_low_byte    : std_logic_vector(7 downto 0);
    signal q_word        : std_logic_vector(15 downto 0);
@@ -112,6 +137,9 @@ architecture rtl of rom_loader is
    signal c_sum_xtide   : unsigned(15 downto 0) := (others => '0');
    signal c_rom_wait_q  : std_logic := '0';
    signal c_download    : std_logic := '0';
+   signal c_mac_valid_s : std_logic;                       -- q_mac_valid, synchronised
+   signal c_mac         : std_logic_vector(47 downto 0) := (others => '0');
+   signal c_mac_valid   : std_logic := '0';
 
 begin
 
@@ -130,6 +158,9 @@ begin
    -- M2M CRTROM_CSR_4KWIN: status / file size from the firmware, not ROM data
    q_csr      <= '1' when qnice_dev_addr_i(27 downto 12) = x"FFFF" else '0';
 
+   -- MAC registers: only through the PCXT device id, never ROM data
+   q_mac_win  <= '1' when qnice_dev_id_i = G_DEV_PCXT and qnice_dev_addr_i(27 downto 12) = C_WIN_MAC else '0';
+
    q_pending  <= q_req_toggle xor q_ack_toggle;
 
    -- Wait while a word is pending, whenever this device is selected (like the
@@ -140,7 +171,7 @@ begin
    p_qnice : process (qnice_clk_i)
    begin
       if rising_edge(qnice_clk_i) then
-         if q_selected = '1' and q_csr = '0' and qnice_dev_ce_i = '1' and qnice_dev_we_i = '1' and q_pending = '0' then
+         if q_selected = '1' and q_csr = '0' and q_mac_win = '0' and qnice_dev_ce_i = '1' and qnice_dev_we_i = '1' and q_pending = '0' then
             if qnice_dev_addr_i(0) = '0' then
                q_low_byte <= qnice_dev_data_i(7 downto 0);
             else
@@ -156,6 +187,33 @@ begin
       end if;
    end process;
 
+   -- MAC register writes (no wait: nothing is pending on this path)
+   p_mac_qnice : process (qnice_clk_i)
+   begin
+      if rising_edge(qnice_clk_i) then
+         if q_mac_win = '1' and qnice_dev_ce_i = '1' and qnice_dev_we_i = '1' then
+            case qnice_dev_addr_i(3 downto 0) is
+               when "0000" => q_mac(47 downto 32) <= qnice_dev_data_i;
+               when "0001" => q_mac(31 downto 16) <= qnice_dev_data_i;
+               when "0010" => q_mac(15 downto  0) <= qnice_dev_data_i;
+               when "0011" => q_mac_valid <= qnice_dev_data_i(0);
+                              q_mac_src   <= qnice_dev_data_i(1);
+               when others => null;
+            end case;
+         end if;
+         if qnice_rst_i = '1' then
+            q_mac_valid <= '0';
+            q_mac_src   <= '0';
+         end if;
+      end if;
+   end process;
+
+   q_mac_rd <= q_mac(47 downto 32)                  when qnice_dev_addr_i(3 downto 0) = "0000" else
+               q_mac(31 downto 16)                  when qnice_dev_addr_i(3 downto 0) = "0001" else
+               q_mac(15 downto  0)                  when qnice_dev_addr_i(3 downto 0) = "0010" else
+               x"000" & "00" & q_mac_src & q_mac_valid when qnice_dev_addr_i(3 downto 0) = "0011" else
+               x"EEEE";
+
    ---------------------------------------------------------------------------
    -- Clock domain crossing (toggle handshake, both ways)
    ---------------------------------------------------------------------------
@@ -167,6 +225,33 @@ begin
    i_ack_sync : xpm_cdc_single
       generic map (DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
       port map (src_clk => core_clk_i, src_in => c_ack_toggle, dest_clk => qnice_clk_i, dest_out => q_ack_toggle);
+
+   i_mac_valid_sync : xpm_cdc_single
+      generic map (DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
+      port map (src_clk => qnice_clk_i, src_in => q_mac_valid, dest_clk => core_clk_i, dest_out => c_mac_valid_s);
+
+   -- Capture the address once its valid flag has crossed: the firmware wrote
+   -- the three words at least a QNICE bus cycle before the flag, and the flag
+   -- needs three core clocks more, so q_mac is long stable when sampled here.
+   -- Level-based so that a core reset (which clears the capture) or a
+   -- firmware rewrite (flag low, words, flag high) both end with a fresh copy.
+   p_mac_core : process (core_clk_i)
+   begin
+      if rising_edge(core_clk_i) then
+         if c_mac_valid_s = '0' then
+            c_mac_valid <= '0';
+         elsif c_mac_valid = '0' then
+            c_mac       <= q_mac;
+            c_mac_valid <= '1';
+         end if;
+         if core_rst_i = '1' then
+            c_mac_valid <= '0';
+         end if;
+      end if;
+   end process;
+
+   eth_mac_o       <= c_mac;
+   eth_mac_valid_o <= c_mac_valid;
 
    ---------------------------------------------------------------------------
    -- Core side: one rom_wr per word, download level from activity
@@ -260,8 +345,10 @@ begin
    -- 1 = words delivered, 2 = words dropped. The counters are in the core
    -- clock domain and only read while the loader is quiet, so no CDC.
    ---------------------------------------------------------------------------
-   -- 3/4/5 = checksums of pcxt.rom / ega_bios.rom / xtide.rom words, 6/7 = debug counters
-   qnice_dev_data_o <= dbg_flags_i & "00000" & c_word_valid & c_download & c_rom_wait_q when qnice_dev_addr_i(3 downto 0) = "0000" else
+   -- 3/4/5 = checksums of pcxt.rom / ega_bios.rom / xtide.rom words, 6/7 = debug counters.
+   -- Window 0xFFFE reads back the MAC registers instead.
+   qnice_dev_data_o <= q_mac_rd                       when q_mac_win = '1' else
+                       dbg_flags_i & "00000" & c_word_valid & c_download & c_rom_wait_q when qnice_dev_addr_i(3 downto 0) = "0000" else
                        std_logic_vector(c_words_ok)   when qnice_dev_addr_i(3 downto 0) = "0001" else
                        std_logic_vector(c_words_drop) when qnice_dev_addr_i(3 downto 0) = "0010" else
                        std_logic_vector(c_sum_pcxt)   when qnice_dev_addr_i(3 downto 0) = "0011" else

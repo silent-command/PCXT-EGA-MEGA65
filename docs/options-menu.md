@@ -1,6 +1,6 @@
 # Options menu (Help key)
 
-Main menu: Drive A, Drive B, Hard Disk, five submenus, the framework's HDMI
+Main menu: Drive A, Drive B, Hard Disk, six submenus, the framework's HDMI
 toggles, Help, Close. Menu line numbers are the option bits decoded in
 `CORE/vhdl/main.vhd` (core options) and `CORE/vhdl/mega65.vhd` (framework
 options, `C_MENU_*`). Change `config.vhd` and both decoders together.
@@ -23,15 +23,23 @@ options, `C_MENU_*`). Change `config.vhd` and both decoders together.
 | Input | Swap joysticks | `osm_joy_swap_i` | |
 | Input | Write-protect A: / B: | `osm_floppy_wp_i` | in addition to a read-only image |
 | Input | Mouse: Off / C1351 / Amiga | `m65_mouse_ps2` -> core PS/2 mouse -> serial mouse on COM1 | a Commodore 1351 (proportional mode) or an Amiga/Atari ST mouse in joystick port 1; use CTMOUSE or another serial mouse driver in DOS |
+| Network | Off / IRQ 5 / IRQ 7 (default IRQ 5) | `osm_eth_enable`, `osm_eth_irq7` -> `pcxt_core` `ne1000_en_i`, `ne1000_irq7_i` | the NE1000 at port 320h (docs/ethernet.md). Off: the port reads FFh like an empty slot and no interrupt is raised. The card is also held off until the firmware has delivered its MAC (`rom_loader.vhd` `eth_mac_valid_o`). IRQ 5 and IRQ 7 are the two lines the Sound Blaster can sit on ("Sound Blaster IRQ 7" off/on); the XT's 8259 is edge-triggered, so give the card the line the SB is not using. Packet driver: `NE1000 0x60 5 0x320` or `NE1000 0x60 7 0x320`; live |
 
 Sound Blaster (DSP at 220h, DMA 1) is always present; "Sound Blaster FM"
 only chooses where the FM chip answers. Game Blaster (C/MS) is not exposed.
+
+Menu line numbers (the bit numbers) are listed above `OPTM_ITEMS` in
+config.vhd; the framework toggles moved from lines 83..85 to 91..93 when the
+Network submenu (lines 82..89) was added, and `C_MENU_*` in mega65.vhd moved
+with them. Group ids are `OPTM_G_NETWORK` = 22, the three after it renumbered.
 
 ## Remembering settings
 
 The framework saves menu choices to `/m2m/m2mcfg` on the SD card, but only
 if that file already exists and is exactly `OPTM_SIZE` bytes (see config.vhd;
-the release script generates it). A file of OPTM_SIZE bytes of 0xFF means "use the defaults". `sdcard/m2m/m2mcfg` in this repo
+the release script generates it). OPTM_SIZE is 98 since the Network submenu
+(it was 90): a card carrying the old 90-byte file gets "corrupt config file"
+in the serial log and no settings are saved until the file is replaced. A file of OPTM_SIZE bytes of 0xFF means "use the defaults". `sdcard/m2m/m2mcfg` in this repo
 is that file; copy the `m2m` folder next to `pcxt`. Regenerate it whenever
 the menu changes size:
 
