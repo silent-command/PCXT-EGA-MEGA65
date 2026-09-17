@@ -352,3 +352,12 @@ core has 165 free).
 * **The dead-drive-after-error behaviour** and that the reset button revives A:.
 * **DOS's reaction to the eject/insert re-mount** on a disk change with the same
   geometry.
+
+## First board result, 2026-09-17: DOS reads a real disk
+Build of commit 03ba1c6 (WNS +0.177, no violations) on the R6, a 1.44 MB
+PC-formatted disk in the internal drive, "A: internal drive" switched on in
+Input Settings, FreeDOS booted from the hard-disk image: `DIR A:` listed the
+disk and `TYPE A:\HELLO.TXT` printed the file. First bitstream, no changes
+needed. The physical-layer spike had run earlier on a MEGA65-formatted disk
+(drive audibly seeking and reading); its counters were not read before the
+read-path build superseded it.
