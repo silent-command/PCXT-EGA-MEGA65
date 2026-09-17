@@ -34,6 +34,9 @@
 ; also remove the include "shell_vars.asm" in the variables section below.
 #include "../../M2M/rom/shell.asm"
 
+; PCXT-EGA: the MEGA65's internal 3.5" floppy drive as A: (docs/floppy.md)
+#include "flpdrv.asm"
+
 ; ----------------------------------------------------------------------------
 ; Firmware: Main Code
 ; ----------------------------------------------------------------------------
@@ -120,6 +123,7 @@ PREP_LOAD_IMAGE XOR     R8, R8                  ; no errors
 PREP_START      INCRB
                 RSUB    DBG_CORE_STATUS, 1
                 RSUB    ETH_SET_MAC, 1          ; station address for the NE1000
+                RSUB    FLP_INIT, 1             ; internal floppy drive, if the toggle is on
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
@@ -147,6 +151,7 @@ PREP_START      INCRB
 ;   R8: 0=OK, else pointer to string with error message
 ;   R9: 0=OK, else error code
 OSM_SEL_POST    INCRB
+                RSUB    FLP_OSM_SEL, 1          ; "A: internal drive" toggle (flpdrv.asm)
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
@@ -387,14 +392,9 @@ DBG_STR_2       .ASCII_W " drop="
 DBG_STR_3       .ASCII_W " sum0="
 DBG_STR_4       .ASCII_W " sum3="
 DBG_STR_5       .ASCII_W " sum2="
-; Floppy spike (docs/floppy.md, CORE/vhdl/floppy_phy_spike.vhd): the three words are the spike's status
-; words for its duration. The originals, to restore with the dbg_a/b/c_i port map in mega65.vhd:
-;   DBG_STR_6       .ASCII_W " bist="
-;   DBG_STR_7       .ASCII_W " req="
-;   DBG_STR_8       .ASCII_W " hdd="
-DBG_STR_6       .ASCII_W " fidx="
-DBG_STR_7       .ASCII_W " fchr="
-DBG_STR_8       .ASCII_W " fst="
+DBG_STR_6       .ASCII_W " bist="
+DBG_STR_7       .ASCII_W " req="
+DBG_STR_8       .ASCII_W " hdd="
 DBG_STRS        .DW DBG_STR_0, DBG_STR_1, DBG_STR_2, DBG_STR_3
                 .DW DBG_STR_4, DBG_STR_5, DBG_STR_6, DBG_STR_7
                 .DW DBG_STR_8
@@ -436,6 +436,7 @@ END_OF_ROM      .DW 0
 ;
 ; add your own variables here
 ;
+#include "flpdrv_vars.asm"
 
 ; M2M Shell variables (only include, if you included "shell.asm" above)
 #include "../../M2M/rom/shell_vars.asm"
@@ -449,7 +450,7 @@ END_OF_ROM      .DW 0
 ; You need to deduct MENU_HEAP_SIZE from the actual heap size below.
 ; Example: If your HEAP_SIZE would be 29696, then you write 29696-1024=28672
 ; instead, but when doing the sanity check calculations, you use 29696
-MENU_HEAP_SIZE  .EQU 2560                       ; 98-line menu with 6 submenus: ~1610 words of tables + 250 of %s strings (33 lines used 488)
+MENU_HEAP_SIZE  .EQU 2560                       ; 99-line menu with 6 submenus: ~1610 words of tables + 250 of %s strings (33 lines used 488)
 
 #ifndef RELEASE
 

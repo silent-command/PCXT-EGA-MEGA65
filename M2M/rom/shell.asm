@@ -228,6 +228,25 @@ HANDLE_MOUNTING SYSCALL(enter, 1)
                 CMP     1, R5                   ; CRT/ROM mode?
                 RBRA    _HM_START_MOUNT, Z      ; yes
 
+                ; PCXT-EGA: while "A: internal drive" is on, vdrive 0 is the
+                ; real drive (CORE/m2m-rom/flpdrv.asm) and its menu line is
+                ; inert: keep it shown as mounted or not and return
+                RSUB    FLP_OWNS_DRIVE, 1
+                RBRA    _HM_NOT_FLP, !C
+                RSUB    VD_MOUNTED, 1           ; C=1: the drive has a disk
+                RBRA    _HM_FLP_1, C
+                XOR     R9, R9
+                RBRA    _HM_FLP_2, 1
+_HM_FLP_1       MOVE    1, R9
+_HM_FLP_2       MOVE    R9, R10
+                RSUB    VD_MENGRP, 1            ; R9: menu index
+                RBRA    _HM_SDMOUNTED7, !C
+                MOVE    R9, R8
+                MOVE    R10, R9
+                RSUB    OPTM_SET, 1
+                RBRA    _HM_SDMOUNTED7, 1       ; redraw menu and exit
+_HM_NOT_FLP
+
                 ; we treat already mounted drives differently
                 RSUB    VD_MOUNTED, 1           ; C=1: the given drive in R8..
                 RBRA    _HM_MOUNTED, C          ; ..is already mounted
@@ -942,6 +961,10 @@ _LI_FREAD_RET   MOVE    R6, @--SP               ; lift return codes over ...
 
 HANDLE_IO       SYSCALL(enter, 1)
 
+                ; PCXT-EGA: the internal floppy drive's background work
+                ; (disk probing / detection, CORE/m2m-rom/flpdrv.asm)
+                RSUB    FLP_POLL, 1
+
                 ; Ensure data integrity by preventing random writes to random
                 ; SD cards when remembering on-screen-menu settings
                 RSUB    ROSM_INTEGRITY, 1
@@ -1039,6 +1062,14 @@ _HANDLE_IO_RET  SYSCALL(leave, 1)
 HANDLE_DRV_RD   SYSCALL(enter, 1)
 
                 MOVE    R8, R11                 ; R11: virtual drive ID
+
+                ; PCXT-EGA: vdrive 0 is the internal floppy drive while the
+                ; "A: internal drive" toggle is on (CORE/m2m-rom/flpdrv.asm)
+                RSUB    FLP_OWNS_DRIVE, 1
+                RBRA    _HDR_NOT_FLP, !C
+                RSUB    FLP_DRV_RD, 1
+                RBRA    _HDR_RET, 1
+_HDR_NOT_FLP
 
                 MOVE    VD_SIZEB, R9            ; virtual drive ID still in R8
                 RSUB    VD_DRV_READ, 1
@@ -1201,7 +1232,7 @@ _HDR_SEND_DONE  MOVE    R11, R8                 ; virtual drive ID
 #ifdef SDB_DEBUG
                 RSUB    SDB_DBG_RD1, 1
 #endif
-                SYSCALL(leave, 1)
+_HDR_RET        SYSCALL(leave, 1)
                 RET
 
 ; Handle write request from drive number in R8:
@@ -1217,6 +1248,14 @@ _HDR_SEND_DONE  MOVE    R11, R8                 ; virtual drive ID
 HANDLE_DRV_WR   SYSCALL(enter, 1)
 
                 MOVE    R8, R0                  ; R0: drive number
+
+                ; PCXT-EGA: the internal floppy drive is mounted read-only,
+                ; a write request is dropped (CORE/m2m-rom/flpdrv.asm)
+                RSUB    FLP_OWNS_DRIVE, 1
+                RBRA    _HDW_NOT_FLP, !C
+                RSUB    FLP_DRV_WR, 1
+                RBRA    _HDW_RET, 1
+_HDW_NOT_FLP
 
                 ; target write address in bytes HI/LO
                 MOVE    R0, R8

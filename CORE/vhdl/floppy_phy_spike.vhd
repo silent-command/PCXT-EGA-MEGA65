@@ -83,6 +83,11 @@
 --
 -- What only the board can prove: docs/floppy.md.
 --
+-- Phase 2 (2026-09-17): the pin side (synchronisers, filters, step engine) and the MFM reader were moved
+-- into floppy_drive_if.vhd and floppy_mfm_reader.vhd, which floppy_sector_engine.vhd (the read path
+-- behind the FDC) shares. This file keeps only the spike's sequencer, counters and status words; it is
+-- no longer instantiated in mega65.vhd (the engine drives the pins) but stays buildable and benched.
+--
 -- MEGA65 port done by silent-command in 2026 and licensed under GPL v3
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 -------------------------------------------------------------------------------------------------------------
@@ -155,22 +160,6 @@ end entity floppy_phy_spike;
 
 architecture rtl of floppy_phy_spike is
 
-   -- CRC-16/CCITT, poly 0x1021, msb first (crc1581.vhdl:92-95 bit by bit)
-   function crc16_byte (crc : std_logic_vector(15 downto 0); d : std_logic_vector(7 downto 0))
-      return std_logic_vector is
-      variable c : std_logic_vector(15 downto 0) := crc;
-      variable b : std_logic;
-   begin
-      for i in 7 downto 0 loop
-         b := c(15) xor d(i);
-         c := c(14 downto 0) & '0';
-         if b = '1' then
-            c := c xor x"1021";
-         end if;
-      end loop;
-      return c;
-   end function crc16_byte;
-
    function max_nat (a, b : natural) return natural is
    begin
       if a > b then return a; else return b; end if;
@@ -180,69 +169,30 @@ architecture rtl of floppy_phy_spike is
                                              max_nat(G_REPEAT_CYCLES, G_SETTLE_CYCLES));
 
    ---------------------------------------------------------------------------------------------
-   -- Input synchronisers (ASYNC_REG, false paths from the ports in CORE.xdc)
+   -- Drive interface and reader (shared with floppy_sector_engine)
    ---------------------------------------------------------------------------------------------
-   signal index_meta, index_sync   : std_logic := '1';
-   signal track0_meta, track0_sync : std_logic := '1';
-   signal wp_meta, wp_sync         : std_logic := '1';
-   signal rdata_meta, rdata_sync   : std_logic := '1';
-   signal dskchg_meta, dskchg_sync : std_logic := '1';
-   attribute ASYNC_REG : string;
-   attribute ASYNC_REG of index_meta  : signal is "TRUE";
-   attribute ASYNC_REG of index_sync  : signal is "TRUE";
-   attribute ASYNC_REG of track0_meta : signal is "TRUE";
-   attribute ASYNC_REG of track0_sync : signal is "TRUE";
-   attribute ASYNC_REG of wp_meta     : signal is "TRUE";
-   attribute ASYNC_REG of wp_sync     : signal is "TRUE";
-   attribute ASYNC_REG of rdata_meta  : signal is "TRUE";
-   attribute ASYNC_REG of rdata_sync  : signal is "TRUE";
-   attribute ASYNC_REG of dskchg_meta : signal is "TRUE";
-   attribute ASYNC_REG of dskchg_sync : signal is "TRUE";
-
-   -- filtered levels (active high) and edges
-   signal index_hist    : std_logic_vector(3 downto 0) := (others => '1');
-   signal index_low     : std_logic := '0';
-   signal index_low_q   : std_logic := '0';
-   signal index_edge    : std_logic := '0';
-   signal rdata_hist    : std_logic_vector(2 downto 0) := (others => '1');
-   signal rdata_low     : std_logic := '0';
-   signal rdata_low_q   : std_logic := '0';
-   signal flux_edge     : std_logic := '0';
-   signal track0_n      : std_logic := '0';            -- 1 = at track 0
-   signal wp_n          : std_logic := '0';            -- 1 = write protected
-   signal dskchg_n      : std_logic := '0';            -- 1 = disk change latched
+   signal index_edge    : std_logic;
+   signal flux_edge     : std_logic;
+   signal track0_n      : std_logic;                   -- 1 = at track 0
+   signal wp_n          : std_logic;                   -- 1 = write protected
+   signal dskchg_n      : std_logic;                   -- 1 = disk change latched
    signal dskchg_q      : std_logic := '0';
+   signal track0_seen   : std_logic := '0';
+   signal cnt_steps     : std_logic_vector(15 downto 0);
+   signal step_ready    : std_logic;
+   signal density       : std_logic;
 
-   ---------------------------------------------------------------------------------------------
-   -- Reader
-   ---------------------------------------------------------------------------------------------
    signal rate_hd       : std_logic := '0';            -- 1 = 500 kbit/s
-   signal hc            : unsigned(8 downto 0);        -- half cell in clocks
-   signal thr_lo        : unsigned(11 downto 0);       -- 1.0 hc
-   signal thr_2         : unsigned(11 downto 0);       -- 2.5 hc
-   signal thr_3         : unsigned(11 downto 0);       -- 3.5 hc
-   signal thr_4         : unsigned(11 downto 0);       -- 5.0 hc
-   signal gap_cnt       : unsigned(11 downto 0) := (others => '0');
-   signal gap_len       : unsigned(11 downto 0) := (others => '0');
-   signal bit_pend      : unsigned(2 downto 0) := (others => '0');   -- raw bits still to shift
-   signal raw_sr        : std_logic_vector(15 downto 0) := (others => '0');
-   signal raw_valid     : std_logic := '0';
-   signal raw_bit       : std_logic := '0';
-   signal sync_mark     : std_logic := '0';
-   signal bit_phase     : std_logic := '0';            -- 1 = the next raw bit is a data bit
-   signal data_sr       : std_logic_vector(7 downto 0) := (others => '0');
-   signal nbits         : unsigned(2 downto 0) := (others => '0');
-   signal byte_valid    : std_logic := '0';
-   signal byte_val      : std_logic_vector(7 downto 0) := (others => '0');
-   signal in_sync       : std_logic := '0';
-
-   type t_dec is (D_IDLE, D_MARK, D_ID_C, D_ID_H, D_ID_R, D_ID_N, D_ID_CRC1, D_ID_CRC2,
-                  D_DATA, D_DATA_CRC1, D_DATA_CRC2);
-   signal dec           : t_dec := D_IDLE;
-   signal crc           : std_logic_vector(15 downto 0) := (others => '1');
-   signal id_c, id_h, id_r, id_n : std_logic_vector(7 downto 0) := (others => '0');
-   signal data_left     : unsigned(10 downto 0) := (others => '0');
-   signal sector_bytes  : unsigned(10 downto 0) := to_unsigned(512, 11);
+   signal sync_mark     : std_logic;
+   signal byte_valid    : std_logic;
+   signal byte_val      : std_logic_vector(7 downto 0);
+   signal gap_len       : std_logic_vector(11 downto 0);
+   signal idam          : std_logic;
+   signal idam_ok       : std_logic;
+   signal id_c, id_h, id_r, id_n : std_logic_vector(7 downto 0);
+   signal dam           : std_logic;
+   signal dam_end       : std_logic;
+   signal dam_ok        : std_logic;
 
    signal cnt_index     : unsigned(15 downto 0) := (others => '0');
    signal cnt_sync      : unsigned(15 downto 0) := (others => '0');
@@ -250,7 +200,6 @@ architecture rtl of floppy_phy_spike is
    signal cnt_idam_ok   : unsigned(15 downto 0) := (others => '0');
    signal cnt_dam       : unsigned(15 downto 0) := (others => '0');
    signal cnt_dam_ok    : unsigned(15 downto 0) := (others => '0');
-   signal cnt_steps     : unsigned(15 downto 0) := (others => '0');
    signal cnt_runs      : unsigned(7 downto 0)  := (others => '0');
    signal last_chrn     : std_logic_vector(31 downto 0) := (others => '0');
    signal max_r         : unsigned(7 downto 0) := (others => '0');
@@ -266,23 +215,15 @@ architecture rtl of floppy_phy_spike is
    signal motor_on      : std_logic := '0';
    signal stepdir_out   : std_logic := '1';            -- 1 = towards track 0
    signal step_go       : std_logic := '0';
-   signal step_timer    : natural range 0 to G_STEP_RATE_CYCLES := 0;
-   constant C_DIR_SETUP_CYCLES : natural := 500;
-   signal dir_timer     : natural range 0 to C_DIR_SETUP_CYCLES := 0;
-   signal stepdir_q     : std_logic := '1';
-   signal step_ready    : std_logic;
-   signal step_n        : std_logic := '1';
    signal run_start     : std_logic := '0';
    signal steps_left    : natural range 0 to 255 := 0;
    signal head_track    : unsigned(7 downto 0) := (others => '0');
    signal seek_ok       : std_logic := '0';
-   signal track0_seen   : std_logic := '0';
    signal hd_found      : std_logic := '0';
    signal dd_found      : std_logic := '0';
    signal ok_snapshot   : unsigned(15 downto 0) := (others => '0');
    signal idx_armed     : std_logic := '0';
    signal idx_left      : natural range 0 to 255 := 0;
-   signal rate_t        : std_logic := '0';            -- the rate for the track-40 read
    signal dec_reset     : std_logic := '0';
 
    ---------------------------------------------------------------------------------------------
@@ -300,6 +241,7 @@ architecture rtl of floppy_phy_spike is
    signal stat_req_sync : std_logic := '0';
    signal stat_ack      : std_logic := '0';
    signal stat_hold     : std_logic_vector(47 downto 0) := (others => '0');
+   attribute ASYNC_REG : string;
    attribute ASYNC_REG of src_ack_meta  : signal is "TRUE";
    attribute ASYNC_REG of src_ack_sync  : signal is "TRUE";
    attribute ASYNC_REG of stat_req_meta : signal is "TRUE";
@@ -308,232 +250,112 @@ architecture rtl of floppy_phy_spike is
 begin
 
    ---------------------------------------------------------------------------------------------
-   -- Pins
+   -- Pins, synchronisers, step engine (floppy_drive_if) and the MFM reader (floppy_mfm_reader)
    ---------------------------------------------------------------------------------------------
-   f_selecta_o <= '0';                       -- selected always (outputs of the drive are gated by it)
-   f_motora_o  <= not motor_on;
-   f_side1_o   <= '1';                       -- side 0
-   f_stepdir_o <= stepdir_out;
-   f_step_o    <= step_n;
-   f_wdata_o   <= '1';                       -- never
-   f_wgate_o   <= '1';                       -- never
-   f_density_o <= G_DENSITY_HD when rate_hd = '1' else G_DENSITY_DD;
+   density <= G_DENSITY_HD when rate_hd = '1' else G_DENSITY_DD;
+
+   i_drive : entity work.floppy_drive_if
+      generic map (
+         G_STEP_PULSE_CYCLES => G_STEP_PULSE_CYCLES,
+         G_STEP_RATE_CYCLES  => G_STEP_RATE_CYCLES
+      )
+      port map (
+         clk_i            => clk_i,
+         rst_i            => rst_i,
+         select_i         => '1',                  -- selected always (outputs of the drive are gated by it)
+         motor_i          => motor_on,
+         side1_i          => '0',                  -- side 0
+         density_i        => density,
+         stepdir_out_i    => stepdir_out,
+         step_go_i        => step_go,
+         step_ready_o     => step_ready,
+         index_edge_o     => index_edge,
+         flux_edge_o      => flux_edge,
+         track0_o         => track0_n,
+         wp_o             => wp_n,
+         dskchg_o         => dskchg_n,
+         cnt_steps_o      => cnt_steps,
+         f_density_o      => f_density_o,
+         f_motora_o       => f_motora_o,
+         f_selecta_o      => f_selecta_o,
+         f_side1_o        => f_side1_o,
+         f_stepdir_o      => f_stepdir_o,
+         f_step_o         => f_step_o,
+         f_wdata_o        => f_wdata_o,
+         f_wgate_o        => f_wgate_o,
+         f_index_i        => f_index_i,
+         f_track0_i       => f_track0_i,
+         f_writeprotect_i => f_writeprotect_i,
+         f_rdata_i        => f_rdata_i,
+         f_diskchanged_i  => f_diskchanged_i
+      );
+
+   i_reader : entity work.floppy_mfm_reader
+      generic map (
+         G_HD_HALF_CELL => G_HD_HALF_CELL,
+         G_DD_HALF_CELL => G_DD_HALF_CELL
+      )
+      port map (
+         clk_i        => clk_i,
+         rst_i        => rst_i,
+         reset_i      => dec_reset,
+         rate_hd_i    => rate_hd,
+         flux_edge_i  => flux_edge,
+         sync_mark_o  => sync_mark,
+         byte_valid_o => byte_valid,
+         byte_o       => byte_val,
+         gap_len_o    => gap_len,
+         idam_o       => idam,
+         idam_ok_o    => idam_ok,
+         id_c_o       => id_c,
+         id_h_o       => id_h,
+         id_r_o       => id_r,
+         id_n_o       => id_n,
+         dam_o        => dam,
+         data_valid_o => open,
+         data_o       => open,
+         dam_end_o    => dam_end,
+         dam_ok_o     => dam_ok
+      );
 
    ---------------------------------------------------------------------------------------------
-   -- Synchronisers, filters, edges
+   -- Counters and the sticky / edge flags
    ---------------------------------------------------------------------------------------------
-   p_sync : process (clk_i)
+   p_cnt : process (clk_i)
    begin
       if rising_edge(clk_i) then
-         index_meta  <= f_index_i;        index_sync  <= index_meta;
-         track0_meta <= f_track0_i;       track0_sync <= track0_meta;
-         wp_meta     <= f_writeprotect_i; wp_sync     <= wp_meta;
-         rdata_meta  <= f_rdata_i;        rdata_sync  <= rdata_meta;
-         dskchg_meta <= f_diskchanged_i;  dskchg_sync <= dskchg_meta;
-
-         -- INDEX: low for four samples (80 ns) = asserted; falling edge = one pulse
-         index_hist  <= index_hist(2 downto 0) & index_sync;
-         if index_hist = "0000" then
-            index_low <= '1';
-         elsif index_hist = "1111" then
-            index_low <= '0';
-         end if;
-         index_low_q <= index_low;
-         index_edge  <= index_low and not index_low_q;
-
-         -- RDATA: low for three samples (60 ns) = a flux transition (machine.vhdl:892-895 uses four)
-         rdata_hist  <= rdata_hist(1 downto 0) & rdata_sync;
-         if rdata_hist = "000" then
-            rdata_low <= '1';
-         else
-            rdata_low <= '0';
-         end if;
-         rdata_low_q <= rdata_low;
-         flux_edge   <= rdata_low and not rdata_low_q;
-
-         track0_n <= not track0_sync;
-         wp_n     <= not wp_sync;
-         dskchg_n <= not dskchg_sync;
          dskchg_q <= dskchg_n;
          if track0_n = '1' then
             track0_seen <= '1';
          end if;
-         if rst_i = '1' then
-            track0_seen <= '0';
+         if sync_mark = '1' then
+            cnt_sync <= cnt_sync + 1;
          end if;
-      end if;
-   end process p_sync;
-
-   ---------------------------------------------------------------------------------------------
-   -- Gap measurement and quantiser (mfm_quantise_gaps.vhdl:39-63 with cycles_per_interval = hc)
-   ---------------------------------------------------------------------------------------------
-   hc     <= to_unsigned(G_HD_HALF_CELL, 9) when rate_hd = '1' else to_unsigned(G_DD_HALF_CELL, 9);
-   thr_lo <= resize(hc, 12);                                             -- 1.0 hc
-   thr_2  <= resize(hc, 12) + resize(hc, 12) + resize(hc(8 downto 1), 12);            -- 2.5 hc
-   thr_3  <= shift_left(resize(hc, 12), 2) - resize(hc(8 downto 1), 12);              -- 3.5 hc
-   thr_4  <= shift_left(resize(hc, 12), 2) + resize(hc, 12);                          -- 5.0 hc
-
-   p_gaps : process (clk_i)
-      variable v_n : unsigned(2 downto 0);
-   begin
-      if rising_edge(clk_i) then
-         raw_valid <= '0';
-         sync_mark <= '0';
-         byte_valid <= '0';
-
-         -- gap counter, saturating
-         if flux_edge = '1' then
-            gap_len <= gap_cnt;
-            gap_cnt <= to_unsigned(1, 12);
-         elsif gap_cnt /= x"FFF" then
-            gap_cnt <= gap_cnt + 1;
-         end if;
-
-         -- classify the gap that just ended: n raw bits pending
-         if flux_edge = '1' then
-            if gap_cnt < thr_lo then
-               v_n := "000";                                          -- too short: glitch
-            elsif gap_cnt <= thr_2 then
-               v_n := "010";
-            elsif gap_cnt <= thr_3 then
-               v_n := "011";
-            elsif gap_cnt <= thr_4 then
-               v_n := "100";
-            else
-               v_n := "000";                                          -- too long: no flux, lost
-            end if;
-            bit_pend <= v_n;
-            if v_n = "000" then
-               in_sync <= '0';                                        -- need a new mark
-            end if;
-         elsif bit_pend /= 0 then
-            -- shift one raw bit per clock: zeros then the one
-            bit_pend  <= bit_pend - 1;
-            raw_valid <= '1';
-            if bit_pend = 1 then
-               raw_bit <= '1';
-            else
-               raw_bit <= '0';
-            end if;
-         end if;
-
-         -- raw shift register, mark detection, byte assembly
-         if raw_valid = '1' then
-            raw_sr <= raw_sr(14 downto 0) & raw_bit;
-            if (raw_sr(14 downto 0) & raw_bit) = x"4489" then
-               sync_mark <= '1';
-               in_sync   <= '1';
-               bit_phase <= '0';                                      -- next raw bit is a clock bit
-               nbits     <= (others => '0');
-            elsif in_sync = '1' then
-               bit_phase <= not bit_phase;
-               if bit_phase = '1' then
-                  data_sr <= data_sr(6 downto 0) & raw_bit;
-                  if nbits = 7 then
-                     byte_valid <= '1';
-                     byte_val   <= data_sr(6 downto 0) & raw_bit;
-                     nbits      <= (others => '0');
-                  else
-                     nbits <= nbits + 1;
-                  end if;
+         if idam = '1' then
+            cnt_idam <= cnt_idam + 1;
+            if idam_ok = '1' then
+               cnt_idam_ok  <= cnt_idam_ok + 1;
+               last_chrn    <= id_c & id_h & id_r & id_n;
+               last_rate_hd <= rate_hd;
+               if unsigned(id_r) > max_r then
+                  max_r <= unsigned(id_r);
                end if;
             end if;
          end if;
-
-         if dec_reset = '1' or rst_i = '1' then
-            bit_pend <= (others => '0');
-            in_sync  <= '0';
-            raw_sr   <= (others => '0');
-            gap_cnt  <= (others => '0');
+         if dam = '1' then
+            cnt_dam <= cnt_dam + 1;
          end if;
-      end if;
-   end process p_gaps;
-
-   ---------------------------------------------------------------------------------------------
-   -- Byte-level decoder: IDAM / DAM with CRC (mfm_decoder.vhdl:369-513 in spirit)
-   ---------------------------------------------------------------------------------------------
-   p_dec : process (clk_i)
-   begin
-      if rising_edge(clk_i) then
-         if sync_mark = '1' then
-            -- every mark: (re)start a group; the CRC covers the marks themselves
-            if dec = D_MARK then
-               crc <= crc16_byte(crc, x"A1");
-            else
-               crc <= crc16_byte(x"FFFF", x"A1");
-            end if;
-            dec      <= D_MARK;
-            cnt_sync <= cnt_sync + 1;
-         elsif byte_valid = '1' then
-            case dec is
-               when D_IDLE =>
-                  null;
-               when D_MARK =>
-                  crc <= crc16_byte(crc, byte_val);
-                  if byte_val = x"FE" then
-                     dec      <= D_ID_C;
-                     cnt_idam <= cnt_idam + 1;
-                  elsif byte_val = x"FB" or byte_val = x"F8" then
-                     dec       <= D_DATA;
-                     cnt_dam   <= cnt_dam + 1;
-                     data_left <= sector_bytes;
-                  else
-                     dec <= D_IDLE;
-                  end if;
-               when D_ID_C =>
-                  id_c <= byte_val; crc <= crc16_byte(crc, byte_val); dec <= D_ID_H;
-               when D_ID_H =>
-                  id_h <= byte_val; crc <= crc16_byte(crc, byte_val); dec <= D_ID_R;
-               when D_ID_R =>
-                  id_r <= byte_val; crc <= crc16_byte(crc, byte_val); dec <= D_ID_N;
-               when D_ID_N =>
-                  id_n <= byte_val; crc <= crc16_byte(crc, byte_val); dec <= D_ID_CRC1;
-               when D_ID_CRC1 =>
-                  crc <= crc16_byte(crc, byte_val); dec <= D_ID_CRC2;
-               when D_ID_CRC2 =>
-                  dec <= D_IDLE;
-                  if crc16_byte(crc, byte_val) = x"0000" then
-                     cnt_idam_ok   <= cnt_idam_ok + 1;
-                     last_chrn     <= id_c & id_h & id_r & id_n;
-                     last_rate_hd  <= rate_hd;
-                     if unsigned(id_r) > max_r then
-                        max_r <= unsigned(id_r);
-                     end if;
-                     case id_n is
-                        when x"00"  => sector_bytes <= to_unsigned(128, 11);
-                        when x"01"  => sector_bytes <= to_unsigned(256, 11);
-                        when x"03"  => sector_bytes <= to_unsigned(1024, 11);
-                        when others => sector_bytes <= to_unsigned(512, 11);
-                     end case;
-                  end if;
-               when D_DATA =>
-                  crc <= crc16_byte(crc, byte_val);
-                  if data_left = 1 then
-                     dec <= D_DATA_CRC1;
-                  end if;
-                  data_left <= data_left - 1;
-               when D_DATA_CRC1 =>
-                  crc <= crc16_byte(crc, byte_val); dec <= D_DATA_CRC2;
-               when D_DATA_CRC2 =>
-                  dec <= D_IDLE;
-                  if crc16_byte(crc, byte_val) = x"0000" then
-                     cnt_dam_ok <= cnt_dam_ok + 1;
-                  end if;
-            end case;
+         if dam_end = '1' and dam_ok = '1' then
+            cnt_dam_ok <= cnt_dam_ok + 1;
          end if;
-
          if index_edge = '1' then
             cnt_index <= cnt_index + 1;
-         end if;
-
-         if dec_reset = '1' then
-            dec <= D_IDLE;
          end if;
          if run_start = '1' then
             max_r <= (others => '0');
          end if;
          if rst_i = '1' then
-            dec          <= D_IDLE;
+            track0_seen  <= '0';
             cnt_sync     <= (others => '0');
             cnt_idam     <= (others => '0');
             cnt_idam_ok  <= (others => '0');
@@ -542,46 +364,9 @@ begin
             cnt_index    <= (others => '0');
             last_chrn    <= (others => '0');
             max_r        <= (others => '0');
-            sector_bytes <= to_unsigned(512, 11);
          end if;
       end if;
-   end process p_dec;
-
-   ---------------------------------------------------------------------------------------------
-   -- Step engine: STEP low for G_STEP_PULSE_CYCLES, next step no sooner than G_STEP_RATE_CYCLES
-   ---------------------------------------------------------------------------------------------
-   -- DIR set-up: no pulse within C_DIR_SETUP_CYCLES (10 us) of a direction change (the interface asks
-   -- for 1 us before the pulse; the drive acts on the trailing edge, 12 us later still)
-   step_ready <= '1' when step_timer = 0 and dir_timer = 0 and stepdir_out = stepdir_q else '0';
-
-   p_step : process (clk_i)
-   begin
-      if rising_edge(clk_i) then
-         stepdir_q <= stepdir_out;
-         if stepdir_out /= stepdir_q then
-            dir_timer <= C_DIR_SETUP_CYCLES;
-         elsif dir_timer /= 0 then
-            dir_timer <= dir_timer - 1;
-         end if;
-
-         if step_go = '1' and step_ready = '1' then
-            step_timer <= G_STEP_RATE_CYCLES;
-            step_n     <= '0';
-            cnt_steps  <= cnt_steps + 1;
-         elsif step_timer /= 0 then
-            step_timer <= step_timer - 1;
-            if step_timer = G_STEP_RATE_CYCLES - G_STEP_PULSE_CYCLES then
-               step_n <= '1';
-            end if;
-         end if;
-         if rst_i = '1' then
-            step_timer <= 0;
-            dir_timer  <= 0;
-            step_n     <= '1';
-            cnt_steps  <= (others => '0');
-         end if;
-      end if;
-   end process p_step;
+   end process p_cnt;
 
    ---------------------------------------------------------------------------------------------
    -- Sequencer
@@ -648,7 +433,6 @@ begin
                end if;
 
             when S_HOME_IN =>
-               -- direction set-up before the pulse is the first G_STEP_RATE_CYCLES wait below
                if step_ready = '1' and step_go = '0' then
                   if steps_left = 0 then
                      seq         <= S_HOME_OUT;
@@ -815,8 +599,8 @@ begin
    dbg_state_o      <= std_logic_vector(to_unsigned(t_seq'pos(seq), 8));
    dbg_track_o      <= std_logic_vector(head_track);
    dbg_runs_o       <= std_logic_vector(cnt_runs);
-   dbg_steps_o      <= std_logic_vector(cnt_steps);
-   dbg_last_gap_o   <= std_logic_vector(gap_len);
+   dbg_steps_o      <= cnt_steps;
+   dbg_last_gap_o   <= gap_len;
    dbg_byte_o       <= byte_val;
    dbg_byte_valid_o <= byte_valid;
    dbg_sync_mark_o  <= sync_mark;

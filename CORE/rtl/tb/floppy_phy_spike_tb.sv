@@ -1,19 +1,10 @@
 // floppy_phy_spike_tb: bench for CORE/vhdl/floppy_phy_spike.vhd (MEGA65 R6 internal floppy drive spike).
 //
-// Models a 3.5" PC drive on the Shugart pins:
-//   * outputs (TRACK0, WPT, DSKCHG, INDEX, RDATA) are only driven while DRIVE SELECT is low, as a real
-//     drive's open-collector outputs are; DISK CHANGE latches on eject/insert and clears on a STEP pulse
-//     with a disk in;
-//   * STEP acts on the rising (trailing) edge when selected, DIR high = out (towards track 0); the model
-//     checks pulse width, step-to-step interval, DIR set-up/hold around the pulse, that the motor was on
-//     for the spin-up time before the first pulse, and that WRITE GATE / WRITE DATA never fall;
-//   * rotation: one revolution per pass over a synthetic IBM System 34 track (gap 4a, IAM, 18 or 9
-//     sectors of 512 bytes with IDAM / DAM / CRCs, gap 3, gap 4b) built for the current head position,
-//     MFM-encoded with real 0x4489 / 0x5224 marks, played as 300 ns low pulses on RDATA at the HD
-//     (1 us half cell) or DD (2 us) rate with +3 % / -3 % spindle speed error and +-12 % half-cell
-//     jitter on every transition; INDEX low for 2 ms at the start of each revolution. Sector 5 has a
-//     corrupt ID CRC, sector 7 a corrupt data CRC.
-// The DUT's timers are shortened through generics; the model's timing checks are scaled the same way.
+// The drive is floppy_drive_model.sv (shared with floppy_sector_engine_tb.sv): a 3.5" PC drive on the
+// Shugart pins with gated outputs, a latched DISK CHANGE, step timing checks, and a synthetic System 34
+// track played as MFM at the HD or DD rate with speed error and jitter (sector 5 corrupt ID CRC, sector 7
+// corrupt data CRC). The DUT's timers are shortened through generics; the model's timing checks are
+// scaled the same way.
 // The status words are read through the DUT's clock crossing into an unrelated 41.7 MHz clock.
 //   powershell -File run_floppy_phy_spike_tb.ps1
 `timescale 1ns/1ps
@@ -51,7 +42,7 @@ module floppy_phy_spike_tb;
    // DUT
    // ------------------------------------------------------------------------------------------
    wire        f_density, f_motora, f_selecta, f_side1, f_stepdir, f_step, f_wdata, f_wgate;
-   logic       f_index = 1, f_track0 = 1, f_wp = 1, f_rdata = 1, f_dskchg = 1;
+   wire        f_index, f_track0, f_wp, f_rdata, f_dskchg;
    wire [15:0] stat_a, stat_b, stat_c;
    wire [15:0] dbg_index, dbg_syncs, dbg_idam, dbg_idam_ok, dbg_dam, dbg_dam_ok, dbg_steps;
    wire [31:0] dbg_chrn;
@@ -129,165 +120,31 @@ module floppy_phy_spike_tb;
    endfunction
 
    // ------------------------------------------------------------------------------------------
-   // drive model: media, head, latched disk change, gated outputs
+   // drive model (floppy_drive_model.sv, shared with the sector engine bench)
    // ------------------------------------------------------------------------------------------
-   bit  disk_present = 0;
-   bit  disk_hd      = 0;
-   bit  disk_wp      = 0;
-   int  pos          = 5;          // head position at power-up
-   bit  dskchg       = 1;          // latched until a step with a disk in
-   bit  sel;
-   assign sel = (f_selecta === 1'b0);
+   floppy_drive_model #(
+      .SPINUP_CYC (SPINUP_CYC),
+      .STEP_RATE  (STEP_RATE),
+      .STEP_PULSE (STEP_PULSE)
+   ) model (
+      .rst       (rst),
+      .f_density (f_density),
+      .f_motora  (f_motora),
+      .f_selecta (f_selecta),
+      .f_side1   (f_side1),
+      .f_stepdir (f_stepdir),
+      .f_step    (f_step),
+      .f_wdata   (f_wdata),
+      .f_wgate   (f_wgate),
+      .f_index   (f_index),
+      .f_track0  (f_track0),
+      .f_wp      (f_wp),
+      .f_rdata   (f_rdata),
+      .f_dskchg  (f_dskchg)
+   );
 
-   always_comb begin
-      f_track0 = (sel && pos == 0)              ? 1'b0 : 1'b1;
-      f_wp     = (sel && disk_present && disk_wp) ? 1'b0 : 1'b1;
-      f_dskchg = (sel && dskchg)                ? 1'b0 : 1'b1;
-   end
-
-   task automatic eject();
-      disk_present = 0; dskchg = 1;
-   endtask
-   task automatic insert(input bit hd, input bit wp);
-      disk_present = 1; disk_hd = hd; disk_wp = wp; dskchg = 1;
-   endtask
-
-   // step timing checks and the step itself
-   real t_step_fall = -1.0e9, t_step_rise = -1.0e9, t_dir_change = -1.0e9, t_motor_on = -1.0e9;
-   int  model_steps = 0;
-   always @(negedge f_motora) t_motor_on = $realtime;
-   always @(f_stepdir) begin
-      if (!rst && t_step_rise > 0)
-         check($realtime - t_step_rise >= 1000.0, $sformatf("DIR changed %0.0f ns after a step (hold >= 1 us)", $realtime - t_step_rise));
-      t_dir_change = $realtime;
-   end
-   always @(negedge f_step) if (!rst) begin
-      t_step_fall = $realtime;
-      check($realtime - t_dir_change >= 1000.0, $sformatf("DIR set-up %0.0f ns before STEP (>= 1 us)", $realtime - t_dir_change));
-      check(sel, "STEP while DRIVE SELECT is low");
-      check(f_motora === 1'b0, "STEP with the motor on");
-      check($realtime - t_motor_on >= SPINUP_CYC * 20.0, $sformatf("first STEP %0.1f ms after motor on (spin-up %0.1f ms)", ($realtime - t_motor_on) / 1.0e6, SPINUP_CYC * 20.0 / 1.0e6));
-      if (t_step_rise > 0)
-         check($realtime - t_step_rise >= STEP_RATE * 20.0 - STEP_PULSE * 20.0 - 1.0,
-               $sformatf("step interval %0.1f us (>= %0.1f)", ($realtime - t_step_fall) / 1000.0, STEP_RATE * 20.0 / 1000.0));
-   end
-   always @(posedge f_step) if (!rst) begin
-      check($realtime - t_step_fall >= 1000.0 && $realtime - t_step_fall <= 20000.0,
-            $sformatf("STEP pulse width %0.1f us (1..20)", ($realtime - t_step_fall) / 1000.0));
-      t_step_rise = $realtime;
-      if (sel) begin
-         model_steps++;
-         if (f_stepdir) begin if (pos > 0) pos--; end
-         else           begin if (pos < 82) pos++; end
-         if (disk_present) dskchg = 0;
-      end
-   end
-
-   // never write, never side 1
-   always @(negedge f_wgate) if (!rst) check(0, "WRITE GATE asserted");
-   always @(negedge f_wdata) if (!rst) check(0, "WRITE DATA asserted");
+   // never side 1 (the spike stays on side 0)
    always @(negedge f_side1) if (!rst) check(0, "SIDE1 asserted");
-
-   // ------------------------------------------------------------------------------------------
-   // track image: IBM System 34, 512-byte sectors, N = 2
-   // ------------------------------------------------------------------------------------------
-   byte trk[];          // bytes
-   bit  mrk[];          // 1 = A1/C2 mark with the missing clock
-   int  trk_len;
-
-   task automatic put(input byte b, input bit m, ref int i);
-      trk[i] = b; mrk[i] = m; i++;
-   endtask
-
-   task automatic build_track(input bit hd, input int cyl);
-      int  i = 0, nsec, gap3;
-      byte hdr[8], dat[516];
-      logic [15:0] c;
-      nsec    = hd ? 18 : 9;
-      gap3    = hd ? 108 : 80;
-      trk_len = hd ? 12500 : 6250;
-      trk = new[trk_len]; mrk = new[trk_len];
-      for (int k = 0; k < 80; k++) put(8'h4E, 0, i);                  // gap 4a
-      for (int k = 0; k < 12; k++) put(8'h00, 0, i);
-      for (int k = 0; k < 3;  k++) put(8'hC2, 1, i);                  // IAM
-      put(8'hFC, 0, i);
-      for (int k = 0; k < 50; k++) put(8'h4E, 0, i);                  // gap 1
-      for (int s = 1; s <= nsec; s++) begin
-         for (int k = 0; k < 12; k++) put(8'h00, 0, i);
-         for (int k = 0; k < 3;  k++) put(8'hA1, 1, i);
-         hdr[0] = 8'hA1; hdr[1] = 8'hA1; hdr[2] = 8'hA1; hdr[3] = 8'hFE;
-         hdr[4] = cyl; hdr[5] = 0; hdr[6] = s; hdr[7] = 2;
-         c = crc16(hdr, 8);
-         if (s == 5) c ^= 16'h0001;                                     // corrupt ID CRC
-         put(8'hFE, 0, i); put(hdr[4], 0, i); put(hdr[5], 0, i); put(hdr[6], 0, i); put(hdr[7], 0, i);
-         put(c[15:8], 0, i); put(c[7:0], 0, i);
-         for (int k = 0; k < 22; k++) put(8'h4E, 0, i);               // gap 2
-         for (int k = 0; k < 12; k++) put(8'h00, 0, i);
-         for (int k = 0; k < 3;  k++) put(8'hA1, 1, i);
-         dat[0] = 8'hA1; dat[1] = 8'hA1; dat[2] = 8'hA1; dat[3] = 8'hFB;
-         for (int k = 0; k < 512; k++) dat[4 + k] = (s * 7 + k + cyl) & 8'hFF;
-         c = crc16(dat, 516);
-         if (s == 7) c ^= 16'h0100;                                     // corrupt data CRC
-         put(8'hFB, 0, i);
-         for (int k = 0; k < 512; k++) put(dat[4 + k], 0, i);
-         put(c[15:8], 0, i); put(c[7:0], 0, i);
-         for (int k = 0; k < gap3; k++) put(8'h4E, 0, i);             // gap 3
-      end
-      while (i < trk_len) put(8'h4E, 0, i);                           // gap 4b
-   endtask
-
-   // ------------------------------------------------------------------------------------------
-   // rotation: MFM-encode and play the track, index at the start of each revolution
-   // ------------------------------------------------------------------------------------------
-   int  revs = 0;
-   real hc_eff, jit;
-
-   task automatic play_track();
-      bit  prev_d = 0;
-      bit  stop = 0;
-      real t_ideal = $realtime;
-      real t_pulse;
-      logic [15:0] raw;
-      for (int i = 0; i < trk_len && !stop; i++) begin
-         if (mrk[i]) begin
-            raw    = (trk[i] == 8'hA1) ? 16'h4489 : 16'h5224;
-            prev_d = trk[i][0];
-         end else begin
-            for (int b = 7; b >= 0; b--) begin
-               raw[2 * b + 1] = ~prev_d & ~trk[i][b];
-               raw[2 * b]     = trk[i][b];
-               prev_d = trk[i][b];
-            end
-         end
-         for (int b = 15; b >= 0 && !stop; b--) begin
-            t_ideal += hc_eff;
-            if (raw[b]) begin
-               t_pulse = t_ideal + jit * (real'($urandom_range(0, 2000)) / 1000.0 - 1.0);
-               if (t_pulse > $realtime) #(t_pulse - $realtime);
-               f_rdata = 0;
-               f_rdata <= #300 1'b1;
-            end else begin
-               if (t_ideal > $realtime) #(t_ideal - $realtime);
-            end
-            if (f_motora !== 1'b0 || !disk_present) stop = 1;           // motor off / ejected
-         end
-      end
-   endtask
-
-   initial begin
-      forever begin
-         wait (f_motora === 1'b0 && disk_present);
-         build_track(disk_hd, pos);
-         hc_eff = disk_hd ? 1000.0 * 1.03 : 2000.0 * 0.97;              // +3 % / -3 % speed
-         jit    = disk_hd ? 120.0 : 240.0;                              // +-12 % of a half cell
-         revs++;
-         f_index = 0;
-         fork
-            begin #2ms; f_index = 1; end
-         join_none
-         play_track();
-      end
-   end
 
    // ------------------------------------------------------------------------------------------
    // helpers
@@ -330,12 +187,12 @@ module floppy_phy_spike_tb;
       begin
          logic [15:0] c;
          b8 = '{8'hA1, 8'hA1, 8'hA1, 8'hFE, 8'h00, 8'h00, 8'h01, 8'h02};
-         c = crc16(b8, 8);
+         c = model.crc16(b8, 8);
          check(c == 16'hCA6F, $sformatf("bench crc16 of A1 A1 A1 FE 00 00 01 02 = %04x (CA6F)", c));
       end
 
-      insert(1, 0);                                                    // HD disk, not protected
-      pos = 5; dskchg = 1;
+      model.insert(1, 0);                                                    // HD disk, not protected
+      model.pos = 5; model.dskchg = 1;
       #200; rst = 0;
 
       check(f_wgate === 1'b1 && f_wdata === 1'b1, "WGATE/WDATA idle after reset");
@@ -348,9 +205,9 @@ module floppy_phy_spike_tb;
       check(f_dskchg === 1'b0, "DSKCHG asserted before the first step");
 
       wait_state(S_READ_HD, "S_READ_HD (run 1)");
-      check(pos == 0, $sformatf("recalibrated to track 0 (model at %0d)", pos));
-      check(model_steps == 5, $sformatf("recalibrate from track 5 = 5 steps out (model saw %0d)", model_steps));
-      check(dbg_steps == model_steps, $sformatf("DUT step counter %0d = model %0d", dbg_steps, model_steps));
+      check(model.pos == 0, $sformatf("recalibrated to track 0 (model at %0d)", model.pos));
+      check(model.model_steps == 5, $sformatf("recalibrate from track 5 = 5 steps out (model saw %0d)", model.model_steps));
+      check(dbg_steps == model.model_steps, $sformatf("DUT step counter %0d = model %0d", dbg_steps, model.model_steps));
       check(f_dskchg === 1'b1, "DSKCHG cleared by the recalibrate step");
       check(f_track0 === 1'b0, "TRACK0 asserted at track 0");
       check(dbg_flags[3] == 1'b1, {"seek_ok after recalibrate: ", flagstr(dbg_flags)});
@@ -387,7 +244,7 @@ module floppy_phy_spike_tb;
       check(dbg_max_r == 18, "max R still 18");
 
       wait_state(S_READ_T, "S_READ_T (run 1)");
-      check(pos == TEST_TRACK, $sformatf("seek in: model at track %0d (%0d)", pos, TEST_TRACK));
+      check(model.pos == TEST_TRACK, $sformatf("seek in: model at track %0d (%0d)", model.pos, TEST_TRACK));
       check(dbg_track == TEST_TRACK, $sformatf("DUT head_track %0d", dbg_track));
       check(f_density === 1'b1, "track-40 read at the HD rate (DENSITY = HD)");
       snapshot();
@@ -400,7 +257,7 @@ module floppy_phy_spike_tb;
       check(dbg_flags[7] == 1'b1, "rate_hd still HD");
 
       wait_state(S_IDLE, "S_IDLE (run 1)");
-      check(pos == 0, $sformatf("seek out: model at track %0d (0)", pos));
+      check(model.pos == 0, $sformatf("seek out: model at track %0d (0)", model.pos));
       check(f_track0 === 1'b0, "TRACK0 asserted after the return");
       check(f_motora === 1'b1, "motor off in idle");
       check(f_selecta === 1'b0, "drive stays selected in idle");
@@ -412,15 +269,15 @@ module floppy_phy_spike_tb;
 
       // --- disk swap while idle: eject (DSKCHG asserts, run starts at once), insert a DD disk ---
       #5ms;
-      eject();
+      model.eject();
       #2000;
       check(dbg_state != S_IDLE, "eject (DSKCHG edge) starts a run at once");
       check(dbg_flags[4] == 1'b1, {"disk_changed flag set: ", flagstr(dbg_flags)});
       #200us;
-      insert(0, 1);                                                    // DD disk, write protected
+      model.insert(0, 1);                                                    // DD disk, write protected
 
       wait_state(S_READ_HD, "S_READ_HD (run 2)");
-      check(pos == 0, "recalibrated (already at 0: one step in, one out)");
+      check(model.pos == 0, "recalibrated (already at 0: one step in, one out)");
       check(f_dskchg === 1'b1, "DSKCHG cleared by the step with the new disk in");
       check(dbg_flags[4] == 1'b0, "disk_changed flag clear again");
       check(dbg_flags[5] == 1'b1, {"write_protect flag set: ", flagstr(dbg_flags)});
@@ -447,7 +304,7 @@ module floppy_phy_spike_tb;
       check(dbg_max_r == 9, $sformatf("max R = %0d (9: 720 KB)", dbg_max_r));
 
       wait_state(S_READ_T, "S_READ_T (run 2)");
-      check(pos == TEST_TRACK, $sformatf("run 2 seek in: model at %0d", pos));
+      check(model.pos == TEST_TRACK, $sformatf("run 2 seek in: model at %0d", model.pos));
       check(f_density === 1'b0, "track-40 read at the DD rate (DENSITY = DD)");
       snapshot();
 
@@ -457,7 +314,7 @@ module floppy_phy_spike_tb;
       check(dbg_chrn[31:24] == TEST_TRACK, $sformatf("run 2 last C = %0d", dbg_chrn[31:24]));
 
       wait_state(S_IDLE, "S_IDLE (run 2)");
-      check(pos == 0, "run 2: back at track 0");
+      check(model.pos == 0, "run 2: back at track 0");
       check(dbg_runs == 2, $sformatf("runs = %0d (2)", dbg_runs));
       check_stat_words("after run 2");
       check(stat_b == {8'd40, stat_b[7:0]} && stat_b[7:0] >= 1 && stat_b[7:0] <= 9, $sformatf("stat_b = %04x (C = 40, R in 1..9)", stat_b));
@@ -471,7 +328,7 @@ module floppy_phy_spike_tb;
       end
 
       // --- no disk: the phases time out and the sequencer keeps going ---
-      eject();
+      model.eject();
       wait_state(S_IDLE, "S_IDLE (run 3, no disk)");
       wait_state(S_MOTOR, "S_MOTOR after the ejected run");
       wait_state(S_READ_HD, "S_READ_HD (run 4, no disk)");
@@ -484,7 +341,8 @@ module floppy_phy_spike_tb;
       end
 
       $display("FLP counters: index %0d marks %0d idam %0d ok %0d dam %0d ok %0d steps %0d runs %0d revolutions %0d",
-               dbg_index, dbg_syncs, dbg_idam, dbg_idam_ok, dbg_dam, dbg_dam_ok, dbg_steps, dbg_runs, revs);
+               dbg_index, dbg_syncs, dbg_idam, dbg_idam_ok, dbg_dam, dbg_dam_ok, dbg_steps, dbg_runs, model.revs);
+      n_pass += model.n_pass; n_fail += model.n_fail;
       if (n_fail == 0) $display("FLP RESULT: PASS (%0d checks)", n_pass);
       else             $display("FLP RESULT: FAIL (%0d failed, %0d passed)", n_fail, n_pass);
       $finish;
@@ -492,7 +350,7 @@ module floppy_phy_spike_tb;
 
    initial begin
       #8s;
-      $display("FLP RESULT: FAIL (timeout; %0d failed, %0d passed so far)", n_fail, n_pass);
+      $display("FLP RESULT: FAIL (timeout; %0d failed, %0d passed so far)", n_fail + model.n_fail, n_pass + model.n_pass);
       $finish;
    end
 

@@ -15,7 +15,10 @@
 --   Buffer: a dual-clock RAM. QNICE port: written by sd_buff_wr while the
 --   drive's ack is high (reads), read via sd_buff_din (writes; vdrives' firmware
 --   reads the byte after setting sd_buff_addr, so one clock of latency is fine).
---   Core port: the bridge's byte port, one clock read latency.
+--   Core port: the bridge's byte port, one clock read latency. The internal floppy drive's sector engine
+--   (floppy_sector_engine.vhd, COPY command) writes a block through the same port: it only does so while
+--   the bridge is waiting for that block's acknowledge, when the bridge does not touch the port
+--   (docs/floppy.md, read path).
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 -------------------------------------------------------------------------------------------------------------
@@ -46,6 +49,10 @@ entity vd_glue is
       buf_wdata_i       : in  std_logic_vector(7 downto 0);
       buf_we_i          : in  std_logic;
       buf_rdata_o       : out std_logic_vector(7 downto 0);
+      -- the floppy sector engine's block write (core clock, see header)
+      flp_buf_addr_i    : in  std_logic_vector(8 downto 0) := (others => '0');
+      flp_buf_data_i    : in  std_logic_vector(7 downto 0) := (others => '0');
+      flp_buf_we_i      : in  std_logic := '0';
 
       -- QNICE clock domain: vdrives
       qnice_clk_i       : in  std_logic;
@@ -82,6 +89,8 @@ architecture rtl of vd_glue is
    -- the block buffer (xpm true dual port RAM, independent clocks)
    signal q_we         : std_logic_vector(0 downto 0);
    signal c_we         : std_logic_vector(0 downto 0);
+   signal c_addr       : std_logic_vector(8 downto 0);
+   signal c_wdata      : std_logic_vector(7 downto 0);
    signal q_rdata      : std_logic_vector(7 downto 0);
    signal c_rdata      : std_logic_vector(7 downto 0);
 
@@ -147,7 +156,9 @@ begin
    q_ack_any <= or std_logic_vector(sd_ack_i);
 
    q_we(0) <= sd_buff_wr_i and q_ack_any;
-   c_we(0) <= buf_we_i;
+   c_we(0) <= buf_we_i or flp_buf_we_i;
+   c_addr  <= flp_buf_addr_i when flp_buf_we_i = '1' else buf_addr_i;
+   c_wdata <= flp_buf_data_i when flp_buf_we_i = '1' else buf_wdata_i;
 
    i_buf : xpm_memory_tdpram
       generic map (
@@ -199,8 +210,8 @@ begin
          enb            => '1',
          regceb         => '1',
          web            => c_we,
-         addrb          => buf_addr_i,
-         dinb           => buf_wdata_i,
+         addrb          => c_addr,
+         dinb           => c_wdata,
          injectsbiterrb => '0',
          injectdbiterrb => '0',
          doutb          => c_rdata,

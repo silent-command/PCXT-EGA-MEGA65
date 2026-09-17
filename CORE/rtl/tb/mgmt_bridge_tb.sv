@@ -172,6 +172,7 @@ module mgmt_bridge_tb;
     wire [2:0]  blk_rd, blk_wr;
     wire [31:0] blk_lba;
     reg  [2:0]  blk_ack = 3'b000;
+    reg         blk_err = 1'b0;                  // the firmware's block-error flag (internal floppy drive)
     wire [8:0]  buf_addr;
     wire [7:0]  buf_wdata;
     wire        buf_we;
@@ -194,6 +195,7 @@ module mgmt_bridge_tb;
         .blk_wr        (blk_wr),
         .blk_lba       (blk_lba),
         .blk_ack       (blk_ack),
+        .blk_err       (blk_err),
         .buf_addr      (buf_addr),
         .buf_wdata     (buf_wdata),
         .buf_we        (buf_we),
@@ -314,6 +316,10 @@ module mgmt_bridge_tb;
             f2_n = f2_n + 1;
         end
     end
+
+    // bytes streamed into floppy.v's FIFO (writes to 0xF2FF)
+    integer f2ff_writes = 0;
+    always @(posedge clk) if (mgmt_wr && fdd_cs && mgmt_addr == 16'hF2FF) f2ff_writes = f2ff_writes + 1;
 
     // rising edges of the floppy read request, like main.vhd's fdd_reqs
     integer fdd_reqs = 0;
@@ -1471,6 +1477,65 @@ module mgmt_bridge_tb;
         check(ide_req == 3'b000, "unmount: command ignored, no request");
         ide_rd(4'd7, v);
         check(v[7:0] == 8'hFF, "unmount: CPU reads 0xFF");
+
+        // ============================================================ 16. floppy read error (internal drive, docs/floppy.md)
+        // The firmware acknowledges a block it could not read with blk_err
+        // high: the bridge must stream nothing (floppy.v would complete the
+        // read with garbage), park the still-pending request so that the
+        // hard disk keeps being served, and recover when the chip reset
+        // (the MEGA65 reset button) drops floppy.v's request.
+        $display("[16] floppy read with blk_err: nothing streamed, request parked, HDD served, chip reset recovers");
+        mount(0, 32'd1474560, 1'b1);
+        wait_bridge_idle();
+        mount(2, 32'd1048576, 1'b0);
+        wait_bridge_idle();
+        fdc_wr(3'd2, 8'h1C);                     // motor on, drive 0
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        fdc_sense_int(st, b);
+        blk_err = 1'b1;
+        n0 = blk_count;
+        i  = f2ff_writes;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);   // C0 H0 R3 -> LBA 2
+        n1 = 0;
+        while (blk_count == n0 && n1 < 400000) begin @(posedge clk); n1 = n1 + 1; end
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd2 && last_blk_drv == 0 && !last_blk_wr, "16: the bridge fetched LBA 2 of drive A");
+        repeat (5000) @(posedge clk);
+        check(f2ff_writes == i, "16: no byte streamed into floppy.v's FIFO");
+        check(mgmt_req[6] == 1'b1, "16: floppy.v still waits for data (request high)");
+        check(u_dut.state == 0, "16: bridge back in S_IDLE");
+        check(u_dut.fd_hold == 1'b1, "16: floppy request parked (fd_hold)");
+        check(blk_count == n0 + 1, "16: the parked request is not re-dispatched");
+        fdc_wait_irq_max(20_000, got, n1);
+        check(!got, "16: no IRQ 6: the FDC command never completes (the BIOS times out on hardware)");
+        ide_identify();                          // the hard disk is still served meanwhile
+        check(mgmt_req[6] == 1'b1 && u_dut.fd_hold == 1'b1, "16: hold survives the IDE traffic");
+        blk_err = 1'b0;
+        reset = 1'b1;                            // the chip reset revives floppy.v
+        repeat (5) @(posedge clk);
+        reset = 1'b0;
+        repeat (20) @(posedge clk);
+        check(mgmt_req[6] == 1'b0, "16: request dropped by the chip reset");
+        check(u_dut.fd_hold == 1'b0, "16: hold cleared");
+        mount(0, 32'd1474560, 1'b1);             // the bridge lost its mounts in the reset
+        wait_bridge_idle();
+        fdc_reset_recover();
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        fdc_sense_int(st, b);
+        n0 = blk_count;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);
+        fdc_dma_in();
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1) if (dma_buf[i] !== fa_img[2 * 512 + i]) bad = bad + 1;
+        check(bad == 0, "16: after the reset a read of LBA 2 delivers the image data");
+        check(blk_count == n0 + 1, "16: one block fetched for it");
+        fdc_wait_irq();
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "16: ST0 normal termination");
+        wait_bridge_idle();
 
         $display("%0d checks, %0d failures", checks, errors);
         if (errors == 0) $display("RESULT: PASS");

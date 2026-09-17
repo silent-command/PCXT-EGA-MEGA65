@@ -18,12 +18,11 @@ never learn the difference. Phases:
    decode MFM at both rates, count what comes back, report on the serial status
    line, prove it on the board in one build. Modelled on the Ethernet spike
    (`docs/ethernet.md`, `CORE/vhdl/eth_phy_spike.vhd`).
-2. **Read path behind the existing FDC**: a track buffer (one track = 18 x 512 =
-   9 KB per side at HD; one RAMB36 pair holds a side, or 4.5 KB at DD) filled by the
-   spike's reader after a seek; the sector source answers the FDC's "read sector
-   C/H/R" from the buffer, re-reading the track when the FDC moves on; DSKCHG and
-   WPT reported through the existing media-present / write-protect management words.
-   Geometry (9 or 18 sectors) from the IDAMs of track 0, or from the boot sector.
+2. **Read path behind the existing FDC** (done 2026-09-17, "Phase 2" below): a
+   track cache (18 x 512 bytes in block RAM) filled by the spike's reader after a
+   seek; the firmware answers the FDC's block requests for drive A from it,
+   re-reading a track when the FDC moves on; DSKCHG through the mount strobe,
+   write protect by mounting read-only. Geometry from the ID headers of track 0.
 3. **Writes**: MFM encoder with write precompensation (mega65-core's
    `mfm_bits_to_gaps.vhdl` has one, tuned on this mechanism), write gate around the
    sector's data field only (from the IDAM's end to the end of the data CRC plus a
@@ -33,9 +32,12 @@ never learn the difference. Phases:
 
 ## The spike, 2026-09-17
 `CORE/vhdl/floppy_phy_spike.vhd` (GPL, VHDL, 50 MHz chipset clock), bench
-`CORE/rtl/tb/floppy_phy_spike_tb.sv` (`run_floppy_phy_spike_tb.ps1`). **Not yet run
-on the board** (no hardware access when this was written); what only the board can
-prove is listed at the end.
+`CORE/rtl/tb/floppy_phy_spike_tb.sv` (`run_floppy_phy_spike_tb.ps1`). On the board
+since 2026-09-17 (select, motor and seek confirmed by ear, counters being read); the
+rest of what only the board can prove is listed at the end of this section. Since
+phase 2 the spike is no longer instantiated (the sector engine drives the pins) and
+its pin side and MFM reader live in `floppy_drive_if.vhd` / `floppy_mfm_reader.vhd`;
+the spike itself still builds and its bench still passes with the same 1593 checks.
 
 ### What it does
 Forever, on drive A only (the drive B lines stay tied off inactive in the top):
@@ -89,10 +91,9 @@ half the previous gap's error was considered and rejected: it halves jitter but
 doubles a steady speed error; a frequency-tracking loop is the right refinement if
 the board shows marginal reads, and belongs to phase 2.
 
-### Status line
-`rom_loader` `dbg_a/b/c` -> `m2m-rom.asm` `DBG_STR_6..8`, now `" fidx="`, `" fchr="`,
-`" fst="` (the originals `" bist="`, `" req="`, `" hdd="` are kept in comments in the
-asm and in the port map in `mega65.vhd`; the spike must not ship in this form):
+### Status line (spike builds only; restored to `bist=` / `req=` / `hdd=` with phase 2)
+`rom_loader` `dbg_a/b/c` -> `m2m-rom.asm` `DBG_STR_6..8` were `" fidx="`,
+`" fchr="`, `" fst="` while the spike was instantiated:
 
 | word | contents |
 |---|---|
@@ -120,7 +121,8 @@ byte stream are on `dbg_*` taps in the 50 MHz domain, left open in `mega65.vhd`.
 * `CORE/add-core-sources.tcl` lists the file; `CORE-R6.xpr` refreshed with it.
 
 ### Bench
-`CORE/rtl/tb/floppy_phy_spike_tb.sv` models the drive on the pins: outputs gated by
+`CORE/rtl/tb/floppy_phy_spike_tb.sv` (the drive model is now `floppy_drive_model.sv`,
+shared with the engine bench) models the drive on the pins: outputs gated by
 DRIVE SELECT, DISK CHANGE latched on eject/insert and cleared by a STEP with a disk
 in, STEP on the trailing edge with checks of pulse width (1..20 us), step interval,
 DIR set-up and hold (1 us), motor on for the spin-up time before the first pulse,
@@ -182,3 +184,171 @@ RAM, no latches, no `Synth 8-327`. The read path of phase 2 adds the track buffe
   status words temporarily.
 * **Timing closure** of the whole core with the module in: it adds nothing to the
   chipset paths; the synchroniser inputs are false paths.
+
+---
+
+## Phase 2: the read path, 2026-09-17
+DOS can `DIR A:` and `TYPE` a file from a PC-formatted 720 KB or 1.44 MB floppy in
+the internal drive when the Options menu toggle **Input Settings / A: internal
+drive** is on. `CORE/rtl/overlay/floppy.v` is untouched; the spike's status-line
+hijack is gone (`bist=` / `req=` / `hdd=` are back). **Not yet run on the board**;
+what only the board can prove is at the end of this section.
+
+### The pieces
+| file | role |
+|---|---|
+| `CORE/vhdl/floppy_drive_if.vhd` | the pin side of the spike (synchronisers, INDEX / RDATA filters, step engine with the DIR set-up rule), shared |
+| `CORE/vhdl/floppy_mfm_reader.vhd` | the spike's gap quantiser, sync detector, byte assembler and IDAM / DAM decoder with CRC, shared; events out (`idam_o`/`idam_ok_o`, `dam_o`, `data_valid_o`, `dam_end_o`/`dam_ok_o`) |
+| `CORE/vhdl/floppy_phy_spike.vhd` | the spike on top of the two, same ports and behaviour, no longer instantiated but still built and benched (1593 checks as before) |
+| `CORE/vhdl/floppy_sector_engine.vhd` | the read path: commands DETECT / READ_TRACK / COPY / PROBE / MOTOR_OFF, an 18 x 512-byte track cache in block RAM, motor timer, disk-change latch; instantiated in `mega65.vhd` on `main_clk` in place of the spike |
+| `CORE/vhdl/rom_loader.vhd` | the engine's registers in 4k window `0xFFFD` of the PCXT ROM device (0x0110), request/acknowledge toggles across QNICE / core clocks, result capture; `flp_blk_err_o` to the bridge |
+| `CORE/vhdl/vd_glue.vhd` | the engine's COPY writes a block into the framework's block buffer through the core-side port (a mux on port B) |
+| `CORE/rtl/mgmt_bridge.sv` | `blk_err` input: a floppy block acknowledged with it high is not streamed and the request is parked (`fd_hold`) |
+| `CORE/vhdl/main.vhd`, `mega65.vhd` | plumbing; menu bits above 75 shifted by one |
+| `CORE/vhdl/config.vhd` | line 76 " A: internal drive" (group `OPTM_G_FLP_INT` = 21), `OPTM_SIZE` 98 -> 99, `sdcard/m2m/m2mcfg` regenerated (99 bytes) |
+| `CORE/m2m-rom/flpdrv.asm`, `flpdrv_vars.asm`, `flpdrv_calc.asm` | the firmware: mount/unmount, probing, detection, the block-request handler; hooked into `M2M/rom/shell.asm` (`HANDLE_MOUNTING`, `HANDLE_DRV_RD/WR`, `HANDLE_IO`) and `m2m-rom.asm` (`PREP_START`, `OSM_SEL_POST`) |
+
+### Design: a track cache rather than a sector reader
+A sector-at-a-time engine would answer each FDC request by waiting for the IDAM
+of that one sector. Between two consecutive sectors DOS reads there is only the
+inter-sector gap, about 2 ms at 500 kbit/s (gap 3 + sync + marks), and the
+turnaround from one block to the next request is about 1.4 ms (floppy.v's DMA
+of the previous sector into PC memory, its 80 us wait, the bridge, the firmware's
+poll and command); any hiccup costs a full revolution (200 ms) per sector, i.e.
+a track in 3.6 s. So `READ_TRACK` captures *every* sector of the track whose ID
+header matches (C, H, N = 2, 1 <= R <= 18, ID CRC good) into its own 512-byte slot,
+CRC-checking the data field, for one revolution (2 index edges) or until all
+sectors 1..spt are in; a slot already valid is never overwritten (a re-read with
+a bad CRC cannot spoil a good copy). A later `READ_TRACK` for the same track,
+head and rate with the wanted sector valid is a cache hit and completes in two
+clocks without the motor. The cache is dropped by any head step, a rate or side
+change, a disk change, DETECT and disable. `COPY` streams slot R into the
+vdrive block buffer in 512 clocks; the firmware copies nothing byte by byte.
+
+Timing (real generics): spin-up 500 ms, 3 ms steps, 15 ms settle, 100 us side
+switch, 1 s index timeout (no disk), motor off 2 s after the last command. A
+first sector on a cold drive costs 0.5 s + the seek + up to 2 revolutions; the
+rest of the track is free; a track change costs a seek plus 1..2 revolutions.
+
+### The block-request flow with the physical source
+1. floppy.v gets READ DATA C/H/R from the BIOS, computes
+   `LBA = (C*2 + H) * SPT + R - 1` with the SPT of the mount, raises `mgmt_req[6]`.
+2. `mgmt_bridge` reads the LBA, raises `blk_rd(0)`; `vd_glue` crosses it into
+   the QNICE domain; `vdrives.vhd` sets `VD_RD` for drive 0.
+3. The shell's `HANDLE_IO` polls `VD_RD`, calls `HANDLE_DRV_RD`, which asks
+   `FLP_OWNS_DRIVE` (drive 0 and the toggle on) and hands over to `FLP_DRV_RD`.
+4. `FLP_DRV_RD`: LBA from `VD_BYTES_H:L`, C/H/R with `FLP_LBA2CHS` using the SPT the
+   FDC was told (`FLP_SPT`), `READ_TRACK(C, H, rate, R, spt)`; the engine either hits
+   the cache or motors, recalibrates if the head position is unknown, seeks and
+   captures; the firmware checks `valid(R)`; on a miss it retries once with
+   `force` (recalibrate first); then `COPY(R)` into the block buffer, clears the
+   block-error flag and strobes `VD_ACK`.
+5. The bridge sees the acknowledge fall, streams the 512 bytes to floppy.v's FIFO
+   (`0xF2FF`), which DMAs them to the PC and raises IRQ 6, exactly as for an image.
+
+### Geometry
+At mount the firmware runs DETECT (motor, recalibrate, 500 kbit/s for two index
+edges, then 250 kbit/s). Good ID headers at 500 kbit/s = 1.44 MB: the FDC is told
+1474560 bytes (80/2/18) like a 1.44 MB image; at 250 kbit/s = 720 KB: 737280 bytes
+(80/2/9); the largest R seen is logged. The inverse conversion in `flpdrv_calc.asm`
+uses that told SPT and only that, never the rate: sectors are 1-based, LBA 0 =
+C0 H0 R1, LBA 18 = C0 H1 R1 on 1.44 MB, LBA 36 = C1 H0 R1 (checked for every LBA
+of both geometries by `tools/vdrive-latency-bench/run_flp_chs.sh`, which runs the
+real routine in the QNICE emulator). The mount is read-only, so writes never
+reach the firmware: floppy.v answers them with its write-protect error and DOS
+prints "Write protect error writing drive A". The drive's own write-protect line
+is reported in the status register for later.
+
+### No disk, disk change
+With no readable disk at mount time the FDC is left unmounted (`media_present` = 0):
+a DOS access "hangs at start" in floppy.v, the BIOS times out and DOS prints
+"Not ready reading drive A. Abort, Retry, Fail?" like a real PC, and the FDC stays
+clean. While in that state the firmware issues a PROBE every 2 s: one step in
+and one out without the motor. A step with a disk in clears the drive's latched
+DISK CHANGE, so the line afterwards tells a disk from none. A disk found is
+detected and mounted, so a Retry after inserting the disk works. A disk change
+while mounted (the engine latches the rising edge of DISK CHANGE, checked in the
+main loop and before every request) re-runs DETECT and re-mounts: floppy.v sees
+eject/insert, sets its change line, DOS re-reads the disk; a removed disk unmounts.
+
+### Read errors: what floppy.v allows, and what was chosen
+floppy.v cannot be told about a read error: the ARM sends 512 bytes whatever
+happened ("image missing or read error -> 512 zero bytes"), and its SD state
+machine leaves `S_SD_READ_WAIT_FOR_DATA` only on `fifo_full` or the chip reset
+(`rst_n`); the DOR software reset clears `busy` and the interrupt but not
+`state`. Zeros would make DOS read garbage silently. So when the engine's two
+attempts leave sector R invalid (ID never seen, data CRC bad, no index), the
+firmware acknowledges the block with the block-error flag set and the bridge
+streams nothing: floppy.v keeps waiting, the BIOS's INT 13h times out (error 80h),
+DOS retries and prints "Not ready reading drive A"; the still-pending request is
+parked so the hard disk keeps being served; drive A is dead until the next core
+reset (the reset button), because only that releases floppy.v's state machine.
+A later phase can add an abort register to floppy.v if that trade-off is not
+acceptable. `mgmt_bridge_tb` test 16 covers all of it (5121 checks, pass).
+
+### Menu
+"A: internal drive" is a single-select toggle in Input Settings, saved with the
+other settings. On: any image mounted on A: is unmounted, the engine is enabled,
+DETECT runs, the drive is mounted (or left "no disk"); the Drive A line shows
+"Internal drive" and is inert while the toggle is on (`HANDLE_MOUNTING` returns
+without browsing). Off: unmount, engine disabled (motor off, drive deselected).
+At start-up `PREP_START` applies the saved toggle and waits for the detection so
+that the BIOS can boot from A:. `FLP_MENU_LINE` (76) and `FLP_MENU_GRP` (21) in
+`flpdrv.asm` must follow config.vhd.
+
+### Registers
+Documented in the header of `rom_loader.vhd`: write 0 command, 1 cylinder/head/
+rate/force, 2 sector/spt, 3 control (enable, disk-change clear, block error);
+read 0 status (busy, live flags, error), 1 detect result, 2/3 valid and CRC-error
+slots, 4 cache track and slots 17/18, 5 state and head position, 6..11 counters.
+The command write toggles a request into the core clock; the engine's completion
+toggles an acknowledge back; busy is the XOR of the two on the QNICE side (set by
+the write itself, cleared in the same clock as the result capture, so there is
+no window in which a fast firmware sees "idle" with stale results - the
+`rom_loader_tb` found exactly that window in the first version).
+
+### Benches
+* `run_floppy_sector_engine_tb.ps1` (`floppy_sector_engine_tb.sv`, drive model
+  `floppy_drive_model.sv` shared with the spike bench, now with both sides and
+  configurable corrupt sectors): disabled engine; DETECT on an HD disk from track 5;
+  every valid sector of C0 H0 copied and compared byte for byte (5 rejected by ID CRC,
+  7 by data CRC); the bad sector stays bad after a plain and a forced re-read; bad
+  arguments; the wrong rate; seeks to C40 H1, H0 without a seek, C3; a cache hit in
+  two clocks; motor-off and spin-up; eject / PROBE / insert a write-protected DD disk;
+  DETECT DD, C0 H0 and C7 H1 verified; sector 12 of a 9-sector track stays invalid;
+  no disk: READ and DETECT time out; a clean track fills and exits early; disable.
+  Result: **PASS, 1086 checks** (41 revolutions, 429 good ID headers, 428 good data fields, 125 steps), about 6.2 s of simulated time in 12 minutes of xsim.
+* `run_rom_loader_tb.ps1`: the register window, the toggles, result capture, the
+  dropped command while busy, control levels and the clear pulse, no ROM words from
+  the window: pass.
+* `run_mgmt_bridge_tb.sh` (WSL, Icarus): test 16 as above: pass.
+* `tools/vdrive-latency-bench/run_flp_chs.sh` (WSL): the real `FLP_LBA2CHS` for all
+  2880 + 1440 LBAs plus the corner cases: pass, 4320 conversions and 12 corner cases, 0 failures.
+* `run_floppy_phy_spike_tb.ps1`: the refactored spike: pass, 1593 checks.
+* The benches found (and the fixes are in): a PROBE that changed DIR in the same
+  cycle as its step request lost the step (the spike's lesson again), and one that
+  changed DIR 20 ns after the step request, while STEP was still low, made the
+  drive step the wrong way, since a drive samples DIR at the trailing edge (the
+  model now flags any DIR change during a STEP pulse; DIR changes only once the
+  step engine is ready again, 3 ms after the pulse); the busy-before-capture
+  window in `rom_loader`.
+
+### Resources (Vivado 2026.1 out of context, `synth-vhdl-ooc.tcl` now takes dependencies)
+`floppy_sector_engine` with the two shared modules: 620 LUTs, 541 FFs, 4 RAMB36, no latches, no `Synth 8-327`;
+`rom_loader` with the register block: 302 LUTs, 543 FFs. The cache is 18 x 512
+bytes in a 14-bit address space, which costs 4 RAMB36 (3 would hold it; the
+core has 165 free).
+
+### What only the board can prove
+* Everything the spike could not prove (select, input senses, DENSITY, margins).
+* **PROBE / DISK CHANGE**: that a step without the motor clears the drive's latch
+  when a disk is in and leaves it when not (mega65-core's wording; the model does
+  the same). If the drive needs the motor for that, `S_PROBE_*` gets a spin-up.
+* **The BIOS timeout** against the first-sector latency (spin-up 0.5 s + recalibrate
+  + seek + up to 2 revolutions): the 8088_bios INT 13h timeout is 2 s like IBM's; if
+  it bites, shorten `G_CAP_INDEX` handling or keep the motor on longer.
+* **Sequential throughput**: the cache should make a track cost one or two
+  revolutions; the serial log's `FLP:` lines and the `hdd=`-style counters tell.
+* **The dead-drive-after-error behaviour** and that the reset button revives A:.
+* **DOS's reaction to the eject/insert re-mount** on a disk change with the same
+  geometry.

@@ -177,7 +177,7 @@ port (
    eth_txd_o               : out   std_logic_vector(1 downto 0);
    eth_txen_o              : out   std_logic;
 
-   -- Internal 3.5" floppy drive, drive A lines (PCXT-EGA addition: CORE/vhdl/floppy_phy_spike.vhd,
+   -- Internal 3.5" floppy drive, drive A lines (PCXT-EGA addition: CORE/vhdl/floppy_sector_engine.vhd,
    -- docs/floppy.md). Shugart interface, all active low, passed through raw by top_mega65-r6.vhd;
    -- the drive B lines (f_motorb_o, f_selectb_o) stay tied off inactive in the top.
    f_density_o             : out   std_logic;
@@ -306,9 +306,9 @@ constant C_MENU_HDMI_720_5994  : natural := 26;
 constant C_MENU_SVGA_800_60    : natural := 27;
 constant C_MENU_VGA_15KHZ      : natural := 63;
 constant C_MENU_VGA_15KHZ_CS   : natural := 64;
-constant C_MENU_CRT_EMULATION  : natural := 91;
-constant C_MENU_HDMI_ZOOM      : natural := 92;
-constant C_MENU_IMPROVE_AUDIO  : natural := 93;
+constant C_MENU_CRT_EMULATION  : natural := 92;
+constant C_MENU_HDMI_ZOOM      : natural := 93;
+constant C_MENU_IMPROVE_AUDIO  : natural := 94;
 
 -- analog VGA modes (docs/analog-video.md)
 signal main_video_mode13       : std_logic;   -- core's private 31.5 kHz raster active (async)
@@ -357,11 +357,39 @@ signal main_eth_tx_wr         : std_logic;
 signal main_eth_tx_data       : std_logic_vector(8 downto 0);
 signal main_eth_tx_done       : std_logic;
 
--- Floppy drive spike (docs/floppy.md): its three status words replace the bist= / req= / hdd= words on
--- the serial status line for the duration of the spike (see i_rom_loader below), qnice_clk domain.
-signal qnice_flp_stat_a       : std_logic_vector(15 downto 0);
-signal qnice_flp_stat_b       : std_logic_vector(15 downto 0);
-signal qnice_flp_stat_c       : std_logic_vector(15 downto 0);
+-- Internal floppy drive read path (docs/floppy.md, floppy_sector_engine.vhd): the firmware drives the
+-- engine through rom_loader's register window (QNICE clock there, main_clk here); the engine's COPY
+-- writes blocks into main.vhd's vd_glue buffer and the block-error flag reaches mgmt_bridge.
+signal main_flp_cmd           : std_logic;
+signal main_flp_cmd_code      : std_logic_vector(3 downto 0);
+signal main_flp_arg0          : std_logic_vector(15 downto 0);
+signal main_flp_arg1          : std_logic_vector(15 downto 0);
+signal main_flp_enable        : std_logic;
+signal main_flp_chg_clr       : std_logic;
+signal main_flp_blk_err       : std_logic;
+signal main_flp_busy          : std_logic;
+signal main_flp_err           : std_logic_vector(7 downto 0);
+signal main_flp_det_max_r     : std_logic_vector(7 downto 0);
+signal main_flp_det_hd        : std_logic;
+signal main_flp_det_dd        : std_logic;
+signal main_flp_valid         : std_logic_vector(17 downto 0);
+signal main_flp_crcerr        : std_logic_vector(17 downto 0);
+signal main_flp_cache_cyl     : std_logic_vector(7 downto 0);
+signal main_flp_cache_head    : std_logic;
+signal main_flp_cache_rate    : std_logic;
+signal main_flp_head_track    : std_logic_vector(7 downto 0);
+signal main_flp_state         : std_logic_vector(7 downto 0);
+signal main_flp_live          : std_logic_vector(6 downto 0);
+signal main_flp_res           : std_logic_vector(95 downto 0);
+signal main_flp_dbg           : std_logic_vector(95 downto 0);
+signal main_flp_cnt_index     : std_logic_vector(15 downto 0);
+signal main_flp_cnt_idam_ok   : std_logic_vector(15 downto 0);
+signal main_flp_cnt_dam_ok    : std_logic_vector(15 downto 0);
+signal main_flp_cnt_steps     : std_logic_vector(15 downto 0);
+signal main_flp_last_chrn     : std_logic_vector(31 downto 0);
+signal main_flp_buf_addr      : std_logic_vector(8 downto 0);
+signal main_flp_buf_data      : std_logic_vector(7 downto 0);
+signal main_flp_buf_we        : std_logic;
 
 begin
 
@@ -535,6 +563,10 @@ begin
          sd_buff_dout_i       => qnice_sd_buff_dout,
          sd_buff_din_o        => qnice_sd_buff_din,
          sd_buff_wr_i         => qnice_sd_buff_wr,
+         flp_buf_addr_i       => main_flp_buf_addr,
+         flp_buf_data_i       => main_flp_buf_data,
+         flp_buf_we_i         => main_flp_buf_we,
+         flp_blk_err_i        => main_flp_blk_err,
 
          -- M2M Keyboard interface
          kb_key_num_i         => main_kb_key_num_i,
@@ -609,16 +641,55 @@ begin
       ); -- i_eth_mac
 
    ---------------------------------------------------------------------------------------------
-   -- Floppy drive physical-layer spike (PCXT-EGA addition, see floppy_phy_spike.vhd and
-   -- docs/floppy.md): drives the internal 3.5" drive (select, motor, seek) and decodes MFM from
-   -- RDATA at both rates, counting index pulses, sync marks and CRC-checked IDAMs / DAMs. Runs on
-   -- the 50 MHz chipset clock; the drive inputs are asynchronous (synchronised inside, false paths
-   -- in CORE.xdc). Reset is the clock-lock reset only, like the Ethernet MAC. Never writes.
+   -- Internal floppy drive: sector engine (PCXT-EGA addition, floppy_sector_engine.vhd and
+   -- docs/floppy.md). Drives the internal 3.5" drive (select, motor, seek) and reads MFM at both
+   -- rates into a track cache; the firmware (flpdrv.asm) commands it through i_rom_loader's
+   -- register window when "A: internal drive" is on. Runs on the 50 MHz chipset clock; the drive
+   -- inputs are asynchronous (synchronised inside, false paths in CORE.xdc). Reset is the clock-lock
+   -- reset only, like the Ethernet MAC. Never writes. The bring-up spike (floppy_phy_spike.vhd) is
+   -- no longer instantiated; it shares floppy_drive_if / floppy_mfm_reader with the engine.
    ---------------------------------------------------------------------------------------------
-   i_floppy_phy_spike : entity work.floppy_phy_spike
+   i_floppy_sector_engine : entity work.floppy_sector_engine
       port map (
          clk_i             => main_clk,
          rst_i             => main_rst,
+         enable_i          => main_flp_enable,
+         chg_clr_i         => main_flp_chg_clr,
+         cmd_valid_i       => main_flp_cmd,
+         cmd_i             => main_flp_cmd_code,
+         cmd_cyl_i         => main_flp_arg0(7 downto 0),
+         cmd_head_i        => main_flp_arg0(8),
+         cmd_rate_hd_i     => main_flp_arg0(9),
+         cmd_force_i       => main_flp_arg0(10),
+         cmd_sector_i      => main_flp_arg1(4 downto 0),
+         cmd_spt_i         => main_flp_arg1(12 downto 8),
+         busy_o            => main_flp_busy,
+         err_o             => main_flp_err,
+         det_max_r_o       => main_flp_det_max_r,
+         det_hd_o          => main_flp_det_hd,
+         det_dd_o          => main_flp_det_dd,
+         valid_o           => main_flp_valid,
+         crcerr_o          => main_flp_crcerr,
+         cache_cyl_o       => main_flp_cache_cyl,
+         cache_head_o      => main_flp_cache_head,
+         cache_rate_o      => main_flp_cache_rate,
+         head_track_o      => main_flp_head_track,
+         state_o           => main_flp_state,
+         cache_valid_o     => main_flp_live(6),
+         wp_o              => main_flp_live(0),
+         dskchg_o          => main_flp_live(1),
+         dskchg_live_o     => main_flp_live(5),
+         track0_o          => main_flp_live(2),
+         motor_o           => main_flp_live(3),
+         index_seen_o      => main_flp_live(4),
+         cnt_index_o       => main_flp_cnt_index,
+         cnt_idam_ok_o     => main_flp_cnt_idam_ok,
+         cnt_dam_ok_o      => main_flp_cnt_dam_ok,
+         cnt_steps_o       => main_flp_cnt_steps,
+         last_chrn_o       => main_flp_last_chrn,
+         buf_addr_o        => main_flp_buf_addr,
+         buf_data_o        => main_flp_buf_data,
+         buf_we_o          => main_flp_buf_we,
          f_density_o       => f_density_o,
          f_motora_o        => f_motora_o,
          f_selecta_o       => f_selecta_o,
@@ -631,29 +702,19 @@ begin
          f_track0_i        => f_track0_i,
          f_writeprotect_i  => f_writeprotect_i,
          f_rdata_i         => f_rdata_i,
-         f_diskchanged_i   => f_diskchanged_i,
-         stat_clk_i        => qnice_clk_i,
-         stat_a_o          => qnice_flp_stat_a,
-         stat_b_o          => qnice_flp_stat_b,
-         stat_c_o          => qnice_flp_stat_c,
-         dbg_index_o       => open,
-         dbg_syncs_o       => open,
-         dbg_idam_o        => open,
-         dbg_idam_ok_o     => open,
-         dbg_dam_o         => open,
-         dbg_dam_ok_o      => open,
-         dbg_chrn_o        => open,
-         dbg_max_r_o       => open,
-         dbg_flags_o       => open,
-         dbg_state_o       => open,
-         dbg_track_o       => open,
-         dbg_runs_o        => open,
-         dbg_steps_o       => open,
-         dbg_last_gap_o    => open,
-         dbg_byte_o        => open,
-         dbg_byte_valid_o  => open,
-         dbg_sync_mark_o   => open
-      ); -- i_floppy_phy_spike
+         f_diskchanged_i   => f_diskchanged_i
+      ); -- i_floppy_sector_engine
+
+   -- result words 0..5 and debug words 6..11 as rom_loader's register window shows them (see there)
+   main_flp_res <= main_flp_state & main_flp_head_track &                                              -- 5
+                   main_flp_cache_cyl & "00" & main_flp_cache_rate & main_flp_cache_head &
+                      main_flp_crcerr(17 downto 16) & main_flp_valid(17 downto 16) &                    -- 4
+                   main_flp_crcerr(15 downto 0) &                                                       -- 3
+                   main_flp_valid(15 downto 0) &                                                        -- 2
+                   "000000" & main_flp_det_dd & main_flp_det_hd & main_flp_det_max_r &                  -- 1
+                   x"00" & main_flp_err;                                                                -- 0
+   main_flp_dbg <= main_flp_last_chrn(15 downto 0) & main_flp_last_chrn(31 downto 16) &                -- 11, 10
+                   main_flp_cnt_steps & main_flp_cnt_dam_ok & main_flp_cnt_idam_ok & main_flp_cnt_index; -- 9, 8, 7, 6
 
    ---------------------------------------------------------------------------------------------
    -- Audio and video settings (QNICE clock domain)
@@ -789,15 +850,20 @@ begin
          rom_wait_i        => main_rom_wait,
          eth_mac_o         => main_eth_mac,
          eth_mac_valid_o   => main_eth_mac_valid,
-         -- Floppy spike (docs/floppy.md): the status words " fidx=", " fchr=", " fst=" (m2m-rom.asm
-         -- DBG_STR_6..8) for the duration of the spike. The originals, to restore together with the
-         -- labels " bist=", " req=", " hdd=":
-         --    dbg_a_i           => main_dbg_bus_reads,
-         --    dbg_b_i           => main_dbg_vsync,
-         --    dbg_c_i           => main_dbg_keys,
-         dbg_a_i           => qnice_flp_stat_a,
-         dbg_b_i           => qnice_flp_stat_b,
-         dbg_c_i           => qnice_flp_stat_c,
+         flp_cmd_o         => main_flp_cmd,
+         flp_cmd_code_o    => main_flp_cmd_code,
+         flp_arg0_o        => main_flp_arg0,
+         flp_arg1_o        => main_flp_arg1,
+         flp_enable_o      => main_flp_enable,
+         flp_chg_clr_o     => main_flp_chg_clr,
+         flp_blk_err_o     => main_flp_blk_err,
+         flp_busy_i        => main_flp_busy,
+         flp_res_i         => main_flp_res,
+         flp_live_i        => main_flp_live,
+         flp_dbg_i         => main_flp_dbg,
+         dbg_a_i           => main_dbg_bus_reads,
+         dbg_b_i           => main_dbg_vsync,
+         dbg_c_i           => main_dbg_keys,
          dbg_flags_i       => main_dbg_flags
       ); -- i_rom_loader
    --
