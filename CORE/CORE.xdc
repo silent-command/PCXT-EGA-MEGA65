@@ -27,6 +27,12 @@ create_generated_clock -name clk_14      [get_pins CORE/clk_gen/i_mmcm_a/CLKOUT4
 # MMCM B: 1000 MHz VCO, CPU and chipset
 create_generated_clock -name clk_100     [get_pins CORE/clk_gen/i_mmcm_b/CLKOUT0]   ;# 100 MHz, MCL86
 create_generated_clock -name clk_50      [get_pins CORE/clk_gen/i_mmcm_b/CLKOUT1]   ;# 50 MHz, chipset (main_clk)
+create_generated_clock -name clk_50_ps   [get_pins CORE/clk_gen/i_mmcm_b/CLKOUT2]   ;# 50 MHz, +90 deg, Ethernet MAC
+
+# Ethernet reference clock: clk_50 forwarded to the KSZ8081RND (XI pin) through the ODDR in
+# CORE/vhdl/eth_phy_spike.vhd. Declared on the port so that the RMII pin delays are timed
+# against the clock as it leaves the FPGA (ODDR and OBUF delays included).
+create_generated_clock -name eth_clock -source [get_pins CORE/i_eth_spike/i_refclk_oddr/C] -divide_by 1 [get_ports eth_clock_o]
 
 ## Clock groups
 ## On MiSTer the chipset/CPU pair and the video family were declared exclusive
@@ -36,14 +42,16 @@ create_generated_clock -name clk_50      [get_pins CORE/clk_gen/i_mmcm_b/CLKOUT1
 ## behind the video clock mux and has no clean ratio to the others, so it is
 ## its own group; without this Vivado would time 25.2<->57.27 at the 630 MHz
 ## common period.
+## clk_50_ps (Ethernet MAC) and eth_clock (the forwarded PHY clock) are MMCM B siblings of
+## clk_50 and stay related to it: the RMII pin timing below depends on that.
 set_clock_groups -asynchronous \
-    -group [get_clocks {clk_100 clk_50}] \
+    -group [get_clocks {clk_100 clk_50 clk_50_ps eth_clock}] \
     -group [get_clocks {clk_28 clk_57 clk_57_ps clk_14}] \
     -group [get_clocks {clk_25}]
 
 # The memory backend crosses into the framework's HyperRAM clock through the
 # framework's avm_fifo (xpm async FIFO); no timed paths between the two.
-set_clock_groups -asynchronous -group [get_clocks {clk_100 clk_50}] -group [get_clocks {hr_clk hr_clk_del}]
+set_clock_groups -asynchronous -group [get_clocks {clk_100 clk_50 clk_50_ps eth_clock}] -group [get_clocks {hr_clk hr_clk_del}]
 
 ## Chipset read-data mux -> CPU input register (clk_50 -> clk_100)
 ##
@@ -118,3 +126,41 @@ set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode13_meta_reg/D}]
 ## qnice_clk by a two-flop ASYNC_REG pair in analog_video_ctl.vhd.
 set_false_path -to [get_pins {CORE/i_analog_video_ctl/qnice_mode350_meta_reg/D}]
 set_false_path -to [get_pins {CORE/i_analog_video_ctl/video_15khz_meta_reg/D}]
+
+## Ethernet PHY spike (CORE/vhdl/eth_phy_spike.vhd). Numbers: KSZ8081RNA/RND datasheet
+## DS00002199E table 7-2 "RMII timing parameters (50 MHz input to XI pin)" - the RND powers up in
+## that mode and the R6 feeds the FPGA's 50 MHz into XI. tOD (REF_CLK rising to CRS_DV/RXD/RXER
+## valid) 8 ns min / 13 ns max; TXD/TXEN setup t1 = 4 ns, hold t2 = 2 ns at the PHY.
+##
+## Assumed board delays (not measured; a few cm of FR4): 0.5 ns on the clock trace, 0.5 ns on each
+## data trace, taken as +1 ns of uncertainty on the max side of the receive delay and 0.5 ns on
+## each transmit number. The framework's XDC gives the RMII inputs no pull, as the PHY needs for
+## its RXER/CRS_DV straps.
+##
+## Receive: the capture flops (IOB, clocked by clk_50_ps = clk_50 + 90 deg) sample 25 ns after the
+## internal clk_50 edge that produced the pin clock edge; the data is valid from about 17 ns to
+## about 32 ns after it (see the header of eth_phy_spike.vhd). Vivado's default relationship for
+## eth_clock (edges 0, 20) -> clk_50_ps (edges 5, 25) is the 5 ns edge, so the setup check is moved
+## to the 25 ns edge with a 2-cycle multicycle. The hold check stays on the 5 ns edge, which is the
+## physically right one: the previous cycle's data must still be there.
+set_input_delay -clock [get_clocks eth_clock] -max 14.0 [get_ports {eth_rxd_i[*] eth_rxdv_i eth_rxer_i}]
+set_input_delay -clock [get_clocks eth_clock] -min  8.0 [get_ports {eth_rxd_i[*] eth_rxdv_i eth_rxer_i}]
+set_multicycle_path 2 -setup -from [get_clocks eth_clock] -to [get_clocks clk_50_ps]
+
+## Transmit: launched from clk_50_ps IOB flops, 5 ns after the internal edge, so 15 ns before the
+## next pin clock edge (minus the 4.5 ns setup) and 5 ns after the previous one (needs 2.5 ns of hold).
+set_output_delay -clock [get_clocks eth_clock] -max  4.5 [get_ports {eth_txd_o[*] eth_txen_o}]
+set_output_delay -clock [get_clocks eth_clock] -min -1.5 [get_ports {eth_txd_o[*] eth_txen_o}]
+
+## MDC/MDIO are self-timed by the spike at 1.25 MHz (MDIO driven at the MDC falling edge, sampled
+## 60 ns before the rising edge through a two-flop synchroniser; the PHY needs 10 ns setup / 4 ns
+## hold and answers 5..222 ns after the rising edge). RST# and the LED are static levels.
+set_false_path -to   [get_ports {eth_mdc_o eth_mdio_io eth_reset_o eth_led2_o}]
+set_false_path -from [get_ports {eth_mdio_io}]
+
+## Status crossing clk_50_ps -> qnice_clk (toggle handshake in eth_phy_spike.vhd). The framework's
+## QNICE clock comes from the same 100 MHz primary, so without these Vivado would time the crossing
+## as a related path. The two-flop synchronisers are false paths; the 48-bit snapshot bus only has to
+## settle before the request toggle has passed the two destination flops (>= one qnice period).
+set_false_path -to [get_pins {CORE/i_eth_spike/stat_req_meta_reg/D CORE/i_eth_spike/src_ack_meta_reg/D}]
+set_max_delay -datapath_only 20.0 -from [get_cells {CORE/i_eth_spike/src_snap_reg[*]}] -to [get_cells {CORE/i_eth_spike/stat_hold_reg[*]}]

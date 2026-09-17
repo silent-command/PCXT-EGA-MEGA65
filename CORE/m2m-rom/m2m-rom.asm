@@ -194,6 +194,11 @@ CUSTOM_MSG      XOR     R8, R8
 ; 2 words dropped, 3 checksum pcxt.rom, 4 checksum ega_bios.rom,
 ; 5 checksum xtide.rom, 6 chipset-bus reads, 7 vsyncs (6/7 are free-running
 ; 16-bit counters: unchanged between two calls means the core is dead).
+; Ethernet spike (CORE/vhdl/eth_phy_spike.vhd, wired to readback 6/7/8 in
+; mega65.vhd instead of bist/req/hdd): erx = {rx frames, rx good FCS},
+; etx = {rx to our MAC or broadcast, tx frames}, eth = {link up, PHY id ok,
+; RXER seen, autoneg done, 100 Mb/s, full duplex, strap PHYAD[2], PHYAD[0],
+; last EtherType low byte}. All counters are free-running 8-bit.
 ; ----------------------------------------------------------------------------
 DBG_DEV_ROM     .EQU 0x0110
 DBG_STR_0       .ASCII_W "PCXT core: flags="
@@ -202,9 +207,9 @@ DBG_STR_2       .ASCII_W " drop="
 DBG_STR_3       .ASCII_W " sum0="
 DBG_STR_4       .ASCII_W " sum3="
 DBG_STR_5       .ASCII_W " sum2="
-DBG_STR_6       .ASCII_W " bist="
-DBG_STR_7       .ASCII_W " req="
-DBG_STR_8       .ASCII_W " hdd="
+DBG_STR_6       .ASCII_W " erx="           ; was " bist=" (restore with mega65.vhd dbg_a/b/c)
+DBG_STR_7       .ASCII_W " etx="           ; was " req="
+DBG_STR_8       .ASCII_W " eth="           ; was " hdd="
 DBG_STRS        .DW DBG_STR_0, DBG_STR_1, DBG_STR_2, DBG_STR_3
                 .DW DBG_STR_4, DBG_STR_5, DBG_STR_6, DBG_STR_7
                 .DW DBG_STR_8

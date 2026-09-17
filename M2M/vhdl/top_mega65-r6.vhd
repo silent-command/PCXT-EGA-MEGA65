@@ -528,13 +528,10 @@ begin
    hdmi_ls_oe_n_o        <= '0'; -- Enable HDMI output
    dbg_io_11             <= 'Z';
 
-   eth_clock_o           <= '0';
-   eth_led2_o            <= '0';
-   eth_mdc_o             <= '0';
-   eth_mdio_io           <= 'Z';
-   eth_reset_o           <= '1';
-   eth_txd_o             <= (others => '0');
-   eth_txen_o            <= '0';
+   -- PCXT-EGA addition: the Ethernet PHY pins are driven by the core (CORE/vhdl/eth_phy_spike.vhd
+   -- through MEGA65_Core's eth_* ports below); the framework's idle tie-offs were:
+   --    eth_clock_o <= '0'; eth_led2_o <= '0'; eth_mdc_o <= '0'; eth_mdio_io <= 'Z';
+   --    eth_reset_o <= '1'; eth_txd_o <= (others => '0'); eth_txen_o <= '0';
    f_density_o           <= '1';
    f_motora_o            <= '1';
    f_motorb_o            <= '1';
@@ -885,6 +882,18 @@ begin
          main_pot2_x_i           => main_pot2_x,
          main_pot2_y_i           => main_pot2_y,
          main_rtc_i              => main_rtc,
+
+         -- PCXT-EGA addition: Ethernet PHY pins straight to the core (CORE/vhdl/eth_phy_spike.vhd)
+         eth_clock_o             => eth_clock_o,
+         eth_led2_o              => eth_led2_o,
+         eth_mdc_o               => eth_mdc_o,
+         eth_mdio_io             => eth_mdio_io,
+         eth_reset_o             => eth_reset_o,
+         eth_rxd_i               => eth_rxd_i,
+         eth_rxdv_i              => eth_rxdv_i,
+         eth_rxer_i              => eth_rxer_i,
+         eth_txd_o               => eth_txd_o,
+         eth_txen_o              => eth_txen_o,
 
          --------------------------------------------------------------------------------------------------------
          -- Provide support for external memory (Avalon Memory Map)
