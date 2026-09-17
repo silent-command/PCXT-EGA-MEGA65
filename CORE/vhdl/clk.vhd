@@ -13,6 +13,9 @@
 --   MMCM B, VCO 1000 MHz (100 MHz * 10):
 --      CLKOUT0  /10       100 MHz          clk_100_o     MCL86 core clock
 --      CLKOUT1  /20        50 MHz          clk_50_o      chipset (cur_rate = 50_000_000)
+--      CLKOUT2  /20 +90deg 50 MHz          clk_50_ps_o   Ethernet MAC (eth_phy_spike.vhd: the RMII
+--                                                        PHY is clocked with clk_50, the MAC samples
+--                                                        and launches a quarter period later)
 --   clk_100 and clk_50 come from one MMCM on purpose: on MiSTer they were timed as
 --   related clocks and the RAM/BIU paths rely on that.
 --
@@ -41,6 +44,8 @@ entity clk is
       main_rst_o      : out std_logic;
       clk_50_o        : out std_logic;   -- 50 MHz (same net as main_clk_o)
       rst_50_o        : out std_logic;
+      clk_50_ps_o     : out std_logic;   -- 50 MHz, +90 degrees (Ethernet MAC)
+      rst_50_ps_o     : out std_logic;
 
       -- CPU domain
       clk_100_o       : out std_logic;   -- 100 MHz
@@ -72,10 +77,12 @@ architecture rtl of clk is
    signal clk_14_mmcm      : std_logic;
    signal clk_100_mmcm     : std_logic;
    signal clk_50_mmcm      : std_logic;
+   signal clk_50_ps_mmcm   : std_logic;
 
    signal clk_57           : std_logic;
    signal clk_100          : std_logic;
    signal clk_50           : std_logic;
+   signal clk_50_ps        : std_logic;
 
    signal locked_a         : std_logic;
    signal locked_b         : std_logic;
@@ -174,12 +181,17 @@ begin
          CLKOUT1_DIVIDE       => 20,         -- 50 MHz
          CLKOUT1_PHASE        => 0.000,
          CLKOUT1_DUTY_CYCLE   => 0.500,
-         CLKOUT1_USE_FINE_PS  => FALSE
+         CLKOUT1_USE_FINE_PS  => FALSE,
+         CLKOUT2_DIVIDE       => 20,         -- 50 MHz, +90 deg (5 ns): Ethernet MAC
+         CLKOUT2_PHASE        => 90.000,
+         CLKOUT2_DUTY_CYCLE   => 0.500,
+         CLKOUT2_USE_FINE_PS  => FALSE
       )
       port map (
          CLKFBOUT            => clkfb_b_mmcm,
          CLKOUT0             => clk_100_mmcm,
          CLKOUT1             => clk_50_mmcm,
+         CLKOUT2             => clk_50_ps_mmcm,
          CLKFBIN             => clkfb_b,
          CLKIN1              => sys_clk_i,
          CLKIN2              => '0',
@@ -215,11 +227,13 @@ begin
    clk_14_bufg    : BUFG port map (I => clk_14_mmcm,    O => clk_14_o);
    clk_100_bufg   : BUFG port map (I => clk_100_mmcm,   O => clk_100);
    clk_50_bufg    : BUFG port map (I => clk_50_mmcm,    O => clk_50);
+   clk_50_ps_bufg : BUFG port map (I => clk_50_ps_mmcm, O => clk_50_ps);
 
-   clk_57_o   <= clk_57;
-   clk_100_o  <= clk_100;
-   clk_50_o   <= clk_50;
-   main_clk_o <= clk_50;
+   clk_57_o    <= clk_57;
+   clk_100_o   <= clk_100;
+   clk_50_o    <= clk_50;
+   clk_50_ps_o <= clk_50_ps;
+   main_clk_o  <= clk_50;
 
    -------------------------------------------------------------------------------------
    -- Resets: asserted while either MMCM is unlocked, released synchronously per domain
@@ -239,6 +253,10 @@ begin
    i_rst_57 : xpm_cdc_async_rst
       generic map (RST_ACTIVE_HIGH => 1, DEST_SYNC_FF => 6)
       port map (src_arst => unlocked, dest_clk => clk_57, dest_arst => video_rst_o);
+
+   i_rst_50_ps : xpm_cdc_async_rst
+      generic map (RST_ACTIVE_HIGH => 1, DEST_SYNC_FF => 6)
+      port map (src_arst => unlocked, dest_clk => clk_50_ps, dest_arst => rst_50_ps_o);
 
    rst_50_o   <= rst_50;
    main_rst_o <= rst_50;
