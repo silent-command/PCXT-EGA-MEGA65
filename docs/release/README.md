@@ -74,11 +74,11 @@ lacks:
   (XT build) with the XTIDE Universal BIOS as a separate option ROM; it boots
   DOS 3.30 and FreeDOS and reads 1.44 MB images.
 
-- Joystick with the alternative 8088 BIOS: the port works (verified with a
-  digital stick: axes, centre and fire), but that BIOS never sets the "game
-  adapter installed" bit in the BIOS equipment word, and games that trust it
-  (Alley Cat, for one) refuse the joystick. Mount `pcxt/joytest.img` in
-  Drive A and run `A:\SETJOY` before the game, or put it in AUTOEXEC.BAT.
+- Joystick: verified with a digital stick (axes, centre, fire). The 8088 BIOS
+  shipped in `pcxt/bios-hd-floppy/` detects the game port at power-on and sets
+  the BIOS "game adapter" bit, which games such as Alley Cat require; keep the
+  stick centred while it boots. If another BIOS leaves the bit clear, mount
+  `pcxt/joytest.img` in Drive A and run `A:\SETJOY` before the game.
   `A:\JOYTEST` on the same image shows the raw port readings.
 
 - Mouse: a Commodore 1351 or an Amiga mouse in joystick port 1 appears as a
