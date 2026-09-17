@@ -361,3 +361,7 @@ disk and `TYPE A:\HELLO.TXT` printed the file. First bitstream, no changes
 needed. The physical-layer spike had run earlier on a MEGA65-formatted disk
 (drive audibly seeking and reading); its counters were not read before the
 read-path build superseded it.
+Follow-up on the same build: a second `DIR A:` and `COPY A:\*.* C:\` work,
+`DIR A:` takes a couple of seconds; with the disk ejected DOS shows its normal
+"Error reading drive A" Abort/Retry prompt, and after re-inserting the disk
+Retry recovers and `DIR A:` works again.
