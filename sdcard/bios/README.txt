@@ -16,6 +16,13 @@ pcxt-xt.rom + xtide.rom   The "IBM PC/XT" build (16 KB, lands
                           dead keyboard after Ctrl+Alt+Del that this build
                           exposed was a core bug (8259 in-service register
                           not cleared by ICW1), fixed in the KF8259 overlay.
+                          2026-09-16: pcxt-xt.rom is now version "1.0.0m",
+                          built here from the upstream v1.0.0 source plus
+                          game-port detection at POST (tools/8088_bios-patch):
+                          it sets the "game adapter" bit in the equipment
+                          word, so games that trust INT 11h accept the
+                          joystick. Verified on hardware. The previous
+                          fork build is kept as pcxt-xt-1.0.0a.rom.
 pcxt-micro8088.rom        Micro 8088 build: boots DOS, but its board has a
 pcxt-micro8088-xtl.rom    fixed-function keyboard port instead of an 8255, so
                           on this core the keyboard does not work and the
