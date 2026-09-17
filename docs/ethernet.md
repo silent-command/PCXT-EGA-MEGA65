@@ -186,3 +186,17 @@ Effort so far: physical layer one afternoon, card emulation plus bench one
 day, first DOS test passed on the first build. Remaining: menu (card on/off,
 IRQ), MAC address from the MEGA65's own configuration, ping/FTP/telnet
 verification, release notes.
+
+## File transfer over FTP, 2026-09-17: the second goal, met
+With `FTPSRV` running on the XT (working drive C:), from the PC with the
+stock Windows `ftp` client, user mega65: `cd DRIVE_C`, `dir` lists the
+FreeDOS root, `put` of a text file lands on C:, `get FDCONFIG.SYS` returns
+the real file. A 200 KB random file round-trips byte-identical:
+10.3 KB/s PC to XT, 14.7 KB/s XT to PC at the 4.77 MHz setting. The XT
+answers pings from the PC (15-54 ms) while an mTCP program is running;
+with only the packet driver loaded there is no IP stack, so pings time out
+then, which is normal. Pings from the XT to the router work; pings from the
+XT to this PC time out because of the Windows firewall.
+
+So the SD card is no longer needed to move files: the PC can push and pull
+anything on the XT's hard-disk image over the network.
