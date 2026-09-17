@@ -3,7 +3,8 @@
 An IBM PC/XT with an EGA card on the MEGA65 R6: 8088 or 8086 CPU at 4.77,
 7.16, 9.54 MHz or unthrottled, 640 KB of RAM plus upper memory and 2 MB of
 EMS, floppy and hard disk images from the SD card, Adlib, Sound Blaster,
-Tandy and PC speaker sound, and the MEGA65 keyboard and joysticks.
+Tandy and PC speaker sound, an NE1000 Ethernet card on the MEGA65's network
+port, and the MEGA65 keyboard and joysticks.
 
 Ported from [MiSTer-devel/PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer)
 with the [MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65) framework.
@@ -14,7 +15,10 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
 1. Flash `pcxt-ega-r6.cor` into a core slot: hold **No Scroll** while
    powering on, pick an empty slot, choose the file from the SD card.
 2. Copy the `m2m` and `pcxt` folders to the **root** of the SD card, next to
-   each other. `m2m/m2mcfg` makes the menu remember your settings.
+   each other. `m2m/m2mcfg` makes the menu remember your settings. **Replace
+   an existing `m2m/m2mcfg` with this release's copy**: the menu grew with
+   the Network submenu and the file must match its size, otherwise the core
+   logs "corrupt config file" and stops saving settings (nothing else breaks).
 3. Put the two remaining files into `/pcxt` (they are not included, see
    `pcxt/README.txt`): `ega_bios.rom` (required) and a hard disk image such
    as `freedos.vhd`.
@@ -37,9 +41,35 @@ XTIDE boot menu (F2) otherwise.
 | Sound | Adlib / Sound Blaster FM / none; Tandy sound; Sound Blaster on IRQ 7 (default IRQ 5); PC speaker volume; boost |
 | Display | monitor the EGA card drives (5154 EGA, 5153 CGA, 5151 mono; at reset); tint (color, green, amber, black and white); VGA connector: 31 kHz for VGA monitors, 15 kHz or 15 kHz + composite sync for CRTs and SCART |
 | Input | joystick 1 and 2 (MEGA65 ports, digital), swap; write-protect A: / B:; mouse off / 1351 / Amiga (port 1) |
+| Network | NE1000 Ethernet card at port 320h: Off / IRQ 5 (default) / IRQ 7 |
 | HDMI: CRT emulation, Zoom-in, Audio improvements | framework video and audio options |
 
 Settings are saved when the menu closes, if `/m2m/m2mcfg` exists.
+
+## Network
+
+The core emulates a Novell NE1000 (8-bit ISA, DP8390) at port 320h on the
+MEGA65's Ethernet socket (100 Mb/s links only). Load a packet driver in DOS
+and any packet-driver application works; mTCP (DHCP, ping, FTP, telnet,
+IRC, ...) has been tested. With the Crynwr driver:
+
+```
+NE1000 0x60 5 0x320      (menu: Network: IRQ 5, the default)
+NE1000 0x60 7 0x320      (menu: Network: IRQ 7)
+```
+
+The IRQ you pick must not be the one the Sound Blaster uses: the SB is on
+IRQ 5 unless "Sound Blaster IRQ 7" is on in the Sound menu, and the XT's
+interrupt controller cannot share a line. So either leave the SB on IRQ 5 and
+put the card on IRQ 7, or the other way round; the defaults (both on IRQ 5)
+are what most DOS software expects for the SB and what the driver assumes for
+the card, so change one of them before using both at once. "Off" removes the
+card (port 320h reads as an empty slot).
+
+The card's MAC address is the one stored in your MEGA65's configuration
+(the MEGA65 Configure utility, "MAC address"), read from the SD card at
+start-up. If none is stored the core uses 02:4D:36:35:00:01; the serial log
+line "Ethernet MAC: ..." says which.
 
 ## Keyboard
 

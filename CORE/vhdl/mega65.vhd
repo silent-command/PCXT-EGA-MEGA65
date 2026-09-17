@@ -164,6 +164,19 @@ port (
    main_pot2_y_i           : in  std_logic_vector(7 downto 0);
    main_rtc_i              : in  std_logic_vector(64 downto 0);
 
+   -- Ethernet PHY pins (PCXT-EGA addition: CORE/vhdl/eth_mac.vhd; KSZ8081RND in RMII mode on
+   -- the R6). Passed through raw by top_mega65-r6.vhd, the MAC owns their clocking and timing.
+   eth_clock_o             : out   std_logic;
+   eth_led2_o              : out   std_logic;
+   eth_mdc_o               : out   std_logic;
+   eth_mdio_io             : inout std_logic;
+   eth_reset_o             : out   std_logic;
+   eth_rxd_i               : in    std_logic_vector(1 downto 0);
+   eth_rxdv_i              : in    std_logic;
+   eth_rxer_i              : in    std_logic;
+   eth_txd_o               : out   std_logic_vector(1 downto 0);
+   eth_txen_o              : out   std_logic;
+
    -- CBM-488/IEC serial port
    iec_reset_n_o           : out std_logic;
    iec_atn_n_o             : out std_logic;
@@ -237,6 +250,8 @@ signal clk_25                 : std_logic;
 signal clk_14                 : std_logic;
 signal clk_locked             : std_logic;
 signal video_rst              : std_logic;
+signal clk_50_ps              : std_logic;               -- 50 MHz +90 deg: Ethernet MAC (eth_mac.vhd)
+signal rst_50_ps              : std_logic;
 
 -- ROM download stream (rom_loader.vhd -> main.vhd), main_clk domain
 signal main_rom_download      : std_logic;
@@ -274,9 +289,9 @@ constant C_MENU_HDMI_720_5994  : natural := 26;
 constant C_MENU_SVGA_800_60    : natural := 27;
 constant C_MENU_VGA_15KHZ      : natural := 63;
 constant C_MENU_VGA_15KHZ_CS   : natural := 64;
-constant C_MENU_CRT_EMULATION  : natural := 83;
-constant C_MENU_HDMI_ZOOM      : natural := 84;
-constant C_MENU_IMPROVE_AUDIO  : natural := 85;
+constant C_MENU_CRT_EMULATION  : natural := 91;
+constant C_MENU_HDMI_ZOOM      : natural := 92;
+constant C_MENU_IMPROVE_AUDIO  : natural := 93;
 
 -- analog VGA modes (docs/analog-video.md)
 signal main_video_mode13       : std_logic;   -- core's private 31.5 kHz raster active (async)
@@ -309,6 +324,21 @@ signal main_dbg_bus_reads     : std_logic_vector(15 downto 0);
 signal main_dbg_vsync         : std_logic_vector(15 downto 0);
 signal main_dbg_keys          : std_logic_vector(15 downto 0);
 signal main_dbg_flags         : std_logic_vector(7 downto 0);
+
+-- NE1000 Ethernet card (docs/ethernet.md): the MAC (eth_mac.vhd, PHY pins, clk_50_ps) exchanges byte
+-- streams with the card inside main.vhd in the main_clk domain. The station address comes from the
+-- firmware through rom_loader.vhd (the MEGA65's own MAC from the SD card's configuration sector, or
+-- the locally administered default 02:4D:36:35:00:01, m2m-rom.asm ETH_SET_MAC); main_eth_mac_valid
+-- rises once all six bytes are there and gates the card. The menu (main.vhd) decides on/off and IRQ.
+signal main_eth_mac           : std_logic_vector(47 downto 0);
+signal main_eth_mac_valid     : std_logic;
+signal main_eth_rx_empty      : std_logic;
+signal main_eth_rx_rd         : std_logic;
+signal main_eth_rx_data       : std_logic_vector(8 downto 0);
+signal main_eth_tx_full       : std_logic;
+signal main_eth_tx_wr         : std_logic;
+signal main_eth_tx_data       : std_logic_vector(8 downto 0);
+signal main_eth_tx_done       : std_logic;
 
 begin
 
@@ -369,6 +399,8 @@ begin
          main_rst_o        => main_rst,
          clk_50_o          => open,
          rst_50_o          => open,
+         clk_50_ps_o       => clk_50_ps,       -- Ethernet MAC clock (+90 deg)
+         rst_50_ps_o       => rst_50_ps,
          clk_100_o         => clk_100,
          rst_100_o         => open,
          clk_28_o          => clk_28,
@@ -501,8 +533,57 @@ begin
          pot1_x_i             => main_pot1_x_i,
          pot1_y_i             => main_pot1_y_i,
          pot2_x_i             => main_pot2_x_i,
-         pot2_y_i             => main_pot2_y_i
+         pot2_y_i             => main_pot2_y_i,
+
+         -- NE1000 Ethernet card: station address and its valid flag (i_rom_loader), MAC streams (i_eth_mac below)
+         eth_enable_i         => main_eth_mac_valid,
+         eth_mac_addr_i       => main_eth_mac,
+         eth_rx_empty_i       => main_eth_rx_empty,
+         eth_rx_rd_o          => main_eth_rx_rd,
+         eth_rx_data_i        => main_eth_rx_data,
+         eth_tx_full_i        => main_eth_tx_full,
+         eth_tx_wr_o          => main_eth_tx_wr,
+         eth_tx_data_o        => main_eth_tx_data,
+         eth_tx_done_i        => main_eth_tx_done
       ); -- i_main
+
+   ---------------------------------------------------------------------------------------------
+   -- Ethernet MAC (PCXT-EGA addition, see eth_mac.vhd): PHY reset + MDIO, RMII receive and transmit
+   -- engines with dual-clock FIFOs towards the NE1000 card inside main.vhd. The PHY is clocked with
+   -- the 50 MHz chipset clock (forwarded through an ODDR inside), the MAC runs on its +90 degree copy,
+   -- the card side of the FIFOs is main_clk. Reset is the MMCM lock only, so the PHY is not re-reset
+   -- by M2M or core resets (the card is, through the chipset reset in main.vhd).
+   ---------------------------------------------------------------------------------------------
+   i_eth_mac : entity work.eth_mac
+      port map (
+         clk_ref_i         => main_clk,
+         clk_i             => clk_50_ps,
+         rst_i             => rst_50_ps,
+         eth_clock_o       => eth_clock_o,
+         eth_reset_o       => eth_reset_o,
+         eth_mdc_o         => eth_mdc_o,
+         eth_mdio_io       => eth_mdio_io,
+         eth_rxd_i         => eth_rxd_i,
+         eth_rxdv_i        => eth_rxdv_i,
+         eth_rxer_i        => eth_rxer_i,
+         eth_txd_o         => eth_txd_o,
+         eth_txen_o        => eth_txen_o,
+         eth_led2_o        => eth_led2_o,
+         sys_clk_i         => main_clk,
+         sys_rst_i         => main_rst,
+         rx_rd_i           => main_eth_rx_rd,
+         rx_data_o         => main_eth_rx_data,
+         rx_empty_o        => main_eth_rx_empty,
+         tx_wr_i           => main_eth_tx_wr,
+         tx_data_i         => main_eth_tx_data,
+         tx_full_o         => main_eth_tx_full,
+         tx_done_o         => main_eth_tx_done,
+         link_up_o         => open,
+         dbg_rx_frames_o   => open,
+         dbg_rx_crc_ok_o   => open,
+         dbg_tx_frames_o   => open,
+         dbg_phy_o         => open
+      ); -- i_eth_mac
 
    ---------------------------------------------------------------------------------------------
    -- Audio and video settings (QNICE clock domain)
@@ -636,6 +717,8 @@ begin
          rom_addr_o        => main_rom_addr,
          rom_data_o        => main_rom_data,
          rom_wait_i        => main_rom_wait,
+         eth_mac_o         => main_eth_mac,
+         eth_mac_valid_o   => main_eth_mac_valid,
          dbg_a_i           => main_dbg_bus_reads,
          dbg_b_i           => main_dbg_vsync,
          dbg_c_i           => main_dbg_keys,

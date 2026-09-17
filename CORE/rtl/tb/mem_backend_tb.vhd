@@ -1537,19 +1537,25 @@ begin
       end loop;
       balance_check("T0 i/ii");
       -- (iii) HyperRAM side reset while a read is in flight, byte side not reset (reset button:
-      -- hr_rst_i follows reset_core_n, rst_i only follows the clock lock); the read can never be
-      -- answered, but afterwards the backend must serve the (also reset) CPU again
+      -- hr_rst_i follows reset_core_n, rst_i only follows the clock lock). The HyperRAM side can
+      -- never answer that read, but the byte-side master is the chipset's KFSDRAM, which the reset
+      -- button does not reset either and which waits for the readdatavalid for ever (hardware
+      -- symptom: black screen / bars after the reset button, the CPU hung before POST reached the
+      -- EGA). The backend must therefore answer the lost read itself, with a dummy beat, while
+      -- hr_rst_i is still high - and serve the (reset) CPU again afterwards.
       bus_read(16#00400#);
       idle(2);
+      exp_q((exp_tail - 1) mod 256).data := -1;   -- answered, data don't care (the CPU is in reset too)
       hr_rst <= '1';
-      idle(20);
-      hr_rst <= '0';
-      exp_head := exp_tail;          -- nobody expects that read any more
+      hr_rst <= transport '0' after 20 * 20 ns;   -- 20 byte clocks, like the (i)/(ii) pulses
+      wait_done;                                  -- the dummy beat; on the old RTL this times out
+      check(exp_head = exp_tail, "(iii) the read in flight at the HyperRAM-side reset was answered");
+      check(cyc - last_done_edge < 30, "(iii) it was answered during the reset, not after it");
       idle(G_INIT_HOLD / 2 + 20);
       read_wait(16#F0000#);          -- ROM read: held for ever if out_count still counts the lost read
       read_wait(16#00400#);
       check(exp_head = exp_tail, "(iii) reads outstanding after the HyperRAM-side reset");
-      hyper_reads  := bs_valids;     -- the in-flight read was dropped on purpose: resync the bus counters
+      hyper_reads  := bs_valids;     -- the in-flight read was answered by the backend, not the FIFO: resync
       hyper_writes := mon_wr_count;
       balance_start;
 

@@ -152,7 +152,9 @@ constant HELP_3 : string :=
    "   speaker volume, boost.\n" &
    " Display: EGA/CGA/mono monitor, tint.\n" &
    " Input: joysticks (ports 1 and 2), swap,\n" &
-   "   write-protect A: and B:.\n\n" &
+   "   write-protect A: and B:, mouse.\n" &
+   " Network: NE1000 card off / IRQ 5 / IRQ 7\n" &
+   "   (port 320h; use the IRQ the SB is not on).\n\n" &
 
    " /pcxt/pcxt.rom      PC/XT BIOS with XTIDE\n" &
    " /pcxt/ega_bios.rom  EGA BIOS (required)\n" &
@@ -278,7 +280,7 @@ constant SEL_CORENAME      : std_logic_vector(15 downto 0) := x"0200";
 
 -- Currently this is only used in the debug console. Use the welcome screen and the
 -- help system to display the name and version of your core to the end user
-constant CORENAME          : string := "PCXT-EGA V0.7.3";
+constant CORENAME          : string := "PCXT-EGA V0.8";
 
 --------------------------------------------------------------------------------------------------------------------
 -- "Help" menu / Options menu  (Selectors 0x0300 .. 0x0312): DO NOT TOUCH
@@ -339,7 +341,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 90;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 98;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -347,7 +349,7 @@ constant OPTM_SIZE         : natural := 90;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 19;
+constant OPTM_DY           : natural := 20;
 
 -- Line numbers of this menu are the bit numbers in qnice_osm_control_i / main_osm_control_i.
 -- main.vhd decodes the core options, mega65.vhd the framework ones (C_MENU_*):
@@ -360,7 +362,8 @@ constant OPTM_DY           : natural := 19;
 --  62..64 VGA 31 kHz / 15 kHz / 15 kHz + csync
 --  70 joystick 1   71 joystick 2   72 swap   74 write-protect A   75 write-protect B
 --  77..79 mouse off / C1351 / Amiga (port 1)
---  83 CRT emulation   84 zoom   85 audio improvements
+--  85..87 network (NE1000 at 320h) off / IRQ 5 / IRQ 7
+--  91 CRT emulation   92 zoom   93 audio improvements
 constant OPTM_ITEMS        : string :=
 
    " PCXT-EGA\n"            &    --    0
@@ -451,14 +454,23 @@ constant OPTM_ITEMS        : string :=
    "\n"                     &    -- 80
    " Back to main menu\n"   &    -- 81
 
-   "\n"                     &    -- 82
-   " HDMI: CRT emulation\n" &    -- 83
-   " HDMI: Zoom-in\n"       &    -- 84
-   " Audio improvements\n"  &    -- 85
-   "\n"                     &    -- 86
-   " Help\n"                &    -- 87
+   " Network: %s\n"         &    -- 82  Network submenu (NE1000 at 320h, docs/ethernet.md)
+   " Network Settings\n"    &    -- 83
+   "\n"                     &    -- 84
+   " Off\n"                 &    -- 85  card absent: 320h reads FFh, no interrupt
+   " IRQ 5\n"               &    -- 86  collides with the Sound Blaster unless "Sound Blaster IRQ 7" is on
+   " IRQ 7\n"               &    -- 87  collides with the Sound Blaster when "Sound Blaster IRQ 7" is on
    "\n"                     &    -- 88
-   " Close Menu\n";              -- 89
+   " Back to main menu\n"   &    -- 89
+
+   "\n"                     &    -- 90
+   " HDMI: CRT emulation\n" &    -- 91
+   " HDMI: Zoom-in\n"       &    -- 92
+   " Audio improvements\n"  &    -- 93
+   "\n"                     &    -- 94
+   " Help\n"                &    -- 95
+   "\n"                     &    -- 96
+   " Close Menu\n";              -- 97
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -486,10 +498,11 @@ constant OPTM_G_JOY_SWAP   : integer := 18;
 constant OPTM_G_WP_A       : integer := 19;
 constant OPTM_G_WP_B       : integer := 20;
 constant OPTM_G_MOUSE      : integer := 21;
-constant OPTM_G_CRT        : integer := 22;
-constant OPTM_G_Zoom       : integer := 23;
-constant OPTM_G_Audio      : integer := 24;
-constant OPTM_G_HELP_ITEM  : integer := 25;
+constant OPTM_G_NETWORK    : integer := 22;
+constant OPTM_G_CRT        : integer := 23;
+constant OPTM_G_Zoom       : integer := 24;
+constant OPTM_G_Audio      : integer := 25;
+constant OPTM_G_HELP_ITEM  : integer := 26;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -585,14 +598,23 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_LINE,                              -- 80
                                              OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 81 Back; Input submenu: END
 
-                                             OPTM_G_LINE,                              -- 82
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 83 On/Off toggle
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 84 On/Off toggle
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 85 On/Off toggle
-                                             OPTM_G_LINE,                              -- 86
-                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 87 Help screens (WHS 1)
+                                             OPTM_G_SUBMENU,                           -- 82 Network submenu: START "Network: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 83 Headline "Network Settings"
+                                             OPTM_G_LINE,                              -- 84
+                                             OPTM_G_NETWORK,                           -- 85 Off
+                                             OPTM_G_NETWORK + OPTM_G_STDSEL,           -- 86 IRQ 5 (default)
+                                             OPTM_G_NETWORK,                           -- 87 IRQ 7
                                              OPTM_G_LINE,                              -- 88
-                                             OPTM_G_CLOSE                              -- 89 Close Menu
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 89 Back; Network submenu: END
+
+                                             OPTM_G_LINE,                              -- 90
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 91 On/Off toggle
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 92 On/Off toggle
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 93 On/Off toggle
+                                             OPTM_G_LINE,                              -- 94
+                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 95 Help screens (WHS 1)
+                                             OPTM_G_LINE,                              -- 96
+                                             OPTM_G_CLOSE                              -- 97 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

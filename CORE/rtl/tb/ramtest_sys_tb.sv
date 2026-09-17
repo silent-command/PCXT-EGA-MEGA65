@@ -46,13 +46,21 @@ module ramtest_sys_tb;
     logic clk     = 1'b1;  always #10 clk     = ~clk;         // chipset clock (rising edges coincide)
     logic reset      = 1'b1;
     logic reset_cold = 1'b1;
+    // MEGA65 reset button (-testplusarg BUTTON=<ns>): at the first HyperRAM read outstanding after
+    // <ns> the framework's hr_rst (reset_core_n) and the CPU reset (status[0]) are asserted together,
+    // exactly as on hardware; RAM.sv/KFSDRAM and the ROM presence latches are NOT reset (reset_sdram
+    // follows the clock lock only). The BIOS must then POST again: on the RTL before the mem_backend
+    // fix KFSDRAM waits for the readdatavalid of the read lost in the reset and the CPU hangs.
+    logic hr_button  = 1'b0;
 
     logic [1:0] clk_select = 2'b00;
     integer     speed_arg  = 0;
     integer     ram_kb     = 64;
+    integer     button_at  = 0;
     initial begin
         if ($value$plusargs("SPEED=%d", speed_arg)) clk_select = speed_arg[1:0];
         if (!$value$plusargs("RAMKB=%d", ram_kb)) ram_kb = 64;
+        if (!$value$plusargs("BUTTON=%d", button_at)) button_at = 0;
     end
     wire [21:0] ram_limit = ram_kb * 1024;
 
@@ -249,6 +257,14 @@ module ramtest_sys_tb;
     wire [7:0]  avm_readdata      = m_readdatavalid ? m_readdata : 8'hFF;
     assign sdram_dq_in = {6'b000000, avm_readdatavalid, avm_waitrequest, avm_readdata};
 
+    // reads the backend has accepted and not yet answered (its out_count, mirrored on the bench side;
+    // ROM-window reads answer one clock later, HyperRAM reads take tens of clocks)
+    integer hr_outstanding = 0;
+    always_ff @(posedge clk) begin
+        if (!reset_cold)
+            hr_outstanding <= hr_outstanding + ((avm_read & ~hole & ~m_waitrequest) ? 1 : 0) - (m_readdatavalid ? 1 : 0);
+    end
+
     logic        rom_wr = 1'b0;
     logic [7:0]  rom_index = 8'h00;
     logic [24:0] rom_addr = 25'd0;
@@ -260,12 +276,13 @@ module ramtest_sys_tb;
     localparam int G_REAL = 1;     // framework arbiter + scaler/QNICE traffic + hyperram_ctrl + HyperBus device
 `endif
     ramtest_mem_model #(.G_SEED(1), .G_REAL(G_REAL)) u_mem (
-        .clk_i(clk), .rst_i(reset_cold), .hr_clk_i(clk_100), .hr_rst_i(reset_cold),
+        .clk_i(clk), .rst_i(reset_cold), .hr_clk_i(clk_100), .hr_rst_i(reset_cold | hr_button),
         .avm_address_i(avm_address), .avm_writedata_i(avm_writedata),
         .avm_write_i(avm_write & ~hole), .avm_read_i(avm_read & ~hole),
         .avm_readdata_o(m_readdata), .avm_readdatavalid_o(m_readdatavalid), .avm_waitrequest_o(m_waitrequest),
         .rom_wr_i(rom_wr), .rom_index_i(rom_index), .rom_addr_i(rom_addr), .rom_data_i(rom_data)
     );
+
 
     // B8000 text RAM (bench stand-in for the video card)
     logic [7:0] text [0:32767];
@@ -717,6 +734,51 @@ module ramtest_sys_tb;
         if (errors == 0) $display("RESULT: PASS (RAM test, speed %0d)", clk_select);
         else             $display("RESULT: FAIL (RAM test, speed %0d, %0d checks failed)", clk_select, errors);
         $finish;
+    end
+
+    // ------------------------------------------------------------------ reset button scenario
+    // Hardware timing (M2M reset_manager -> clk_m2m/framework -> main.vhd): reset_core_n falls,
+    // hr_rst (xpm_cdc_async_rst on hr_clk) and main_reset_core -> reset_soft_i -> status[0] ->
+    // pcxt_core `reset` arrive within ~100 ns of each other; both stay for the press + 50 ms, the
+    // CPU comes back 1.31 ms (the `reset` stretch) after the backend. Here: 100 us / 10 us.
+    integer post_before = 0;
+    initial begin
+        if (button_at > 0) begin
+            #(button_at * 1ns);
+            // press at a moment with a HyperRAM read accepted and not yet answered (ROM reads answer
+            // in one clock, so "outstanding for 4 clocks" means a HyperRAM read is in flight)
+            forever begin
+                @(posedge clk);
+                if (hr_outstanding > 0) begin
+                    repeat (3) @(posedge clk);
+                    if (hr_outstanding > 0) break;
+                end
+            end
+            $display("  [%0t] RESET BUTTON pressed: hr_rst_i + CPU reset (KFSDRAM state %0d, reads outstanding %0d, POST codes so far %0d, last %02x)",
+                     $time, u_RAM.u_KFSDRAM.state, hr_outstanding, post_codes, last_post);
+            hr_button = 1'b1;
+            reset     = 1'b1;
+            #100us;
+            hr_button = 1'b0;
+            $display("  [%0t] RESET BUTTON released: hr_rst_i low (KFSDRAM state %0d, reads outstanding %0d)",
+                     $time, u_RAM.u_KFSDRAM.state, hr_outstanding);
+            #10us;
+            reset = 1'b0;
+            post_before = post_codes;
+            $display("  [%0t] CPU reset released after the button", $time);
+            fork
+                wait (post_codes >= post_before + 2);
+                #5ms;
+            join_any
+            disable fork;
+            $display("  [%0t] after the button: KFSDRAM state %0d (1=IDLE 4=READ_ISSUE), RAM.sv state %0d, reads outstanding %0d, POST codes since %0d (last %02x)",
+                     $time, u_RAM.u_KFSDRAM.state, u_RAM.state, hr_outstanding, post_codes - post_before, last_post);
+            if (post_codes >= post_before + 2)
+                $display("BUTTON RESULT: PASS (the BIOS POSTs again after the reset button)");
+            else
+                $display("BUTTON RESULT: FAIL (no POST after the reset button: the CPU is hung on its first RAM access)");
+            $finish;
+        end
     end
 
     // progress
