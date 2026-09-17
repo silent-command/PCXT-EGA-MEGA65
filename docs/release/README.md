@@ -78,8 +78,8 @@ lacks:
   digital stick: axes, centre and fire), but that BIOS never sets the "game
   adapter installed" bit in the BIOS equipment word, and games that trust it
   (Alley Cat, for one) refuse the joystick. Mount `pcxt/joytest.img` in
-  Drive A and run `A:SETJOY` before the game, or put it in AUTOEXEC.BAT.
-  `A:JOYTEST` on the same image shows the raw port readings.
+  Drive A and run `A:\SETJOY` before the game, or put it in AUTOEXEC.BAT.
+  `A:\JOYTEST` on the same image shows the raw port readings.
 
 - Mouse: a Commodore 1351 or an Amiga mouse in joystick port 1 appears as a
   Microsoft serial mouse on COM1 when enabled in Input Settings; load a
