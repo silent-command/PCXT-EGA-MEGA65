@@ -16,6 +16,8 @@
 //     M2M vdrives strobe that the QNICE firmware sets and clears with two
 //     register writes, ~30 clocks wide.
 //
+// Test 17 (docs/floppy.md phase 3): a floppy write block acknowledged with
+// blk_err parks the drive (fd_dead) until the chip reset.
 // Prints RESULT: PASS or RESULT: FAIL.  Build/run: run_mgmt_bridge_tb.sh.
 
 // bram.vhd's dpram as ide.v sees it: enable_*/cs_* default to '1' in the
@@ -1536,6 +1538,79 @@ module mgmt_bridge_tb;
         fdc_result(st);
         check(st[7:6] == 2'b00, "16: ST0 normal termination");
         wait_bridge_idle();
+
+        // ============================================================ 17. floppy write error (internal drive, docs/floppy.md phase 3)
+        // The firmware acknowledges a floppy write block with blk_err high
+        // (write failed, or an earlier write failed its read-back). floppy.v
+        // has already completed the sector (it did so when the FIFO was
+        // drained), so the bridge parks every later floppy request (fd_dead)
+        // until the chip reset: the next command hangs, the hard disk keeps
+        // being served, the reset revives the drive.
+        $display("[17] floppy write with blk_err: sector completed, drive dead afterwards, HDD served, chip reset recovers");
+        mount(0, 32'd1474560, 1'b0);             // A read-write
+        wait_bridge_idle();
+        fdc_wr(3'd2, 8'h1C);
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        fdc_sense_int(st, b);
+        blk_err = 1'b1;
+        n0 = blk_count;
+        fdc_cmd_rw(1'b1, 8'd0, 1'b0, 8'd9, 8'd18);   // C0 H0 R9 -> LBA 8, one sector
+        fdc_dma_out_multi(1);
+        fdc_wait_irq_max(2_000_000, got, n1);
+        check(got, "17: the write command completes (floppy.v finished when its FIFO drained)");
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "17: ST0 normal termination: DOS cannot learn of the failure here");
+        wait_bridge_idle();
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd8 && last_blk_drv == 0 && last_blk_wr, "17: one block write of LBA 8 was issued");
+        check(u_dut.fd_dead == 1'b1, "17: the drive is parked (fd_dead)");
+        check(u_dut.fd_hold == 1'b0, "17: fd_hold is not involved");
+        blk_err = 1'b0;
+        n0 = blk_count;
+        i  = f2ff_writes;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);   // the next access: a read of LBA 2
+        repeat (20000) @(posedge clk);
+        check(mgmt_req[6] == 1'b1, "17: the read request stays pending");
+        check(blk_count == n0, "17: no block fetched for it");
+        check(f2ff_writes == i, "17: nothing streamed");
+        check(u_dut.state == 0, "17: bridge idle");
+        fdc_wait_irq_max(20_000, got, n1);
+        check(!got, "17: no IRQ 6: the command never completes (the BIOS times out on hardware)");
+        ide_identify();                          // the hard disk is still served
+        check(mgmt_req[6] == 1'b1 && u_dut.fd_dead == 1'b1, "17: dead through the IDE traffic");
+        reset = 1'b1;                            // the chip reset revives floppy.v and the bridge
+        repeat (5) @(posedge clk);
+        reset = 1'b0;
+        repeat (20) @(posedge clk);
+        check(mgmt_req[6] == 1'b0, "17: request dropped by the chip reset");
+        check(u_dut.fd_dead == 1'b0, "17: fd_dead cleared");
+        mount(0, 32'd1474560, 1'b0);
+        wait_bridge_idle();
+        fdc_reset_recover();
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        fdc_sense_int(st, b);
+        n0 = blk_count;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);
+        fdc_dma_in();
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1) if (dma_buf[i] !== fa_img[2 * 512 + i]) bad = bad + 1;
+        check(bad == 0, "17: after the reset a read of LBA 2 delivers the image data");
+        check(blk_count == n0 + 1, "17: one block fetched for it");
+        fdc_wait_irq();
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "17: ST0 normal termination");
+        wait_bridge_idle();
+        // a write acknowledged without blk_err after a successful one leaves the drive alive
+        n0 = blk_count;
+        fdc_cmd_rw(1'b1, 8'd0, 1'b0, 8'd10, 8'd18);  // LBA 9
+        fdc_dma_out_multi(1);
+        fdc_wait_irq_max(2_000_000, got, n1);
+        fdc_result(st);
+        wait_bridge_idle();
+        check(blk_count == n0 + 1 && last_blk_lba == 32'd9 && last_blk_wr && u_dut.fd_dead == 1'b0, "17: a good write afterwards: block written, drive alive");
 
         $display("%0d checks, %0d failures", checks, errors);
         if (errors == 0) $display("RESULT: PASS");

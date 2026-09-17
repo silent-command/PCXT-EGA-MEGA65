@@ -16,7 +16,17 @@
 // tells no disk from a disk without the motor; a DD disk (write protected) is detected (DD found, max R 9),
 // read and verified, a request for sector 12 with 18 sectors per track stays invalid; with no disk
 // READ_TRACK and DETECT end in "no index"; a clean track fills completely and exits before the second
-// index; disabling drops the motor, the select and the cache.
+// index.
+// Phase 3 (writes, on the clean HD disk and then a DD disk): WRITE_SECTOR of one sector, the drive model
+// records the flux transitions and the sector reads back byte-exact after a forced re-read of the whole
+// track with every neighbour intact (the model checks that WRITE GATE went on in gap 2 / the data sync and
+// off in the sector's own gap 3 with a margin before the next ID field, and reports the splice position);
+// a write-protected disk is refused before WRITE GATE; a write after a seek; three consecutive sectors
+// written back to back within one revolution (a DOS multi-sector write) and a read of a just-written
+// sector before its verify; a write the model corrupts fails its background verify and the flag clears;
+// a seek waits for the pending verify; bad arguments, a sector the track does not have, no disk; the same
+// at 250 kbit/s on the DD disk; write precompensation is on from cylinder 20 in this bench (4 clocks).
+// Disabling drops the motor, the select and the cache.
 //   powershell -File run_floppy_sector_engine_tb.ps1
 `timescale 1ns/1ps
 
@@ -31,9 +41,10 @@ module floppy_sector_engine_tb;
    localparam int MOTOR_OFF    = 25_000_000;  // 500 ms idle -> motor off
    localparam int MAX_HOME     = 85;
 
-   localparam logic [3:0] CMD_DETECT = 4'd1, CMD_READ = 4'd2, CMD_COPY = 4'd3, CMD_PROBE = 4'd4, CMD_MOTOROFF = 4'd5;
+   localparam logic [3:0] CMD_DETECT = 4'd1, CMD_READ = 4'd2, CMD_COPY = 4'd3, CMD_PROBE = 4'd4, CMD_MOTOROFF = 4'd5,
+                          CMD_WRITE = 4'd6;
    localparam logic [7:0] E_OK = 8'd0, E_NO_INDEX = 8'd1, E_RECAL = 8'd2, E_NO_IDAM = 8'd3, E_WRONG_TRK = 8'd4,
-                          E_BAD_ARG = 8'd5, E_DISABLED = 8'd6;
+                          E_BAD_ARG = 8'd5, E_DISABLED = 8'd6, E_WPROT = 8'd7, E_NO_SECTOR = 8'd9;
 
    // ------------------------------------------------------------------------------------------
    // clock, reset, DUT
@@ -42,7 +53,7 @@ module floppy_sector_engine_tb;
    logic rst = 1;
    always #10 clk = ~clk;
 
-   logic        enable = 0, chg_clr = 0, cmd_valid = 0;
+   logic        enable = 0, chg_clr = 0, vfy_clr = 0, cmd_valid = 0;
    logic [3:0]  cmd = 0;
    logic [7:0]  cmd_cyl = 0;
    logic        cmd_head = 0, cmd_rate = 0, cmd_force = 0;
@@ -50,12 +61,14 @@ module floppy_sector_engine_tb;
    wire         busy;
    wire [7:0]   err, det_max_r, cache_cyl, head_track, state;
    wire         det_hd, det_dd, cache_head, cache_rate, cache_valid, wp, dskchg, dskchg_live, track0, motor, index_seen;
+   wire         vfy_pend, vfy_fail;
    wire [17:0]  valid, crcerr;
    wire [15:0]  cnt_index, cnt_idam_ok, cnt_dam_ok, cnt_steps;
    wire [31:0]  last_chrn;
    wire [8:0]   buf_addr;
    wire [7:0]   buf_data;
-   wire         buf_we;
+   wire         buf_we, buf_rd;
+   logic [7:0]  buf_rdata = 8'h00;
    wire         f_density, f_motora, f_selecta, f_side1, f_stepdir, f_step, f_wdata, f_wgate;
    wire         f_index, f_track0, f_wp, f_rdata, f_dskchg;
 
@@ -67,20 +80,22 @@ module floppy_sector_engine_tb;
       .G_SIDE_SETTLE_CYCLES   (SIDE_CYC),
       .G_INDEX_TIMEOUT_CYCLES (IDX_TIMEOUT),
       .G_MOTOR_OFF_CYCLES     (MOTOR_OFF),
-      .G_MAX_STEPS_HOME       (MAX_HOME)
+      .G_MAX_STEPS_HOME       (MAX_HOME),
+      .G_PRECOMP_CYCLES       (4),
+      .G_PRECOMP_FROM_CYL     (20)
    ) dut (
       .clk_i (clk), .rst_i (rst),
-      .enable_i (enable), .chg_clr_i (chg_clr), .cmd_valid_i (cmd_valid), .cmd_i (cmd),
+      .enable_i (enable), .chg_clr_i (chg_clr), .vfy_clr_i (vfy_clr), .cmd_valid_i (cmd_valid), .cmd_i (cmd),
       .cmd_cyl_i (cmd_cyl), .cmd_head_i (cmd_head), .cmd_rate_hd_i (cmd_rate), .cmd_force_i (cmd_force),
       .cmd_sector_i (cmd_sector), .cmd_spt_i (cmd_spt),
       .busy_o (busy), .err_o (err), .det_max_r_o (det_max_r), .det_hd_o (det_hd), .det_dd_o (det_dd),
       .valid_o (valid), .crcerr_o (crcerr), .cache_cyl_o (cache_cyl), .cache_head_o (cache_head),
       .cache_rate_o (cache_rate), .head_track_o (head_track), .state_o (state),
       .cache_valid_o (cache_valid), .wp_o (wp), .dskchg_o (dskchg), .dskchg_live_o (dskchg_live),
-      .track0_o (track0), .motor_o (motor), .index_seen_o (index_seen),
+      .track0_o (track0), .motor_o (motor), .index_seen_o (index_seen), .vfy_pend_o (vfy_pend), .vfy_fail_o (vfy_fail),
       .cnt_index_o (cnt_index), .cnt_idam_ok_o (cnt_idam_ok), .cnt_dam_ok_o (cnt_dam_ok), .cnt_steps_o (cnt_steps),
       .last_chrn_o (last_chrn),
-      .buf_addr_o (buf_addr), .buf_data_o (buf_data), .buf_we_o (buf_we),
+      .buf_addr_o (buf_addr), .buf_data_o (buf_data), .buf_we_o (buf_we), .buf_rd_o (buf_rd), .buf_rdata_i (buf_rdata),
       .f_density_o (f_density), .f_motora_o (f_motora), .f_selecta_o (f_selecta), .f_side1_o (f_side1),
       .f_stepdir_o (f_stepdir), .f_step_o (f_step), .f_wdata_o (f_wdata), .f_wgate_o (f_wgate),
       .f_index_i (f_index), .f_track0_i (f_track0), .f_writeprotect_i (f_wp), .f_rdata_i (f_rdata),
@@ -105,10 +120,23 @@ module floppy_sector_engine_tb;
       else begin n_fail++; $display("FLP FAIL @%0t: %s", $time, msg); end
    endtask
 
-   // the vd_glue block buffer as the COPY sees it
+   // the vd_glue block buffer as the COPY sees it (written) and as WRITE_SECTOR reads it (one clock latency)
    byte  bbuf [0:511];
    int   bwrites = 0;
-   always @(posedge clk) if (buf_we) begin bbuf[buf_addr] = buf_data; bwrites++; end
+   always @(posedge clk) begin
+      if (buf_we) begin bbuf[buf_addr] = buf_data; bwrites++; end
+      buf_rdata <= bbuf[buf_addr];
+   end
+
+   // what every sector should hold: the model's pattern, or the pattern id it was written with
+   int pat_tbl [0:82][0:1][0:18];
+   function automatic byte wpat(input int id, input int s, input int k, input int c, input int h);
+      return ((k * (id + 3) + s * 13 + c * 7 + h * 29) ^ (k >> 2) ^ (id * 'h5A)) & 8'hFF;
+   endfunction
+   function automatic byte exp_byte(input int s, input int k, input int c, input int h);
+      if (pat_tbl[c][h][s] != 0) return wpat(pat_tbl[c][h][s], s, k, c, h);
+      return model.data_byte(s, k, c, h);
+   endfunction
 
    // busy must never be low while a command is in flight for more than this
    task automatic wait_done(input string what, input real max_ms);
@@ -147,7 +175,7 @@ module floppy_sector_engine_tb;
       run(CMD_COPY, 0, 0, 0, 0, s, 0, $sformatf("COPY %0d", s), 1.0);
       check(err == E_OK, $sformatf("COPY %0d: err %0d", s, err));
       check(bwrites == 512, $sformatf("COPY %0d: %0d buffer writes (512)", s, bwrites));
-      for (int k = 0; k < 512; k++) if (bbuf[k] !== model.data_byte(s, k, c, h)) bad++;
+      for (int k = 0; k < 512; k++) if (bbuf[k] !== exp_byte(s, k, c, h)) bad++;
       check(bad == 0, $sformatf("COPY %0d (C%0d H%0d): %0d bytes differ", s, c, h, bad));
    endtask
 
@@ -169,6 +197,39 @@ module floppy_sector_engine_tb;
       check(valid == ev, $sformatf("%s: valid %018b (expected %018b)", what, valid, ev));
       if (model.bad_data != 0) check(crcerr[model.bad_data - 1] == 1'b1, $sformatf("%s: crcerr set for sector %0d", what, model.bad_data));
       for (int s = 1; s <= nsec; s++) if (ev[s - 1]) copy_check(s, c, h);
+   endtask
+
+   // WRITE sector s of C c, H h at rate hd with pattern id; expects err e (0: remembered as written)
+   task automatic write_sector(input int s, input int c, input int h, input bit hd, input int id,
+                               input logic [7:0] e, input string what);
+      int w0 = model.writes;
+      for (int k = 0; k < 512; k++) bbuf[k] = wpat(id, s, k, c, h);
+      run(CMD_WRITE, c, h, hd, 0, s, 0, what, 1500.0);
+      check(err == e, $sformatf("%s: err %0d (expected %0d)", what, err, e));
+      if (e == E_OK) begin
+         if (err == E_OK) pat_tbl[c][h][s] = id;
+         check(model.writes == w0 + 1, $sformatf("%s: %0d writes recorded by the drive (1)", what, model.writes - w0));
+         check(model.last_wr_sector == s, $sformatf("%s: the drive saw the write on sector %0d", what, model.last_wr_sector));
+         check(model.last_wr_lead >= 12 && model.last_wr_lead <= 24,
+               $sformatf("%s: WRITE GATE on %0d gap bytes after the ID CRC (12..24)", what, model.last_wr_lead));
+         check(model.last_wr_pulses > 2500 && model.last_wr_pulses < 8600,
+               $sformatf("%s: %0d flux transitions written", what, model.last_wr_pulses));
+         $display("FLP write %s: splice %0d bytes after the ID CRC, WRITE GATE off %0d bytes before the next ID sync, %0d transitions, min gap %0.0f ns",
+                  what, model.last_wr_lead, model.last_wr_margin, model.last_wr_pulses, model.last_wr_min_gap);
+      end else begin
+         check(model.writes == w0, $sformatf("%s: no write reached the drive", what));
+      end
+   endtask
+
+   // wait for the background verify of every written sector
+   task automatic wait_verify(input string what, input bit expect_fail);
+      fork
+         begin wait (!vfy_pend); end
+         begin #700ms; check(0, $sformatf("%s: verify still pending after 700 ms", what)); end
+      join_any
+      disable fork;
+      @(posedge clk); #1;
+      check(vfy_fail == expect_fail, $sformatf("%s: vfy_fail %0d (expected %0d)", what, vfy_fail, expect_fail));
    endtask
 
    // ------------------------------------------------------------------------------------------
@@ -333,6 +394,124 @@ module floppy_sector_engine_tb;
       check(t1 < 12.0 * 200.0e6 / 10.0 + 400.0e6, $sformatf("clean track read in %0.1f ms (< seek + 1.2 revolutions)", t1 / 1.0e6));
       run(CMD_MOTOROFF, 0, 0, 0, 0, 0, 0, "MOTOR_OFF", 1.0);
       check(f_motora === 1'b1, "MOTOR_OFF: motor off at once");
+
+      // ==========================================================================================
+      // phase 3: writes
+      // ==========================================================================================
+      for (int c = 0; c < 83; c++) for (int h = 0; h < 2; h++) for (int s = 0; s < 19; s++) pat_tbl[c][h][s] = 0;
+
+      // --- one sector on the cached track (C12 H1, no precompensation below cylinder 20) ---
+      check(!vfy_pend && !vfy_fail, "before any write: no verify pending or failed");
+      write_sector(4, 12, 1, 1, 1, E_OK, "WRITE C12 H1 s4");
+      check(!valid[3] && !crcerr[3], "after the write: slot 4 invalid, no CRC error");
+      check(valid == (18'h3FFFF & ~18'h8), "after the write: the other 17 slots still valid");
+      check(vfy_pend, "after the write: verify pending");
+      check(f_wgate === 1'b1, "after the write: WRITE GATE released");
+      wait_verify("WRITE C12 H1 s4", 0);
+      check(valid[3] && !crcerr[3], "verify read the sector back into slot 4");
+      copy_check(4, 12, 1);                                            // the read-back copy
+      run(CMD_READ, 12, 1, 1, 1, 4, 18, "READ C12 H1 forced after the write", 1500.0);
+      check(err == E_OK && valid == 18'h3FFFF && crcerr == 0, "forced re-read after the write: all 18 valid");
+      for (int s = 1; s <= 18; s++) copy_check(s, 12, 1);              // the written one and its neighbours
+
+      // --- write protect: refused before WRITE GATE ---
+      model.disk_wp = 1;
+      #10us;
+      check(wp, "write protect tab: wp flag");
+      write_sector(5, 12, 1, 1, 2, E_WPROT, "WRITE on a protected disk");
+      check(valid[4], "refused write: slot 5 untouched");
+      model.disk_wp = 0;
+      #10us;
+
+      // --- bad arguments ---
+      write_sector(0, 12, 1, 1, 2, E_BAD_ARG, "WRITE sector 0");
+      write_sector(19, 12, 1, 1, 2, E_BAD_ARG, "WRITE sector 19");
+      run(CMD_WRITE, 83, 0, 1, 0, 1, 0, "WRITE C83", 1.0);
+      check(err == E_BAD_ARG, $sformatf("WRITE cylinder 83: err %0d (5)", err));
+
+      // --- after a seek, with precompensation (cylinder 30 >= 20) ---
+      steps0 = model.model_steps;
+      write_sector(1, 30, 0, 1, 3, E_OK, "WRITE C30 H0 s1");
+      check(model.model_steps - steps0 == 18, $sformatf("seek 12 -> 30 before the write: %0d steps", model.model_steps - steps0));
+      check(model.pos == 30, "head on cylinder 30");
+      wait_verify("WRITE C30 H0 s1", 0);
+      // the verify put sector 1 into the cache, so a read of sector 1 would be a hit; DOS reads on:
+      // sector 2 misses and the capture fills the rest of the track
+      run(CMD_READ, 30, 0, 1, 0, 2, 18, "READ C30 H0 s2 after the write", 1500.0);
+      check(err == E_OK && valid == 18'h3FFFF && crcerr == 0, "read of the next sector after the write: the whole track captured, 18 valid");
+      for (int s = 1; s <= 18; s++) copy_check(s, 30, 0);
+
+      // --- three consecutive sectors back to back (a DOS multi-sector write), then a read before the verify ---
+      write_sector(6, 30, 0, 1, 4, E_OK, "WRITE C30 H0 s6");
+      t0 = $realtime;
+      write_sector(7, 30, 0, 1, 4, E_OK, "WRITE C30 H0 s7");
+      write_sector(8, 30, 0, 1, 4, E_OK, "WRITE C30 H0 s8");
+      t1 = $realtime - t0;
+      check(t1 < 60.0e6, $sformatf("sectors 7 and 8 written %0.1f ms after sector 6 (same revolution, < 60 ms)", t1 / 1.0e6));
+      check(vfy_pend, "three verifies pending");
+      run(CMD_READ, 30, 0, 1, 0, 7, 18, "READ C30 H0 s7 right after writing it", 1500.0);
+      check(err == E_OK && valid[6], "read of a just-written sector: captured");
+      copy_check(7, 30, 0);
+      wait_verify("WRITE C30 H0 s6..8", 0);
+      run(CMD_READ, 30, 0, 1, 1, 1, 18, "READ C30 H0 forced", 1500.0);
+      check(err == E_OK && valid == 18'h3FFFF && crcerr == 0, "forced re-read: all 18 valid after 4 writes");
+      for (int s = 1; s <= 18; s++) copy_check(s, 30, 0);
+
+      // --- a write the drive corrupts: the background verify fails, the flag clears ---
+      model.corrupt_next = 1;
+      write_sector(12, 30, 0, 1, 5, E_OK, "WRITE C30 H0 s12 (corrupted by the drive)");
+      wait_verify("corrupted write", 1);
+      check(!valid[11], "corrupted sector: slot stays invalid");
+      pat_tbl[30][0][12] = 0;
+      @(posedge clk); vfy_clr = 1; @(posedge clk); vfy_clr = 0; #100;
+      check(!vfy_fail, "vfy_clr clears the failure");
+      write_sector(12, 30, 0, 1, 6, E_OK, "WRITE C30 H0 s12 again");
+      wait_verify("rewrite of sector 12", 0);
+      copy_check(12, 30, 0);
+
+      // --- a seek waits for the pending verify ---
+      write_sector(2, 30, 0, 1, 7, E_OK, "WRITE C30 H0 s2");
+      check(vfy_pend, "verify pending before the seek");
+      steps0 = model.model_steps;
+      read_track_check(31, 0, 1, 18, "READ C31 H0 right after a write on C30");
+      check(!vfy_pend && !vfy_fail, "the verify of C30 s2 completed before the head moved");
+      check(model.model_steps - steps0 == 1, "one step to cylinder 31");
+      run(CMD_READ, 30, 0, 1, 0, 2, 18, "READ C30 H0 s2", 1500.0);
+      check(err == E_OK && valid[1], "C30 s2 reads back");
+      copy_check(2, 30, 0);
+
+      // --- a sector the track does not have, no disk ---
+      run(CMD_WRITE, 30, 0, 0, 0, 3, 0, "WRITE at the DD rate on the HD disk", 1500.0);
+      check(err == E_NO_IDAM, $sformatf("write at the wrong rate: err %0d (3)", err));
+      model.eject();
+      #10us;
+      @(posedge clk); chg_clr = 1; @(posedge clk); chg_clr = 0;
+      run(CMD_WRITE, 30, 0, 1, 0, 3, 0, "WRITE with no disk", 1500.0);
+      check(err == E_NO_INDEX, $sformatf("write with no disk: err %0d (1)", err));
+
+      // --- the DD disk at 250 kbit/s: one sector, a sector after a side switch, a missing sector ---
+      model.insert(0, 0);
+      model.bad_id = 0; model.bad_data = 0;
+      run(CMD_PROBE, 0, 0, 0, 0, 0, 0, "PROBE (clean DD)", 10.0);
+      @(posedge clk); chg_clr = 1; @(posedge clk); chg_clr = 0;
+      run(CMD_DETECT, 0, 0, 0, 0, 0, 0, "DETECT (clean DD)", 1500.0);
+      check(det_dd && !det_hd && det_max_r == 9, "clean DD detected");
+      read_track_check(0, 0, 0, 9, "READ C0 H0 DD before writing");
+      write_sector(3, 0, 0, 0, 8, E_OK, "WRITE C0 H0 s3 DD");
+      check(f_density === 1'b0, "DENSITY = G_DENSITY_DD while writing at 250 kbit/s");
+      wait_verify("WRITE C0 H0 s3 DD", 0);
+      write_sector(9, 0, 1, 0, 9, E_OK, "WRITE C0 H1 s9 DD (side switch)");
+      wait_verify("WRITE C0 H1 s9 DD", 0);
+      run(CMD_WRITE, 0, 1, 0, 0, 12, 0, "WRITE C0 H1 s12 on a 9-sector track", 1500.0);
+      check(err == E_NO_SECTOR, $sformatf("write of sector 12 of 9: err %0d (9)", err));
+      run(CMD_READ, 0, 0, 0, 1, 1, 9, "READ C0 H0 DD forced", 1500.0);
+      check(err == E_OK && valid == 18'h001FF, "DD C0 H0 after the write: 9 valid");
+      for (int s = 1; s <= 9; s++) copy_check(s, 0, 0);
+      run(CMD_READ, 0, 1, 0, 1, 1, 9, "READ C0 H1 DD forced", 1500.0);
+      check(err == E_OK && valid == 18'h001FF, "DD C0 H1 after the write: 9 valid");
+      for (int s = 1; s <= 9; s++) copy_check(s, 0, 1);
+      check(!vfy_pend && !vfy_fail, "end of the write tests: nothing pending, nothing failed");
+      $display("FLP writes: %0d recorded by the drive", model.writes);
 
       // --- disable ---
       enable = 0;

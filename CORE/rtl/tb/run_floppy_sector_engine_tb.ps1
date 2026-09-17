@@ -1,4 +1,4 @@
-# xsim run of floppy_sector_engine_tb: VHDL DUT (CORE/vhdl/floppy_sector_engine.vhd with floppy_drive_if.vhd
+# xsim run of floppy_sector_engine_tb: VHDL DUT (CORE/vhdl/floppy_sector_engine.vhd with floppy_drive_if.vhd, floppy_mfm_writer.vhd
 # and floppy_mfm_reader.vhd, XPM block RAM) against the SV drive model floppy_drive_model.sv: detect, seek,
 # track capture at both rates, COPY into the block buffer, cache hits, motor timer, disk change, probe,
 # no-disk timeouts (docs/floppy.md, phase 2).
@@ -17,7 +17,7 @@ Set-Location $work
 
 & "$bin\xvhdl.bat" --work xpm "$vivado\data\ip\xpm\xpm_VCOMP.vhd" | Out-Null
 & "$bin\xvlog.bat" -sv --work xpm "$vivado\data\ip\xpm\xpm_cdc\hdl\xpm_cdc.sv" "$vivado\data\ip\xpm\xpm_memory\hdl\xpm_memory.sv" | Out-Null
-& "$bin\xvhdl.bat" -2008 "$core\vhdl\floppy_drive_if.vhd" "$core\vhdl\floppy_mfm_reader.vhd" "$core\vhdl\floppy_sector_engine.vhd"
+& "$bin\xvhdl.bat" -2008 "$core\vhdl\floppy_drive_if.vhd" "$core\vhdl\floppy_mfm_reader.vhd" "$core\vhdl\floppy_mfm_writer.vhd" "$core\vhdl\floppy_sector_engine.vhd"
 if ($LASTEXITCODE -ne 0) { Write-Output "FLP RESULT: FAIL (DUT does not compile)"; exit 1 }
 & "$bin\xvlog.bat" -sv "$here\floppy_drive_model.sv" "$here\floppy_sector_engine_tb.sv"
 if ($LASTEXITCODE -ne 0) { Write-Output "FLP RESULT: FAIL (bench does not compile)"; exit 1 }

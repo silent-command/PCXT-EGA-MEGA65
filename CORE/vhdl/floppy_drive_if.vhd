@@ -9,6 +9,8 @@
 --     INDEX is debounced over four samples (80 ns), RDATA over three (60 ns) and the falling edge of the
 --     filtered RDATA is the flux event (mega65-core machine.vhdl:885-895, mfm_gaps.vhdl:60);
 --   * TRACK0 / WPT / DSKCHG are reported as active-high levels;
+--   * WRITE GATE / WRITE DATA (phase 3) come from floppy_mfm_writer through the engine as active-high levels
+--     and are only inverted here; WRITE GATE is forced inactive while the drive is not selected;
 --   * the step engine: STEP low for G_STEP_PULSE_CYCLES (12 us, mega65-core 12.3 us), no next pulse within
 --     G_STEP_RATE_CYCLES (3 ms), no pulse within C_DIR_SETUP_CYCLES (10 us) of a DIR change. The caller
 --     raises step_go_i for one clock while step_ready_o is '1'; stepdir_out_i = '1' steps out towards
@@ -40,6 +42,8 @@ entity floppy_drive_if is
       stepdir_out_i     : in    std_logic;        -- 1 = step out (towards track 0), 0 = step in
       step_go_i         : in    std_logic;        -- one pulse per step, only while step_ready_o
       step_ready_o      : out   std_logic;
+      wgate_i           : in    std_logic := '0'; -- WRITE GATE (phase 3, floppy_mfm_writer)
+      wdata_i           : in    std_logic := '0'; -- WRITE DATA pulse
 
       -- drive status, active high, clk_i domain
       index_edge_o      : out   std_logic;        -- one pulse per INDEX assertion
@@ -108,8 +112,8 @@ begin
    f_density_o <= density_i;
    f_stepdir_o <= stepdir_out_i;
    f_step_o    <= step_n;
-   f_wdata_o   <= '1';                       -- never (read path only)
-   f_wgate_o   <= '1';
+   f_wdata_o   <= not wdata_i;               -- the spike leaves both at their inactive defaults
+   f_wgate_o   <= not (wgate_i and select_i);
 
    p_sync : process (clk_i)
    begin

@@ -46,12 +46,12 @@
 -- Internal floppy drive (docs/floppy.md, floppy_sector_engine.vhd): the firmware's flpdrv.asm drives the
 -- sector engine through 4k window 0xFFFD of device G_DEV_PCXT (engine in the core clock, registers here
 -- in the QNICE clock):
---   write 0: command (bits 3..0: 1 DETECT, 2 READ_TRACK, 3 COPY, 4 PROBE, 5 MOTOR_OFF); the write starts it
+--   write 0: command (bits 3..0: 1 DETECT, 2 READ_TRACK, 3 COPY, 4 PROBE, 5 MOTOR_OFF, 6 WRITE_SECTOR); the write starts it
 --   write 1: cylinder (7..0), head (8), rate 500 kbit/s (9), force (10)
 --   write 2: sector R (4..0), sectors per track (12..8)
 --   write 3: control: bit 0 enable (level), bit 1 clear the sticky disk-change flag (self-clearing),
 --            bit 2 block error (level, to mgmt_bridge: the block the firmware acknowledges next carries
---            no data, see flp_blk_err_o)
+--            no data, see flp_blk_err_o), bit 3 clear the verify-failed flag (self-clearing)
 --   read  0: status: 15 busy, 14 cache valid, 13 disk change (live line), 12 index seen, 11 motor on,
 --            10 track 0, 9 disk change (sticky), 8 write protect, 7..0 error code of the last command
 --   read  1: detect result: 9 DD found, 8 HD found, 7..0 largest sector number
@@ -59,6 +59,8 @@
 --   read  4: cached cylinder (15..8), cache rate (5), cache head (4), CRC-error 18/17 (3..2), valid 18/17 (1..0)
 --   read  5: engine state (15..8), head position (7..0)
 --   read  6..8: index / good ID / good data counters (live, debug), 9: steps, 10: last C H, 11: last R N
+--   read  12: write verify (live): bit 0 a written sector still awaits its read-back, bit 1 a read-back
+--             failed (sticky until control bit 3)
 -- Handshake: the command write toggles a request into the core clock (one cmd_valid pulse there, the
 -- arguments were written before and are stable); the engine's completion toggles an acknowledge back,
 -- so bit 15 (busy) is set by the write itself and clears only after the command ended - no race for a
@@ -107,10 +109,11 @@ entity rom_loader is
       flp_arg1_o       : out std_logic_vector(15 downto 0);
       flp_enable_o     : out std_logic;
       flp_chg_clr_o    : out std_logic;                        -- one-clock pulse
+      flp_vfy_clr_o    : out std_logic;                        -- one-clock pulse
       flp_blk_err_o    : out std_logic;                        -- level, for mgmt_bridge
       flp_busy_i       : in  std_logic := '0';
       flp_res_i        : in  std_logic_vector(95 downto 0) := (others => '0');   -- result words 0..5, word 0 in 15..0
-      flp_live_i       : in  std_logic_vector(6 downto 0)  := (others => '0');   -- wp, chg sticky, track0, motor, index seen, chg live, cache valid
+      flp_live_i       : in  std_logic_vector(8 downto 0)  := (others => '0');   -- wp, chg sticky, track0, motor, index seen, chg live, cache valid, verify pending, verify failed
       flp_dbg_i        : in  std_logic_vector(95 downto 0) := (others => '0');   -- debug words 6..11
 
       -- Core side (pcxt_core ROM download port, clk_chipset domain)
@@ -164,8 +167,9 @@ architecture rtl of rom_loader is
    signal q_flp_ack_q   : std_logic := '0';
    signal q_flp_busy    : std_logic;
    signal q_flp_clr_tgl : std_logic := '0';                 -- disk-change clear toggle
+   signal q_flp_vclr_tgl : std_logic := '0';                -- verify-fail clear toggle
    signal q_flp_res     : std_logic_vector(95 downto 0) := (others => '0');
-   signal q_flp_live    : std_logic_vector(6 downto 0);
+   signal q_flp_live    : std_logic_vector(8 downto 0);
    signal q_flp_rd      : std_logic_vector(15 downto 0);
    -- floppy engine, core side
    signal c_flp_req     : std_logic;
@@ -174,6 +178,8 @@ architecture rtl of rom_loader is
    signal c_flp_busy_q  : std_logic := '0';
    signal c_flp_clr     : std_logic;
    signal c_flp_clr_q   : std_logic := '0';
+   signal c_flp_vclr    : std_logic;
+   signal c_flp_vclr_q  : std_logic := '0';
    signal c_flp_pend    : std_logic := '0';                 -- command issued, completion not yet seen
    signal c_flp_cmd_q   : std_logic := '0';
    signal q_index       : std_logic_vector(7 downto 0);
@@ -303,6 +309,9 @@ begin
                               if qnice_dev_data_i(1) = '1' then
                                  q_flp_clr_tgl <= not q_flp_clr_tgl;
                               end if;
+                              if qnice_dev_data_i(3) = '1' then
+                                 q_flp_vclr_tgl <= not q_flp_vclr_tgl;
+                              end if;
                when others => null;
             end case;
          end if;
@@ -333,6 +342,7 @@ begin
                flp_dbg_i(63 downto 48)                   when qnice_dev_addr_i(3 downto 0) = "1001" else
                flp_dbg_i(79 downto 64)                   when qnice_dev_addr_i(3 downto 0) = "1010" else
                flp_dbg_i(95 downto 80)                   when qnice_dev_addr_i(3 downto 0) = "1011" else
+               x"000" & "00" & q_flp_live(8) & q_flp_live(7) when qnice_dev_addr_i(3 downto 0) = "1100" else
                x"EEEE";
 
    i_flp_req_sync : xpm_cdc_single
@@ -347,6 +357,10 @@ begin
       generic map (DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
       port map (src_clk => qnice_clk_i, src_in => q_flp_clr_tgl, dest_clk => core_clk_i, dest_out => c_flp_clr);
 
+   i_flp_vclr_sync : xpm_cdc_single
+      generic map (DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
+      port map (src_clk => qnice_clk_i, src_in => q_flp_vclr_tgl, dest_clk => core_clk_i, dest_out => c_flp_vclr);
+
    i_flp_enable_sync : xpm_cdc_single
       generic map (DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
       port map (src_clk => qnice_clk_i, src_in => q_flp_enable, dest_clk => core_clk_i, dest_out => flp_enable_o);
@@ -356,7 +370,7 @@ begin
       port map (src_clk => qnice_clk_i, src_in => q_flp_blk_err, dest_clk => core_clk_i, dest_out => flp_blk_err_o);
 
    i_flp_live_sync : xpm_cdc_array_single
-      generic map (WIDTH => 7, DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
+      generic map (WIDTH => 9, DEST_SYNC_FF => 3, SRC_INPUT_REG => 0)
       port map (src_clk => core_clk_i, src_in => flp_live_i, dest_clk => qnice_clk_i, dest_out => q_flp_live);
 
    -- core side: one cmd pulse per request toggle; the acknowledge toggles once the engine has been
@@ -366,8 +380,13 @@ begin
       if rising_edge(core_clk_i) then
          flp_cmd_o     <= '0';
          flp_chg_clr_o <= '0';
+         flp_vfy_clr_o <= '0';
          c_flp_req_q   <= c_flp_req;
          c_flp_clr_q   <= c_flp_clr;
+         c_flp_vclr_q  <= c_flp_vclr;
+         if c_flp_vclr /= c_flp_vclr_q then
+            flp_vfy_clr_o <= '1';
+         end if;
          c_flp_busy_q  <= flp_busy_i;
          c_flp_cmd_q   <= flp_cmd_o;
          if c_flp_clr /= c_flp_clr_q then
@@ -384,9 +403,12 @@ begin
             c_flp_pend <= '0';
          end if;
          if core_rst_i = '1' then
-            c_flp_req_q <= c_flp_req;
-            c_flp_clr_q <= c_flp_clr;
-            c_flp_ack   <= '0';
+            c_flp_req_q   <= c_flp_req;
+            c_flp_clr_q   <= c_flp_clr;
+            c_flp_vclr_q  <= c_flp_vclr;
+            flp_chg_clr_o <= '0';
+            flp_vfy_clr_o <= '0';
+            c_flp_ack    <= '0';
             c_flp_pend  <= '0';
             flp_cmd_o   <= '0';
          end if;
