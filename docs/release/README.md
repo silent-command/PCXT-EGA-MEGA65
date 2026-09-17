@@ -74,6 +74,13 @@ lacks:
   (XT build) with the XTIDE Universal BIOS as a separate option ROM; it boots
   DOS 3.30 and FreeDOS and reads 1.44 MB images.
 
+- Joystick with the alternative 8088 BIOS: the port works (verified with a
+  digital stick: axes, centre and fire), but that BIOS never sets the "game
+  adapter installed" bit in the BIOS equipment word, and games that trust it
+  (Alley Cat, for one) refuse the joystick. Mount `pcxt/joytest.img` in
+  Drive A and run `A:SETJOY` before the game, or put it in AUTOEXEC.BAT.
+  `A:JOYTEST` on the same image shows the raw port readings.
+
 - Mouse: a Commodore 1351 or an Amiga mouse in joystick port 1 appears as a
   Microsoft serial mouse on COM1 when enabled in Input Settings; load a
   serial mouse driver such as CTMOUSE in DOS. USB mice are not supported.

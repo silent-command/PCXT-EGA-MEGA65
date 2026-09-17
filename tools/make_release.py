@@ -11,6 +11,7 @@ Produces release/PCXT-EGA-MEGA65-<version>/ containing
   pcxt/README.txt          what else goes into /pcxt and where to get it
   pcxt/bios-hd-floppy/     8088_bios XT build + XTIDE: alternative BIOS with
                            1.2 MB / 1.44 MB floppy support (GPL)
+  pcxt/joytest.img         JOYTEST.COM + SETJOY.COM (game port test, BIOS bit)
   pcxt/freedos.vhd         only with --with-hd-image (from upstream hd_image.zip)
   README.md                installation, menu, keyboard, limitations
   LICENSE, VERSION.txt
@@ -91,6 +92,9 @@ def main():
     hd.mkdir()
     for src in ("pcxt-xt.rom", "xtide.rom"):
         shutil.copy2(ROOT / "sdcard" / "bios" / src, hd / src)
+
+    # joystick test / BIOS equipment-bit floppy (see README, joystick note)
+    shutil.copy2(ROOT / "tools" / "joytest" / "joytest.img", rel / "pcxt" / "joytest.img")
 
     if a.with_hd_image:
         z = UPSTREAM / "games" / "PCXT" / "hd_image.zip"
