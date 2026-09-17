@@ -164,8 +164,8 @@ port (
    main_pot2_y_i           : in  std_logic_vector(7 downto 0);
    main_rtc_i              : in  std_logic_vector(64 downto 0);
 
-   -- Ethernet PHY pins (PCXT-EGA addition: CORE/vhdl/eth_phy_spike.vhd; KSZ8081RND in RMII mode on
-   -- the R6). Passed through raw by top_mega65-r6.vhd, the spike owns their clocking and timing.
+   -- Ethernet PHY pins (PCXT-EGA addition: CORE/vhdl/eth_mac.vhd; KSZ8081RND in RMII mode on
+   -- the R6). Passed through raw by top_mega65-r6.vhd, the MAC owns their clocking and timing.
    eth_clock_o             : out   std_logic;
    eth_led2_o              : out   std_logic;
    eth_mdc_o               : out   std_logic;
@@ -250,7 +250,7 @@ signal clk_25                 : std_logic;
 signal clk_14                 : std_logic;
 signal clk_locked             : std_logic;
 signal video_rst              : std_logic;
-signal clk_50_ps              : std_logic;               -- 50 MHz +90 deg: Ethernet MAC (eth_phy_spike.vhd)
+signal clk_50_ps              : std_logic;               -- 50 MHz +90 deg: Ethernet MAC (eth_mac.vhd)
 signal rst_50_ps              : std_logic;
 
 -- ROM download stream (rom_loader.vhd -> main.vhd), main_clk domain
@@ -325,11 +325,19 @@ signal main_dbg_vsync         : std_logic_vector(15 downto 0);
 signal main_dbg_keys          : std_logic_vector(15 downto 0);
 signal main_dbg_flags         : std_logic_vector(7 downto 0);
 
--- Ethernet spike status words (QNICE clock domain, already crossed inside eth_phy_spike):
--- " erx=" {rx_frames, rx_crc_ok}, " etx=" {rx_to_us, tx_frames}, " eth=" {flags, last EtherType}
-signal qnice_eth_stat_a       : std_logic_vector(15 downto 0);
-signal qnice_eth_stat_b       : std_logic_vector(15 downto 0);
-signal qnice_eth_stat_c       : std_logic_vector(15 downto 0);
+-- NE1000 Ethernet card (docs/ethernet.md): the MAC (eth_mac.vhd, PHY pins, clk_50_ps) exchanges byte
+-- streams with the card inside main.vhd in the main_clk domain. The station address is locally
+-- administered for now; reading the MEGA65's own MAC from the SD card configuration comes later,
+-- which is why it is a port of main and not a generic there.
+constant C_ETH_MAC_ADDR       : std_logic_vector(47 downto 0) := x"024D36350001";
+constant C_ETH_ENABLE         : std_logic := '1';              -- OSM item to follow
+signal main_eth_rx_empty      : std_logic;
+signal main_eth_rx_rd         : std_logic;
+signal main_eth_rx_data       : std_logic_vector(8 downto 0);
+signal main_eth_tx_full       : std_logic;
+signal main_eth_tx_wr         : std_logic;
+signal main_eth_tx_data       : std_logic_vector(8 downto 0);
+signal main_eth_tx_done       : std_logic;
 
 begin
 
@@ -524,17 +532,28 @@ begin
          pot1_x_i             => main_pot1_x_i,
          pot1_y_i             => main_pot1_y_i,
          pot2_x_i             => main_pot2_x_i,
-         pot2_y_i             => main_pot2_y_i
+         pot2_y_i             => main_pot2_y_i,
+
+         -- NE1000 Ethernet card: enable, station address, MAC streams (i_eth_mac below)
+         eth_enable_i         => C_ETH_ENABLE,
+         eth_mac_addr_i       => C_ETH_MAC_ADDR,
+         eth_rx_empty_i       => main_eth_rx_empty,
+         eth_rx_rd_o          => main_eth_rx_rd,
+         eth_rx_data_i        => main_eth_rx_data,
+         eth_tx_full_i        => main_eth_tx_full,
+         eth_tx_wr_o          => main_eth_tx_wr,
+         eth_tx_data_o        => main_eth_tx_data,
+         eth_tx_done_i        => main_eth_tx_done
       ); -- i_main
 
    ---------------------------------------------------------------------------------------------
-   -- Ethernet PHY spike (PCXT-EGA addition, see eth_phy_spike.vhd): PHY reset + MDIO, RMII receive
-   -- counters, one broadcast ARP request per second. The PHY is clocked with the 50 MHz chipset
-   -- clock (forwarded through an ODDR inside), the MAC runs on its +90 degree copy. Its counters
-   -- reach the serial status line through rom_loader's dbg_a/b/c readback (" erx=", " etx=", " eth=").
-   -- Reset is the MMCM lock only, so the PHY is not re-reset by M2M or core resets.
+   -- Ethernet MAC (PCXT-EGA addition, see eth_mac.vhd): PHY reset + MDIO, RMII receive and transmit
+   -- engines with dual-clock FIFOs towards the NE1000 card inside main.vhd. The PHY is clocked with
+   -- the 50 MHz chipset clock (forwarded through an ODDR inside), the MAC runs on its +90 degree copy,
+   -- the card side of the FIFOs is main_clk. Reset is the MMCM lock only, so the PHY is not re-reset
+   -- by M2M or core resets (the card is, through the chipset reset in main.vhd).
    ---------------------------------------------------------------------------------------------
-   i_eth_spike : entity work.eth_phy_spike
+   i_eth_mac : entity work.eth_mac
       port map (
          clk_ref_i         => main_clk,
          clk_i             => clk_50_ps,
@@ -549,12 +568,21 @@ begin
          eth_txd_o         => eth_txd_o,
          eth_txen_o        => eth_txen_o,
          eth_led2_o        => eth_led2_o,
-         stat_clk_i        => qnice_clk_i,
-         stat_a_o          => qnice_eth_stat_a,
-         stat_b_o          => qnice_eth_stat_b,
-         stat_c_o          => qnice_eth_stat_c,
-         rx_last_src_mac_o => open
-      ); -- i_eth_spike
+         sys_clk_i         => main_clk,
+         sys_rst_i         => main_rst,
+         rx_rd_i           => main_eth_rx_rd,
+         rx_data_o         => main_eth_rx_data,
+         rx_empty_o        => main_eth_rx_empty,
+         tx_wr_i           => main_eth_tx_wr,
+         tx_data_i         => main_eth_tx_data,
+         tx_full_o         => main_eth_tx_full,
+         tx_done_o         => main_eth_tx_done,
+         link_up_o         => open,
+         dbg_rx_frames_o   => open,
+         dbg_rx_crc_ok_o   => open,
+         dbg_tx_frames_o   => open,
+         dbg_phy_o         => open
+      ); -- i_eth_mac
 
    ---------------------------------------------------------------------------------------------
    -- Audio and video settings (QNICE clock domain)
@@ -688,12 +716,9 @@ begin
          rom_addr_o        => main_rom_addr,
          rom_data_o        => main_rom_data,
          rom_wait_i        => main_rom_wait,
-         -- Ethernet spike status on the serial line (m2m-rom.asm " erx=", " etx=", " eth=").
-         -- Originals, to restore once the spike is retired (with the " bist=", " req=", " hdd=" strings):
-         --    dbg_a_i => main_dbg_bus_reads, dbg_b_i => main_dbg_vsync, dbg_c_i => main_dbg_keys
-         dbg_a_i           => qnice_eth_stat_a,
-         dbg_b_i           => qnice_eth_stat_b,
-         dbg_c_i           => qnice_eth_stat_c,
+         dbg_a_i           => main_dbg_bus_reads,
+         dbg_b_i           => main_dbg_vsync,
+         dbg_c_i           => main_dbg_keys,
          dbg_flags_i       => main_dbg_flags
       ); -- i_rom_loader
    --
