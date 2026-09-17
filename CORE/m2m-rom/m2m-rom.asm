@@ -387,9 +387,14 @@ DBG_STR_2       .ASCII_W " drop="
 DBG_STR_3       .ASCII_W " sum0="
 DBG_STR_4       .ASCII_W " sum3="
 DBG_STR_5       .ASCII_W " sum2="
-DBG_STR_6       .ASCII_W " bist="
-DBG_STR_7       .ASCII_W " req="
-DBG_STR_8       .ASCII_W " hdd="
+; Floppy spike (docs/floppy.md, CORE/vhdl/floppy_phy_spike.vhd): the three words are the spike's status
+; words for its duration. The originals, to restore with the dbg_a/b/c_i port map in mega65.vhd:
+;   DBG_STR_6       .ASCII_W " bist="
+;   DBG_STR_7       .ASCII_W " req="
+;   DBG_STR_8       .ASCII_W " hdd="
+DBG_STR_6       .ASCII_W " fidx="
+DBG_STR_7       .ASCII_W " fchr="
+DBG_STR_8       .ASCII_W " fst="
 DBG_STRS        .DW DBG_STR_0, DBG_STR_1, DBG_STR_2, DBG_STR_3
                 .DW DBG_STR_4, DBG_STR_5, DBG_STR_6, DBG_STR_7
                 .DW DBG_STR_8
