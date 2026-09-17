@@ -214,6 +214,19 @@ architecture rtl of mem_backend is
    signal hr_rst_sync    : std_logic := '1';
    signal rst_all        : std_logic;
 
+   -- Reads that were accepted before rst_all rose can never be answered by
+   -- the HyperRAM side (its FIFO, arbiter and controller forget them). The
+   -- byte-side master is the chipset's KFSDRAM (CORE/rtl/overlay/KFSDRAM.sv),
+   -- which the reset button does NOT reset (RAM.sv/KFSDRAM only see the clock
+   -- lock reset, so the ROM presence latches survive a core reset); once it has
+   -- had a read accepted it waits for readdatavalid for ever. Leaving out_count
+   -- to be cleared silently therefore hangs the CPU on its first RAM access
+   -- after the reset - before POST reprograms the EGA, which stays on whatever
+   -- the reset left (black or bars). So the outstanding reads are drained with
+   -- one dummy beat each (data FF) while the reset is active; the CPU is in
+   -- reset at the same time, so the data is never used.
+   signal flush_valid    : std_logic := '0';
+
    -- one read at a time into the cache (G_CACHE only, see gen_cache)
    signal c_read         : std_logic;
    signal c_waitrequest  : std_logic;
@@ -485,12 +498,22 @@ begin
    end process;
 
    p_out : process (clk_i)
-      variable v_push : boolean;
-      variable v_pop  : boolean;
+      variable v_push  : boolean;
+      variable v_real  : boolean;
+      variable v_flush : boolean;
+      variable v_pop   : boolean;
    begin
       if rising_edge(clk_i) then
-         v_push := (hyper_accept and avm_read_i) = '1';
-         v_pop  := s_readdatavalid = '1' and bist_active = '0';
+         v_push  := (hyper_accept and avm_read_i) = '1';          -- never while rst_all
+         v_real  := s_readdatavalid = '1' and bist_active = '0';
+         -- reset with reads outstanding: answer them with dummy beats, one per clock
+         v_flush := rst_all = '1' and out_count /= 0 and not v_real;
+         v_pop   := v_real or v_flush;
+         if v_flush then
+            flush_valid <= '1';
+         else
+            flush_valid <= '0';
+         end if;
          if v_push then
             out_lsb <= out_lsb(C_OUT_MAX-2 downto 0) & addr(0);
          end if;
@@ -509,7 +532,7 @@ begin
          bios_ok_q   <= bios_ok;
 
          if rst_all = '1' then
-            out_count   <= 0;
+            -- out_count is not cleared here: v_flush drains it beat by beat
             rom_valid_q <= '0';
             none_q      <= '0';
          end if;
@@ -521,11 +544,11 @@ begin
    dbg_hwr_o <= bist_fadr;                                -- first mismatch: byte address (15..0)
 
    -- the oldest outstanding read is at index out_count-1 (shift register)
-   avm_readdatavalid_o <= rom_valid_q or none_q or (s_readdatavalid and not bist_active);
+   avm_readdatavalid_o <= rom_valid_q or none_q or flush_valid or (s_readdatavalid and not bist_active);
    avm_readdata_o <= q_ega   when rom_valid_q = '1' and sel_q(0) = '1' else
                      q_xtide when rom_valid_q = '1' and sel_q(1) = '1' else
                      q_bios  when rom_valid_q = '1' and sel_q(2) = '1' and bios_ok_q = '1' else
-                     x"FF"   when none_q = '1' or rom_valid_q = '1' else   -- window byte outside the image
+                     x"FF"   when none_q = '1' or rom_valid_q = '1' or flush_valid = '1' else   -- outside the image / read lost in a reset
                      s_readdata(15 downto 8) when out_count > 0 and out_lsb(out_count-1) = '1' else
                      s_readdata(7 downto 0);
 
