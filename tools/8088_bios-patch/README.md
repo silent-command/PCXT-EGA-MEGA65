@@ -10,6 +10,10 @@ joystick answered. Upstream never sets that bit, and games that trust
 INT 11h (Alley Cat, for one) refuse the joystick without it. Version string
 bumped to 1.0.0m so the build is recognisable on screen.
 
+The same diff also adds `sti` to the INT 18h "No ROM BASIC" handler: the
+INT instruction clears IF, so upstream halts with interrupts off there and
+Ctrl+Alt+Del cannot reboot; with interrupts on it can.
+
 ## Rebuild
 ```
 git clone https://github.com/skiselev/8088_bios && cd 8088_bios

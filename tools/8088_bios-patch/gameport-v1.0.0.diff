@@ -1,5 +1,5 @@
 diff --git a/src/bios.asm b/src/bios.asm
-index 7b0a5a0..31b48fe 100644
+index 7b0a5a0..1cf38c5 100644
 --- a/src/bios.asm
 +++ b/src/bios.asm
 @@ -274,6 +274,7 @@ mouse_data	equ	28h	; 8 bytes - mouse data buffer
@@ -18,6 +18,15 @@ index 7b0a5a0..31b48fe 100644
  	call	detect_floppy		; detect floppy drive types
  	call	print_floppy		; print floppy drive types
  
+@@ -1215,6 +1217,8 @@ msg_iochk_nmi:
+ int_18:
+ 	mov	si,msg_no_basic
+ 	call	print
++	sti				; INT cleared IF: let the keyboard
++					; interrupt run so Ctrl+Alt+Del works
+ .1:
+ 	hlt
+ 	jmp	.1
 diff --git a/src/config.inc b/src/config.inc
 index 9fa0ce6..878244c 100644
 --- a/src/config.inc
