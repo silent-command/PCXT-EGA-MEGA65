@@ -158,3 +158,31 @@ the MAC pads; the PHY items listed in eth_phy_spike.vhd; timing closure of the
 whole core with the card in (the card adds one registered entry to the read
 mux and nothing to READY). Then mTCP: `ne1000 0x60 5 0x320`, `dhcp`, `ping`,
 `ftp`.
+
+## First DOS test, 2026-09-17: DHCP works
+Build of commit d6c7987 (WNS +0.146, no violations) on the R6, FreeDOS from
+the hard-disk image, `netdisk.img` in Drive A, `A:\NET`:
+
+```
+Packet driver for NE1000, version 11.5.3
+Packet driver software interrupt is 0x60 (96)
+Interrupt number 0x5 (5)
+I/O port 0x320 (800)
+My Ethernet address is 02:4D:36:35:00:01
+mTCP DHCP Client ... DHCP request sent, attempt 1: Offer received, Acknowledged
+IPADDR 192.168.1.168  NETMASK 255.255.255.0  GATEWAY 192.168.1.1
+NAMESERVER 192.168.1.1  LEASE_TIME 28800 seconds
+Settings written to 'A:\MTCP.CFG'
+```
+
+So the Crynwr driver's probe, PROM read, ring setup and interrupt path all
+work on the first bitstream, and a full DHCP exchange (broadcast discover,
+unicast offer, request, acknowledge) went through the card, the MAC and the
+router. The driver warns that an XT hard disk usually uses IRQ 5; ours does
+not (XT-IDE is polled), but the emulated Sound Blaster does unless its
+"IRQ 7" option is on, so the card needs its own menu setting before release.
+
+Effort so far: physical layer one afternoon, card emulation plus bench one
+day, first DOS test passed on the first build. Remaining: menu (card on/off,
+IRQ), MAC address from the MEGA65's own configuration, ping/FTP/telnet
+verification, release notes.
