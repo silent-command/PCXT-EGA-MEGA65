@@ -133,7 +133,21 @@ entity main is
       pot1_x_i                : in  std_logic_vector(7 downto 0);
       pot1_y_i                : in  std_logic_vector(7 downto 0);
       pot2_x_i                : in  std_logic_vector(7 downto 0);
-      pot2_y_i                : in  std_logic_vector(7 downto 0)
+      pot2_y_i                : in  std_logic_vector(7 downto 0);
+
+      -- NE1000 Ethernet card (docs/ethernet.md): station address and its valid flag from rom_loader.vhd
+      -- (the firmware writes the MEGA65's MAC or the default; the card stays disabled until it has),
+      -- plus the byte streams of the MAC (eth_mac.vhd in mega65.vhd), all in the clk_main_i domain.
+      -- The menu decides whether the card exists at all and which IRQ it uses (osm_eth_* below).
+      eth_enable_i            : in  std_logic;
+      eth_mac_addr_i          : in  std_logic_vector(47 downto 0);
+      eth_rx_empty_i          : in  std_logic;
+      eth_rx_rd_o             : out std_logic;
+      eth_rx_data_i           : in  std_logic_vector(8 downto 0);
+      eth_tx_full_i           : in  std_logic;
+      eth_tx_wr_o             : out std_logic;
+      eth_tx_data_o           : out std_logic_vector(8 downto 0);
+      eth_tx_done_i           : in  std_logic
    );
 end entity main;
 
@@ -249,7 +263,17 @@ architecture synthesis of main is
          led_disk_o                : out std_logic;
          dbg_de_o                  : out std_logic;
          dbg_hb_o                  : out std_logic;
-         dbg_vb_o                  : out std_logic
+         dbg_vb_o                  : out std_logic;
+         ne1000_en_i               : in  std_logic;
+         ne1000_mac_i              : in  std_logic_vector(47 downto 0);
+         ne1000_irq7_i             : in  std_logic;
+         eth_rx_empty_i            : in  std_logic;
+         eth_rx_rd_o               : out std_logic;
+         eth_rx_data_i             : in  std_logic_vector(8 downto 0);
+         eth_tx_full_i             : in  std_logic;
+         eth_tx_wr_o               : out std_logic;
+         eth_tx_data_o             : out std_logic_vector(8 downto 0);
+         eth_tx_done_i             : in  std_logic
       );
    end component pcxt_core;
 
@@ -262,6 +286,8 @@ architecture synthesis of main is
    signal osm_display         : std_logic_vector(2 downto 0);
    signal osm_vga13_tv        : std_logic;
    signal osm_mouse           : std_logic_vector(1 downto 0);
+   signal osm_eth_enable      : std_logic;
+   signal osm_eth_irq7        : std_logic;
    signal mouse_ps2_clk, mouse_ps2_data, mouse_host_clk, mouse_host_data : std_logic;
    signal joy0_vec, joy1_vec  : std_logic_vector(13 downto 0);
    signal core_audio_right    : std_logic_vector(15 downto 0);
@@ -415,6 +441,13 @@ begin
    osm_mouse     <= "10" when osm_control_i(79) = '1' else
                     "01" when osm_control_i(78) = '1' else
                     "00";
+   -- Network: lines 85..87 (off / IRQ 5 / IRQ 7). The NE1000 exists when the menu
+   -- says so and the firmware has delivered its station address (eth_enable_i);
+   -- "Off" makes 320h read FFh and raises nothing. The IRQ choice moves the
+   -- card's interrupt between 8259 inputs 5 and 7, each of which the Sound
+   -- Blaster also uses depending on "Sound Blaster IRQ 7": pick the free one.
+   osm_eth_enable <= (osm_control_i(86) or osm_control_i(87)) and eth_enable_i;
+   osm_eth_irq7   <= osm_control_i(87);
 
    -- MEGA65 mouse port -> emulated PS/2 mouse device for the core's serial-mouse
    -- converter (MSMouseWrapper). Not reset: the converter sends its init
@@ -571,7 +604,19 @@ begin
          led_disk_o                => led_disk_o,
          dbg_de_o                  => raw_de,
          dbg_hb_o                  => raw_hb,
-         dbg_vb_o                  => raw_vb
+         dbg_vb_o                  => raw_vb,
+
+         -- NE1000 at 320h, IRQ 5 or 7 (ne1000.sv inside the chipset), MAC streams from mega65.vhd
+         ne1000_en_i               => osm_eth_enable,
+         ne1000_mac_i              => eth_mac_addr_i,
+         ne1000_irq7_i             => osm_eth_irq7,
+         eth_rx_empty_i            => eth_rx_empty_i,
+         eth_rx_rd_o               => eth_rx_rd_o,
+         eth_rx_data_i             => eth_rx_data_i,
+         eth_tx_full_i             => eth_tx_full_i,
+         eth_tx_wr_o               => eth_tx_wr_o,
+         eth_tx_data_o             => eth_tx_data_o,
+         eth_tx_done_i             => eth_tx_done_i
       ); -- i_pcxt_core
 
    ---------------------------------------------------------------------------
