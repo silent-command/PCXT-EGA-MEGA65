@@ -16,7 +16,7 @@ card; so the core needs a card that a stock DOS packet driver recognises.
    lines the chipset brings out unconnected (Peripherals.sv:440-447,
    pcxt_core.sv:1290 ties interrupt_request to 0).
 3. Integration: I/O decode, IRQ, OSM option, MAC address from the MEGA65's
-   own configuration on the SD card with a menu fallback.
+   own configuration on the SD card with a firmware fallback. DONE, below.
 4. Bring-up with mTCP: DHCP, ping, FTP, then the rest.
 
 ## Spike result, 2026-09-16
@@ -133,18 +133,18 @@ The wire side is the spike bench's KSZ8081/RMII model. Results, all PASS:
   wire; the driver only uses loopback during init and overrun recovery.
 * Port 320h overlaps the MPU-401 at 330h-331h. The MPU-401 is disabled in
   this port (`osm_mpu401_disable_i => '1'`) and wins the read mux if it were
-  not; should it come back, one of them moves. IRQ 5 is shared with the
-  Sound Blaster unless the SB is on IRQ 7 (`osm_sb_irq7_i`); the XT's 8259 is
-  edge-triggered, so sharing is not an option: set the SB to 7 when both are
-  in use.
+  not; should it come back, one of them moves. The card's IRQ is 5 or 7 from
+  the menu (below); each is the Sound Blaster's line in one of its two
+  settings (`osm_sb_irq7_i`), and the XT's 8259 is edge-triggered, so sharing
+  is not an option: the user gives the two devices different lines.
 * mTCP never touches the card: it needs a class 1 (Ethernet) packet driver
   with the default receive mode (own address + broadcast, `rcv_mode_3`), which
   is what the Crynwr driver programs; DHCP/ARP replies arrive as broadcast or
   unicast, both stored. The 1514-byte cases above are the MTU mTCP uses.
-* MAC address: locally administered 02:4D:36:35:00:01 from `C_ETH_MAC_ADDR`
-  in mega65.vhd, delivered to the card on a port (`eth_mac_addr_i`) so the
-  SD-card configuration can feed it later. The driver reports it, `arp -a` on
-  the PC will show it.
+* MAC address: the MEGA65's own from the SD card, or the locally
+  administered 02:4D:36:35:00:01 (see "Menu and MAC address" below);
+  delivered to the card on a port (`eth_mac_addr_i`). The driver reports it,
+  `arp -a` on the PC will show it.
 * Resources (Vivado 2026.1 OOC): `ne1000` 614 LUTs, 495 FFs, 2 RAMB36 (the
   8 KB buffer); `eth_mac` 338 LUTs, 504 FFs, 2 RAMB18 (one tile: the two
   FIFOs). Three tiles in total against the 150 committed before system RAM.
@@ -183,9 +183,9 @@ not (XT-IDE is polled), but the emulated Sound Blaster does unless its
 "IRQ 7" option is on, so the card needs its own menu setting before release.
 
 Effort so far: physical layer one afternoon, card emulation plus bench one
-day, first DOS test passed on the first build. Remaining: menu (card on/off,
-IRQ), MAC address from the MEGA65's own configuration, ping/FTP/telnet
-verification, release notes.
+day, first DOS test passed on the first build. Remaining at that point: menu
+(card on/off, IRQ), MAC address from the MEGA65's own configuration,
+ping/FTP/telnet verification, release notes (all below).
 
 ## File transfer over FTP, 2026-09-17: the second goal, met
 With `FTPSRV` running on the XT (working drive C:), from the PC with the
@@ -200,3 +200,125 @@ XT to this PC time out because of the Windows firewall.
 
 So the SD card is no longer needed to move files: the PC can push and pull
 anything on the XT's hard-disk image over the network.
+
+## Menu and MAC address, 2026-09-17
+The two items between the FTP test and a release. Not yet run on the board
+(no hardware access when this was written); what the benches and the
+assembler could confirm is listed at the end.
+
+### Network submenu
+`CORE/vhdl/config.vhd`: a sixth submenu "Network: %s" (lines 82..89, group
+`OPTM_G_NETWORK` = 22) with the radio group Off / IRQ 5 / IRQ 7 (lines
+85..87, IRQ 5 default) and "Back to main menu". The framework toggles moved
+to lines 91..93 (`C_MENU_*` in mega65.vhd follow), the three groups after
+Network were renumbered, `OPTM_SIZE` is 98 (was 90) and `OPTM_DY` 20. The
+help page lists it. `MENU_HEAP_SIZE` in m2m-rom.asm went from 2048 to 2560
+words (the tables need about 1610 words plus 250 for the `%s` scratch
+strings; the 28k directory heap gives the 512 up).
+
+**The settings file changed size**: `sdcard/m2m/m2mcfg` is now 98 bytes of
+FFh (`M2M/tools/make_config.sh <path> auto` produces the identical file, and
+`tools/make_release.py` writes it from OPTM_SIZE). A card with the old
+90-byte file logs "corrupt config file" and saves nothing until the file is
+replaced; the release notes say so.
+
+Decode (`main.vhd`): `osm_eth_enable = (line 86 or line 87) and
+eth_enable_i`, `osm_eth_irq7 = line 87`. `pcxt_core.sv` gets the new input
+`ne1000_irq7_i` and drives the 8259's external lines as
+`{irq & irq7, 0, irq & ~irq7, 0...}`; Peripherals.sv (overlay, unchanged)
+still ORs bit 7 and bit 5 with the Sound Blaster on whichever line
+`osm_sb_irq7_i` selects, so "IRQ 7" collides with SB-on-IRQ-7 exactly as
+"IRQ 5" collides with SB-on-IRQ-5, and the point of the option is to let the
+user pick the free one. Off drives `ne1000_en_i` low: every read of
+320h..33Fh returns FFh, writes are ignored, `irq` is forced low (ne1000.sv
+`enable`, bench case f). Packet driver: `NE1000 0x60 5 0x320` or
+`NE1000 0x60 7 0x320`.
+
+### MAC address from the MEGA65 configuration sector
+Layout, from mega65-core (`master`, checked 2026-09-17):
+
+* `src/hyppo/syspart.asm`, `syspart_configsector_set`: "the config sector
+  USED to live in the system partition ... we now just officially have the
+  config sector live in sector 1". It is raw sector 1 (LBA 1, 512 bytes) of
+  the SD card, outside any partition, on the card HYPPO booted from (the
+  external slot wins when both hold a card; the M2M framework picks the
+  same way).
+* `syspart_configsector_apply` (the `$D642` "apply" trap the Configure
+  utility calls): `lda $de00 / cmp #$01 / bne syspart_config_invalid`, the
+  same for `$de01`, then `maccopy: lda $de06,x / sta mac_addr_0,x` for
+  x = 5..0. So bytes 0 and 1 are the format version (both 01h) and bytes
+  6..11 the MAC address, byte 6 first on the wire.
+* `src/utilities/mega65_config.s` / `mega65_config.inc` (the Configure
+  utility, "MAC address" option, offset $0006, 6 bytes): `checkMagicBytes`
+  requires byte 1 = `configMagicByte1` (01h) and byte 0 >= `configMagicByte0`
+  (01h); an all-zero sector is initialised with a random MAC that it forces
+  to locally administered unicast (`ORA #$02`, `AND #$FE`). Other fields
+  for reference: byte 2 bit 7 video mode, byte 3 bit 6 audio, byte 4 bit 0
+  F011, byte 5 joystick/mouse bits, byte 15 bit 7 long filenames, bytes
+  $10..$1F default disk image, byte $20 DMAgic revision, byte $22 SID,
+  $1F0..$1F5 the RTC snapshot. No checksum anywhere.
+
+Firmware (`CORE/m2m-rom/m2m-rom.asm`, `ETH_SET_MAC`, called from
+`PREP_START` after the BIOS auto-load has mounted the card and before the
+core leaves reset): `SDB_GUARD_IN` (flush and mark the FAT32 library's
+sector buffer, as the vdrive fast path does), `SYSCALL(sd_r_block)` of LBA 1
+on the raw card (not the FAT32 volume), `SDB_GUARD_OUT`; on an SD error the
+code is logged and the controller reset (errors latch it). Accepts the
+sector when byte 1 = 01h, byte 0 in 01h..FEh, and the six bytes are neither
+all zero nor all FFh and bit 0 of byte 6 (multicast) is clear; otherwise,
+or without a readable card, the default 02:4D:36:35:00:01. Either way the
+log gets `Ethernet MAC: xx:xx:xx:xx:xx:xx (MEGA65 config)` or `(default)`,
+and a rejected sector says why first (`Ethernet: MEGA65 config sector has no
+usable MAC` / `... not readable, SD error nnnn`).
+
+Register block (`CORE/vhdl/rom_loader.vhd`, device 0x0110, 4k window
+0xFFFE, which the auto-loader never reaches and is excluded from the byte
+pairing): word 0..2 = MAC bytes 0/1, 2/3, 4/5 big-endian; word 3 bit 0 =
+valid, bit 1 = source (readback only). The firmware writes the three words
+and then the valid bit. The valid bit crosses to the core clock through an
+`xpm_cdc_single`; the 48 bits are captured there when the synchronised flag
+is seen high and the capture is empty (level-based, so a core reset or a
+firmware rewrite both refill it). `eth_mac_valid_o` gates the card: mega65.vhd
+feeds `eth_mac_valid_o` into main.vhd's `eth_enable_i` and `eth_mac_o` into
+`eth_mac_addr_i`, so the NE1000 does not exist until all six bytes are in
+place, and `eth_mac_o` never changes while valid is high. `C_ETH_MAC_ADDR`
+and `C_ETH_ENABLE` are gone from mega65.vhd; the default lives in the
+firmware (`ETH_DEF_MAC`). Window 0xFFFE reads back the four registers; the
+debug readback in window 0 is unchanged.
+
+### Benches and checks
+* `CORE/rtl/tb/rom_loader_tb.sv` (`run_rom_loader_tb.ps1`): extended with
+  the MAC path, PASS. Valid stays low after the three words alone, rises
+  after the control word with the address correct, the address never changes
+  while valid is high (checked every core clock), the registers read back and
+  the window-0 debug readback is untouched, a write through another device
+  id or the CSR window does not reach the registers, a rewrite (valid low,
+  new words, valid high) ends with the new address, a core reset clears and
+  refills the capture, a QNICE reset (pulsed together with the core reset,
+  as on the board) clears it. The ROM stream cases are unchanged: 592 words
+  delivered, none dropped, none spurious. The only fresh knowledge from the
+  bench: rom_loader resends its last word if QNICE is reset alone after an
+  odd number of words (the request toggle is zeroed); harmless on the board,
+  where QNICE is only ever reset together with the clock-lock reset the
+  loader's core side uses.
+* `run_ne1000_tb.ps1`: 131 checks PASS, the card is unchanged.
+* `make_rom.sh`: assembles; `ETH_SET_MAC` at 0x5E63, `END_OF_ROM` 0x5FB0,
+  below the 0x7000 ROM limit. `config.vhd`: 98 lines in `OPTM_ITEMS`, 98
+  entries in `OPTM_GROUPS` (counted by script).
+* `pcxt_core.sv` (xvlog) and `rom_loader.vhd`, `main.vhd`, `mega65.vhd`
+  (xvhdl -2008 with their packages) analyse without errors.
+
+### What only the board can confirm
+* Whether this MEGA65's SD card actually carries a MAC: the Configure
+  utility writes sector 1 only when the user saves, and a card that was
+  never configured (or a fresh card) has an empty or foreign sector 1, in
+  which case the log says `(default)`. Run the MEGA65 Configure utility once
+  (it offers a random MAC) if a per-machine address is wanted.
+* The menu on the framework's real heap accounting (LOG_HEAP lines in the
+  serial log after the first Help press) and that an old `m2mcfg` is indeed
+  reported and not mis-parsed.
+* IRQ 7 end to end with the Crynwr driver (`NE1000 0x60 7 0x320`) while the
+  Sound Blaster stays on IRQ 5, and the reverse.
+* Timing closure of the whole core with the new decode (one AND gate on the
+  card enable and two on the IRQ lines; the MAC path is register-to-register
+  between two clocks Vivado already times as related).

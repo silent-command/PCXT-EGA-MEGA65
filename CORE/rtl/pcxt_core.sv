@@ -194,11 +194,13 @@ module pcxt_core
     output wire        dbg_de_o,
     output wire        dbg_hb_o,
     output wire        dbg_vb_o,
-    // 3.11 NE1000 Ethernet card (docs/ethernet.md): enable, station address PROM contents and the
-    // MAC streams of eth_mac.vhd (chipset clock, 9-bit FIFO entries, bit 8 = end of frame). The card
-    // itself is inside PERIPHERALS (CORE/rtl/ne1000.sv) at I/O 320h, its interrupt is IRQ 5 below.
+    // 3.11 NE1000 Ethernet card (docs/ethernet.md): enable, station address PROM contents, IRQ choice
+    // and the MAC streams of eth_mac.vhd (chipset clock, 9-bit FIFO entries, bit 8 = end of frame). The
+    // card itself is inside PERIPHERALS (CORE/rtl/ne1000.sv) at I/O 320h; its interrupt goes to IRQ 5
+    // (ne1000_irq7_i = 0) or IRQ 7 (= 1) below, the menu's "Network" setting.
     input  wire        ne1000_en_i,
     input  wire [47:0] ne1000_mac_i,
+    input  wire        ne1000_irq7_i,
     input  wire        eth_rx_empty_i,
     output wire        eth_rx_rd_o,
     input  wire  [8:0] eth_rx_data_i,
@@ -1301,9 +1303,11 @@ module pcxt_core
 		.address_latch_enable               (address_latch_enable),
 	//  .io_channel_check                   (),
 		.io_channel_ready                   (1'b1),
-		// External IRQ lines of the 8259 (Peripherals.sv ORs bit 7 and bit 5 with the Sound Blaster):
-		// IRQ 5 carries the NE1000 (the SB should then sit on IRQ 7, osm_sb_irq7_i).
-		.interrupt_request                  ({2'b00, ne1000_irq, 5'b00000}),
+		// External IRQ lines of the 8259 (Peripherals.sv ORs bit 7 and bit 5 with the Sound Blaster,
+		// on whichever of the two osm_sb_irq7_i selects): the NE1000 drives bit 5 or bit 7 as chosen
+		// in the menu (ne1000_irq7_i). The 8259 is edge-triggered, so the card and the SB must not
+		// share a line; the menu exists so that the user can give each its own.
+		.interrupt_request                  ({ne1000_irq & ne1000_irq7_i, 1'b0, ne1000_irq & ~ne1000_irq7_i, 5'b00000}),
 	//  .io_read_n                          (io_read_n),
 		.io_read_n_ext                      (1'b1),
 	//  .io_read_n_direction                (io_read_n_direction),

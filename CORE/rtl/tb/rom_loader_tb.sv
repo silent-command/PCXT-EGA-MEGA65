@@ -12,6 +12,14 @@
 // XT-IDE devices, with M2M CRTROM CSR-window writes (status / file size in
 // 4k window 0xFFFF) sprinkled in, which must never produce a word.
 //
+// MAC registers (window 0xFFFE of device 0x0110, see rom_loader.vhd): the
+// three address words and the valid bit are written the way the firmware's
+// ETH_SET_MAC does it, and the bench checks that no word is produced, that
+// eth_mac_valid_o stays low until the valid bit, that eth_mac_o then holds
+// the address and never changes while valid is high, that the registers read
+// back, that the other device ids cannot write them, that a rewrite (valid
+// low, new words, valid high) and a core reset both end with a fresh copy.
+//
 // Run with run_rom_loader_tb.ps1 (xsim, mixed language).
 `timescale 1ns / 1ps
 
@@ -37,6 +45,8 @@ module rom_loader_tb;
     wire  [24:0] rom_addr;
     wire  [15:0] rom_data;
     logic        rom_wait = 1'b0;
+    wire  [47:0] eth_mac;
+    wire         eth_mac_valid;
 
     rom_loader #(.G_TIMEOUT(20000), .G_WORD_TIMEOUT(5000)) dut (
         .qnice_clk_i(qnice_clk), .qnice_rst_i(qnice_rst),
@@ -45,8 +55,65 @@ module rom_loader_tb;
         .qnice_dev_data_o(dev_data_o),
         .core_clk_i(core_clk), .core_rst_i(core_rst),
         .rom_download_o(rom_download), .rom_index_o(rom_index), .rom_wr_o(rom_wr),
-        .rom_addr_o(rom_addr), .rom_data_o(rom_data), .rom_wait_i(rom_wait)
+        .rom_addr_o(rom_addr), .rom_data_o(rom_data), .rom_wait_i(rom_wait),
+        .eth_mac_o(eth_mac), .eth_mac_valid_o(eth_mac_valid)
     );
+
+    //------------------------------------------------------------------------
+    // MAC register checks: valid must never be high with a MAC other than the
+    // one expected at that time, and the MAC must not change while valid
+    //------------------------------------------------------------------------
+    integer      mac_errors = 0;
+    logic [47:0] mac_expect = 48'h0;
+    logic        mac_valid_d = 1'b0;
+    logic [47:0] mac_d = 48'h0;
+    always @(posedge core_clk) begin
+        mac_valid_d <= eth_mac_valid;
+        mac_d       <= eth_mac;
+        if (eth_mac_valid && eth_mac !== mac_expect) begin
+            mac_errors <= mac_errors + 1;
+            $display("%0t ERROR MAC: valid with %012h, expected %012h", $time, eth_mac, mac_expect);
+        end
+        if (eth_mac_valid && mac_valid_d && eth_mac !== mac_d) begin
+            mac_errors <= mac_errors + 1;
+            $display("%0t ERROR MAC: changed from %012h to %012h while valid", $time, mac_d, eth_mac);
+        end
+    end
+    task automatic mac_check(input logic exp_valid, input string what);
+        if (eth_mac_valid !== exp_valid) begin
+            mac_errors = mac_errors + 1;
+            $display("%0t ERROR MAC: %s: valid=%0d expected %0d", $time, what, eth_mac_valid, exp_valid);
+        end
+        else $display("%0t MAC ok: %s (valid=%0d mac=%012h)", $time, what, eth_mac_valid, eth_mac);
+    endtask
+    // QNICE readback is combinational on the device id and address
+    task automatic mac_readback_check(input [47:0] mac, input logic valid, input logic src);
+        logic [15:0] exp [0:3];
+        exp[0] = mac[47:32]; exp[1] = mac[31:16]; exp[2] = mac[15:0]; exp[3] = {14'd0, src, valid};
+        for (int r = 0; r < 4; r++) begin
+            dev_id   = 16'h0110;
+            dev_addr = {16'hFFFE, 12'(r)};
+            #1;
+            if (dev_data_o !== exp[r]) begin
+                mac_errors = mac_errors + 1;
+                $display("%0t ERROR MAC readback reg %0d: %04h expected %04h", $time, r, dev_data_o, exp[r]);
+            end
+        end
+        // the debug readback in window 0 is untouched: reg 1 is the delivered-words counter
+        dev_addr = {16'h0000, 12'h001};
+        #1;
+        if (dev_data_o !== dut.c_words_ok) begin
+            mac_errors = mac_errors + 1;
+            $display("%0t ERROR debug readback reg 1: %04h expected %04h", $time, dev_data_o, dut.c_words_ok);
+        end
+    endtask
+    // the firmware's ETH_SET_MAC: three words, then the control word
+    task automatic mac_write(input [15:0] id, input [47:0] mac, input logic valid, input logic src);
+        qnice_write(id, {16'hFFFE, 12'h000}, mac[47:32]);
+        qnice_write(id, {16'hFFFE, 12'h001}, mac[31:16]);
+        qnice_write(id, {16'hFFFE, 12'h002}, mac[15:0]);
+        qnice_write(id, {16'hFFFE, 12'h003}, {14'd0, src, valid});
+    endtask
 
     //------------------------------------------------------------------------
     // Expected words, in order (pushed by the stimulus when it writes the
@@ -151,6 +218,29 @@ module rom_loader_tb;
         core_rst  = 1'b0;
         repeat (20) @(posedge qnice_clk);
 
+        // MAC registers before anything else, as the firmware does it in PREP_START
+        mac_check(1'b0, "before any MAC write");
+        mac_expect = 48'h024D36350001;
+        qnice_write(16'h0110, {16'hFFFE, 12'h000}, 16'h024D);
+        qnice_write(16'h0110, {16'hFFFE, 12'h001}, 16'h3635);
+        qnice_write(16'h0110, {16'hFFFE, 12'h002}, 16'h0001);
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b0, "three words written, no valid bit yet");
+        mac_readback_check(48'h024D36350001, 1'b0, 1'b0);
+        qnice_write(16'h0110, {16'hFFFE, 12'h003}, 16'h0001);      // valid, source = default
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b1, "valid bit written");
+        mac_readback_check(48'h024D36350001, 1'b1, 1'b0);
+        // Neither another device id nor the CSR window reaches the MAC registers.
+        // (Through the EGA id, window 0xFFFE is ordinary ROM data, so only an
+        // even byte is written here: it parks in the low-byte latch and the EGA
+        // stream below overwrites it before any word could form.)
+        qnice_write(16'h0111, {16'hFFFE, 12'h000}, 16'h00DE);
+        csr_write(16'h0110, 12'h003, 16'h0000);
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b1, "other device id / CSR window ignored");
+        mac_readback_check(48'h024D36350001, 1'b1, 1'b0);
+
         // the manual-load protocol writes "loading" first; must not become a low byte
         csr_write(16'h0110, 12'h000, 16'h0001);
 
@@ -173,9 +263,42 @@ module rom_loader_tb;
 
         // wait for the last word to be delivered
         repeat (1000) @(posedge core_clk);
+        mac_check(1'b1, "MAC untouched by the ROM streams");
+
+        // rewrite: valid low, new address (a MEGA65 config one), valid high
+        qnice_write(16'h0110, {16'hFFFE, 12'h003}, 16'h0000);
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b0, "valid cleared");
+        mac_expect = 48'h0E3E7A5B1C2D;
+        mac_write(16'h0110, 48'h0E3E7A5B1C2D, 1'b1, 1'b1);
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b1, "rewritten address");
+        mac_readback_check(48'h0E3E7A5B1C2D, 1'b1, 1'b1);
+
+        // a core reset clears the capture; the address comes back by itself
+        core_rst = 1'b1;
+        repeat (5) @(posedge core_clk);
+        mac_check(1'b0, "core reset");
+        core_rst = 1'b0;
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b1, "after core reset");
+        if (eth_mac !== 48'h0E3E7A5B1C2D) begin mac_errors = mac_errors + 1; $display("ERROR MAC after reset: %012h", eth_mac); end
+
+        // a QNICE reset drops the valid bit (the firmware will write again). On
+        // the board it only ever comes with the clock-lock core reset (main_rst),
+        // which rom_loader needs to re-sync its request toggle, so both are pulsed.
+        qnice_rst = 1'b1;
+        core_rst  = 1'b1;
+        repeat (5) @(posedge qnice_clk);
+        qnice_rst = 1'b0;
+        repeat (5) @(posedge core_clk);
+        core_rst  = 1'b0;
+        repeat (20) @(posedge core_clk);
+        mac_check(1'b0, "after QNICE reset");
+        $display("MAC register checks: errors=%0d", mac_errors);
         $display("words delivered=%0d (expected %0d), errors=%0d, pending=%0d, max QNICE stall=%0d cycles, dropped=%0d, download=%0d",
                  words_rx, words_sent, errors, exp_addr_q.size(), max_stall, dut.c_words_drop, rom_download);
-        if (words_rx == words_sent && errors == 0 && exp_addr_q.size() == 0 && dut.c_words_drop == 0) $display("RESULT: PASS");
+        if (words_rx == words_sent && errors == 0 && exp_addr_q.size() == 0 && dut.c_words_drop == 0 && mac_errors == 0) $display("RESULT: PASS");
         else $display("RESULT: FAIL");
         $finish;
     end

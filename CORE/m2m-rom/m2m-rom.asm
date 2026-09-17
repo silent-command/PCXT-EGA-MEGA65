@@ -119,6 +119,7 @@ PREP_LOAD_IMAGE XOR     R8, R8                  ; no errors
 ;   R9: 0=OK, else error code
 PREP_START      INCRB
                 RSUB    DBG_CORE_STATUS, 1
+                RSUB    ETH_SET_MAC, 1          ; station address for the NE1000
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
@@ -186,6 +187,190 @@ CUSTOM_MSG      XOR     R8, R8
 ; ----------------------------------------------------------------------------
 
 ; Add your core specific constants and strings here
+
+; ----------------------------------------------------------------------------
+; Ethernet station address (docs/ethernet.md): read the MEGA65 MAC from the
+; configuration sector and hand it to the NE1000 through rom_loader.vhd.
+;
+; The MEGA65 keeps its configuration in sector 1 of the SD card, a raw block
+; outside any partition: mega65-core src/hyppo/syspart.asm,
+; syspart_configsector_set (the comment there: the config sector now lives
+; in sector 1), written by the MEGA65 Configure utility
+; (src/utilities/mega65_config.s). Layout: bytes 0 and 1 = format version,
+; both 01h; bytes 6..11 = MAC address (syspart_configsector_apply copies
+; $DE06..$DE0B to mac_addr_0..5). HYPPO uses the sector only if both version
+; bytes are 01h; the utility accepts byte 1 = 01h and byte 0 >= 01h
+; (checkMagicBytes) and, when it generates an address, sets bit 1 of byte 0
+; (locally administered) and clears bit 0 (unicast). We follow the looser
+; rule of the utility and additionally refuse a multicast, all-zero or
+; all-FF address. Anything else, or no readable card, selects the locally
+; administered default 02:4D:36:35:00:01. The sector is read from whichever
+; SD card the framework currently uses (external slot wins), which is also
+; the card HYPPO booted from.
+;
+; rom_loader.vhd, device ETH_DEV, 4k window ETH_WIN_MAC: registers 0..2 take
+; the MAC as three big-endian words (bytes 0/1, 2/3, 4/5); register 3 bit 0
+; is MAC valid (the card is held disabled until it is set), bit 1 records
+; the source for readback (1 = MEGA65 config). The valid bit is written last
+; so that the card can never see a half-written address.
+;
+; Called from PREP_START, i.e. after the BIOS auto-load has mounted the SD
+; card and before the core leaves reset. The raw block read goes through the
+; SDB_GUARD pair of sdblock.asm like the direct reads of the virtual drives,
+; so the FAT32 library learns that its sector buffer was overwritten.
+; ----------------------------------------------------------------------------
+ETH_DEV         .EQU 0x0110                     ; rom_loader.vhd (C_DEV_ROM_PCXT)
+ETH_WIN_MAC     .EQU 0xFFFE                     ; MAC register window
+ETH_CFG_SECTOR  .EQU 1                          ; MEGA65 configuration sector
+ETH_STR_MAC     .ASCII_W "Ethernet MAC: "
+ETH_STR_CFG     .ASCII_W " (MEGA65 config)"
+ETH_STR_DEF     .ASCII_W " (default)"
+ETH_STR_NOSD    .ASCII_W "Ethernet: MEGA65 config sector not readable, SD error "
+ETH_STR_BADCFG  .ASCII_W "Ethernet: MEGA65 config sector has no usable MAC"
+ETH_HEXDIGITS   .ASCII_W "0123456789ABCDEF"
+ETH_DEF_MAC     .DW 0x0002, 0x004D, 0x0036, 0x0035, 0x0000, 0x0001
+
+; ETH_SET_MAC: no input, no output, registers preserved
+ETH_SET_MAC     SYSCALL(enter, 1)
+                SUB     8, SP                   ; SP+0..5: MAC bytes
+                MOVE    SP, R8                  ; SP+6..7: saved device select
+                ADD     6, R8
+                RSUB    SAVE_DEVSEL, 1
+                XOR     R7, R7                  ; R7: 0 = default, 1 = MEGA65 config
+
+                ; read the configuration sector (raw SD card block 1)
+                RSUB    SDB_GUARD_IN, 1         ; FAT32 buffer: flush and mark
+                RBRA    _ETH_DEFAULT, !C        ; card not usable right now
+                MOVE    ETH_CFG_SECTOR, R8      ; LBA low word
+                XOR     R9, R9                  ; LBA high word
+                SYSCALL(sd_r_block, 1)
+                MOVE    R8, R0                  ; R0: error code
+                RSUB    SDB_GUARD_OUT, 1
+                CMP     0, R0
+                RBRA    _ETH_CHECK, Z
+                MOVE    ETH_STR_NOSD, R8        ; log the error and reset the
+                SYSCALL(puts, 1)                ; controller, which latches
+                MOVE    R0, R8                  ; errors (see sdblock.asm)
+                SYSCALL(puthex, 1)
+                SYSCALL(crlf, 1)
+                SYSCALL(sd_reset, 1)
+                RBRA    _ETH_DEFAULT, 1
+
+                ; version bytes: byte 1 = 01h, byte 0 >= 01h (and not FFh)
+_ETH_CHECK      MOVE    1, R8
+                SYSCALL(sd_r_byte, 1)
+                AND     0x00FF, R8
+                CMP     1, R8
+                RBRA    _ETH_BADCFG, !Z
+                XOR     R8, R8
+                SYSCALL(sd_r_byte, 1)
+                AND     0x00FF, R8
+                RBRA    _ETH_BADCFG, Z          ; 00: blank sector
+                CMP     0x00FF, R8
+                RBRA    _ETH_BADCFG, Z          ; FF: erased sector
+
+                ; copy the six MAC bytes (offsets 6..11) to the stack
+                MOVE    SP, R1                  ; R1: destination
+                MOVE    6, R2                   ; R2: byte offset in the sector
+                XOR     R3, R3                  ; R3: OR of all bytes
+                MOVE    0x00FF, R4              ; R4: AND of all bytes
+_ETH_COPY       MOVE    R2, R8
+                SYSCALL(sd_r_byte, 1)
+                AND     0x00FF, R8
+                MOVE    R8, @R1++
+                OR      R8, R3
+                AND     R8, R4
+                ADD     1, R2
+                CMP     12, R2
+                RBRA    _ETH_COPY, !Z
+                CMP     0, R3
+                RBRA    _ETH_BADCFG, Z          ; 00:00:00:00:00:00
+                CMP     0x00FF, R4
+                RBRA    _ETH_BADCFG, Z          ; FF:FF:FF:FF:FF:FF
+                MOVE    @SP, R8
+                AND     0x0001, R8
+                RBRA    _ETH_BADCFG, !Z         ; multicast bit set
+                MOVE    1, R7                   ; use it
+                RBRA    _ETH_WRITE, 1
+
+_ETH_BADCFG     MOVE    ETH_STR_BADCFG, R8
+                SYSCALL(puts, 1)
+                SYSCALL(crlf, 1)
+
+_ETH_DEFAULT    MOVE    ETH_DEF_MAC, R1
+                MOVE    SP, R2
+                MOVE    6, R3
+_ETH_DEFCOPY    MOVE    @R1++, R8
+                MOVE    R8, @R2++
+                SUB     1, R3
+                RBRA    _ETH_DEFCOPY, !Z
+                XOR     R7, R7
+
+                ; deliver: three big-endian words, then the valid bit
+_ETH_WRITE      MOVE    M2M$RAMROM_DEV, R0
+                MOVE    ETH_DEV, @R0
+                MOVE    M2M$RAMROM_4KWIN, R0
+                MOVE    ETH_WIN_MAC, @R0
+                MOVE    M2M$RAMROM_DATA, R0     ; R0: register 0
+                MOVE    SP, R1
+                MOVE    3, R3
+_ETH_WLOOP      MOVE    @R1++, R8
+                SHL     8, R8                   ; SHL fills with X: mask it
+                AND     0xFF00, R8
+                OR      @R1++, R8
+                MOVE    R8, @R0++
+                SUB     1, R3
+                RBRA    _ETH_WLOOP, !Z
+                MOVE    R7, R8                  ; register 3: bit 1 = source,
+                SHL     1, R8                   ; bit 0 = valid
+                AND     0x0002, R8
+                OR      0x0001, R8
+                MOVE    R8, @R0
+
+                ; log: "Ethernet MAC: xx:xx:xx:xx:xx:xx (source)"
+                MOVE    ETH_STR_MAC, R8
+                SYSCALL(puts, 1)
+                MOVE    SP, R1
+                MOVE    6, R3
+_ETH_LOG        MOVE    @R1++, R8
+                RSUB    ETH_PUTHEX2, 1
+                SUB     1, R3
+                RBRA    _ETH_LOG_END, Z
+                MOVE    0x003A, R8              ; ':'
+                SYSCALL(putc, 1)
+                RBRA    _ETH_LOG, 1
+_ETH_LOG_END    MOVE    ETH_STR_DEF, R8
+                CMP     0, R7
+                RBRA    _ETH_LOG_SRC, Z
+                MOVE    ETH_STR_CFG, R8
+_ETH_LOG_SRC    SYSCALL(puts, 1)
+                SYSCALL(crlf, 1)
+
+                MOVE    SP, R8
+                ADD     6, R8
+                RSUB    RESTORE_DEVSEL, 1
+                ADD     8, SP
+                SYSCALL(leave, 1)
+                RET
+
+; ETH_PUTHEX2: print the low byte of R8 as two hex digits; R8 preserved
+ETH_PUTHEX2     INCRB
+                MOVE    R8, R0
+                SHR     4, R8                   ; SHR fills with C: mask it
+                AND     0x000F, R8
+                MOVE    ETH_HEXDIGITS, R1
+                ADD     R8, R1
+                MOVE    @R1, R8
+                SYSCALL(putc, 1)
+                MOVE    R0, R8
+                AND     0x000F, R8
+                MOVE    ETH_HEXDIGITS, R1
+                ADD     R8, R1
+                MOVE    @R1, R8
+                SYSCALL(putc, 1)
+                MOVE    R0, R8
+                DECRB
+                RET
 
 ; This needs to be the last thing before the "Variables" sections starts
 ; ----------------------------------------------------------------------------
@@ -259,7 +444,7 @@ END_OF_ROM      .DW 0
 ; You need to deduct MENU_HEAP_SIZE from the actual heap size below.
 ; Example: If your HEAP_SIZE would be 29696, then you write 29696-1024=28672
 ; instead, but when doing the sanity check calculations, you use 29696
-MENU_HEAP_SIZE  .EQU 2048                       ; 82-line menu with submenus needs ~1200 words (33 lines used 488)
+MENU_HEAP_SIZE  .EQU 2560                       ; 98-line menu with 6 submenus: ~1610 words of tables + 250 of %s strings (33 lines used 488)
 
 #ifndef RELEASE
 
@@ -267,14 +452,14 @@ MENU_HEAP_SIZE  .EQU 2048                       ; 82-line menu with submenus nee
 ; this needs to be the last variable before the monitor variables as it is
 ; only defined as "BLOCK 1" to avoid a large amount of null-values in
 ; the ROM file
-HEAP_SIZE       .EQU 5120                       ; 7168 - 2048 = 5120
+HEAP_SIZE       .EQU 4608                       ; 7168 - 2560 = 4608
 HEAP            .BLOCK 1
 
 ; in RELEASE mode: 28k of heap which leads to a better user experience when
 ; it comes to folders with a lot of files
 #else
 
-HEAP_SIZE       .EQU 27648                      ; 29696 - 2048 = 27648
+HEAP_SIZE       .EQU 27136                      ; 29696 - 2560 = 27136
 HEAP            .BLOCK 1
 
 ; The monitor variables use 22 words, round to 32 for being safe and subtract
