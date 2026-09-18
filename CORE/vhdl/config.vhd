@@ -107,7 +107,6 @@ constant HELP_1 : string :=
 
    " IBM PC/XT (8088 or 8086) with an EGA card,\n" &
    " ported from MiSTer-devel/PCXT-EGA_MiSTer.\n" &
-   " MEGA65 port by silent-command, 2026.\n" &
    " Powered by MiSTer2MEGA65.\n\n" &
 
    " 640 KB, upper memory and 2 MB EMS live in\n" &
@@ -153,7 +152,7 @@ constant HELP_3 : string :=
    " Display: EGA/CGA/mono monitor, tint.\n" &
    " Input: joysticks (ports 1 and 2), swap,\n" &
    "   write-protect A: and B:, A: internal\n" &
-   "   drive (a real floppy, read-only), mouse.\n" &
+   "   drive (real floppy, read+write), mouse.\n" &
    " Network: NE1000 card off / IRQ 5 / IRQ 7\n" &
    "   (port 320h; not the IRQ the SB uses).\n\n" &
 
@@ -281,7 +280,7 @@ constant SEL_CORENAME      : std_logic_vector(15 downto 0) := x"0200";
 
 -- Currently this is only used in the debug console. Use the welcome screen and the
 -- help system to display the name and version of your core to the end user
-constant CORENAME          : string := "PCXT-EGA V0.8";
+constant CORENAME          : string := "PCXT-EGA V0.9";
 
 --------------------------------------------------------------------------------------------------------------------
 -- "Help" menu / Options menu  (Selectors 0x0300 .. 0x0312): DO NOT TOUCH
