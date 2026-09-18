@@ -688,3 +688,107 @@ reading the sync rate with the doubler on: if the pins really carry 43.7 kHz
 and the monitor still refuses it, the next suspects are the sync polarity
 (both positive here; MiSTer's `sys_top.v:1521-1522` inverts both) and the
 non-standard 700-line geometry.
+
+## 10. The way out, 2026-09-18: drive the DAC from the scaler
+
+Research pass over the framework, the MEGA65's own core and the doubler's
+measured output. Conclusion: every attempt so far tried to *transform* the
+core's raster into something a monitor accepts. The fix is to *replace* it,
+which is exactly what the HDMI path does and why HDMI has never had the problem.
+
+### ascal already generates a standard raster, and it free-runs
+`M2M/vhdl/av_pipeline/ascal.vhd:2674-2712` (`OSWEEP`): the output counters run
+off `o_htotal`/`o_vtotal` on `o_clk` whenever `o_ce = '1'`, and the sync comes
+straight off them. `digital_pipeline.vhd:332` ties `o_ce => '1'` and `:380`
+ties `run => '1'`, so **the output sweep has no dependency on the input raster
+at all**: HS and VS are on the pins from the moment `hdmi_clk` locks. The
+signals to tap are the six post-OSM nets `hdmi_osm_red/green/blue/hs/vs/de`
+(`digital_pipeline.vhd:481-486`), all registered, all in `hdmi_clk`, with the
+on-screen menu already composited.
+
+The mode records are already correct VESA including polarity
+(`video_modes_pkg.vhd`): `C_HDMI_640x480p_60` is 25.2 MHz, 800 x 525,
+31.5 kHz, H_POL = V_POL = '0'; `C_SVGA_800_600_60` is 40.0 MHz, 1056 x 628,
+37.879 kHz, H_POL = V_POL = '1'. Polarity is applied *outside* ascal
+(`vga_to_hdmi.vhd:479-480`, `vga_hs_p <= vga_hs xnor hs_pol_s`), so a VGA tap
+needs the same two gates and then gets the right polarity per mode for free.
+`video_out_clock.vhd` already produces 25.200, 25.179, 27.000, 40.000, 74.25
+MHz by DRP, and the R6 DAC is an ADV7125 rated 170 MHz (`MEGA65-R6.xdc:19`),
+so no new clock and no rate problem.
+
+### What the MEGA65's own core does (the monitor's own proof)
+Not in this tree; read from `github.com/MEGA65/mega65-core` master.
+`pixel_driver` / `frame_generator` are a **free-running raster generator that
+the VIC-IV is slaved to** (`machine.vhdl:1194-1217, 1281-1285`), 27.000 MHz,
+31.286 kHz (PAL50) / 31.469 kHz (NTSC60), with **negative HS and negative VS**
+on the VGA pins (`viciv.vhdl:2813-2863` sets `hsync_polarity <= '1'`,
+`vsync_polarity <= '0'`, whose sense at `frame_generator.vhdl:262, 286, 270-276`
+gives active-low on both), and a back porch of 2.9 to 3.1 us. Note it is *not*
+VESA-conformant either (863 / 858 dot totals, 50.06 / 59.83 Hz), so strict VESA
+is not what the monitor demands: **polarity, line rate and generous blanking**
+are what differ from ours.
+
+### Why the doubler could never have worked
+Measured in `CORE/ooc/analog_pipeline_350_tb/xsim.log`, case
+`C_after_31k_doubled`: 32.53 MHz effective dot clock, 744 dots x 728 lines,
+**43.716 kHz**, 60.05 Hz, 700 active lines, HS and VS both **positive**.
+
+| | our doubler | VESA 640x480@60 | MEGA65 core |
+|---|---|---|---|
+| H back porch | **0.49 us** | 1.91 us | 2.9 - 3.1 us |
+| H blanking | 14.0 % | 24 % | ~22 % |
+| sync polarity | H+ V+ | H- V- | H- V- |
+| geometry | 700 lines, in no mode table | standard | standard-ish |
+
+The back porch alone is enough to explain "no picture": LCD front ends need
+roughly a microsecond for the clamp and sampling PLL to settle. And it is
+structural, not a tuning error: the doubler replays each input line into
+exactly half the input line period, so the blanking fractions are inherited
+from the 350-line CRTC raster. It is not repairable into a standard mode
+without becoming a raster generator, i.e. a worse ascal.
+
+### The plan (Option A)
+A generic `G_ANALOG_FROM_SCALER`, default false, that routes the six post-OSM
+nets to the VGA output registers and `vdac_clk_o <= hdmi_clk_i`: about 70 lines
+over `digital_pipeline.vhd` (6 ports, polarity xnor), `av_pipeline.vhd`
+(forwarding), `analog_pipeline.vhd` (the generic, a second falling-edge output
+block in the `hdmi_clk` domain), and the two top levels. No new clock, no MMCM,
+no BUFG, no BRAM, no CDC. Fixes all three symptoms by construction: the welcome
+screen (the sweep free-runs, so `video_retime_reset` stops mattering), the
+350-line rasters (ascal re-times any input), and the doubler (obsoleted).
+
+Costs and caveats:
+* **One ascal means one output mode**: the VGA timing follows the HDMI menu
+  selection. Ship it with 800x600 @ 60 Hz documented as the companion setting -
+  a real VESA mode at exactly 40 MHz where H+/V+ *is* the correct polarity, and
+  wide enough for the 720-dot MDA raster without downscaling (ascal is built
+  `DOWNSCALE => false`, `digital_pipeline.vhd:298`).
+* 640x480 @ 60 Hz is safest on polarity but needs the `hdmi_shift` clamp
+  (`640 - 720 = -80` into a `natural` port, `video_overlay.vhd:28`) and cannot
+  take the 720-dot raster without downscaling.
+* The 15 kHz / CSync analog modes are unavailable while the generic is on; a
+  runtime `BUFGCTRL` mux on `vdac_clk_o` could restore them later (12 BUFGs free).
+* Adds ascal's one-frame latency to VGA, and "HDMI: CRT emulation" starts
+  affecting VGA too.
+
+A second ascal instance would decouple the two outputs: ~250-400 lines, a
+second `video_out_clock` MMCM, 10-14 BRAM tiles (160 free), `G_NUM_SLAVES => 4`
+on `framework.vhd:691` and a 4th Avalon master, and roughly +135 MB/s of
+HyperRAM traffic on a bus that already exports over/under-run flags. Only worth
+it if independent VGA and HDMI modes are a requirement.
+
+### Free experiment, still worth doing first
+Display -> "CGA monitor 5153", then reset the core (it is applied at reset,
+`main.vhd:436`). In a 200-line raster `analog_video_ctl.vhd:119` leaves the
+framework scandoubler on, and `CORE/ooc/analog_pipeline_tb` case A measured the
+result at the pins: 31.40 kHz, 524 lines, 400 active, 59.92 Hz, HS positive
+2.23 us, VS positive 6 lines. A picture there proves the analog stage and this
+monitor agree once the rate is sane, and that polarity is not by itself fatal.
+
+### M2M upstream
+V2.0.1 has nothing for this: `analog_pipeline.vhd` takes no video-mode input at
+all (entity at `:13-76`), `H_POL`/`V_POL` appear only in the digital path
+(`digital_pipeline.vhd:497-498`), and no switch anywhere connects the scaler to
+the VGA pins. Nothing obstructs the change either: the arbiter slave count is a
+generic, `hdmi_clk_i` is already a port of `av_pipeline` (`:132`), and
+`G_ANALOG_LINE_DOUBLER` is precedent for a framework-local generic defaulted off.
