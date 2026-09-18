@@ -2,9 +2,10 @@
 
 An IBM PC/XT with an EGA card on the MEGA65 R6: 8088 or 8086 CPU at 4.77,
 7.16, 9.54 MHz or unthrottled, 640 KB of RAM plus upper memory and 2 MB of
-EMS, floppy and hard disk images from the SD card, Adlib, Sound Blaster,
-Tandy and PC speaker sound, an NE1000 Ethernet card on the MEGA65's network
-port, and the MEGA65 keyboard and joysticks.
+EMS, floppy and hard disk images from the SD card, **the MEGA65's own 3.5"
+floppy drive as A: - real disks, read, write and `FORMAT`**, Adlib, Sound
+Blaster, Tandy and PC speaker sound, an NE1000 Ethernet card on the MEGA65's
+network port, and the MEGA65 keyboard and joysticks.
 
 Ported from [MiSTer-devel/PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer)
 with the [MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65) framework.
@@ -17,8 +18,9 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
 2. Copy the `m2m` and `pcxt` folders to the **root** of the SD card, next to
    each other. `m2m/m2mcfg` makes the menu remember your settings. **Replace
    an existing `m2m/m2mcfg` with this release's copy**: the menu grew with
-   the Network submenu and the file must match its size, otherwise the core
-   logs "corrupt config file" and stops saving settings (nothing else breaks).
+   the "A: internal drive" line and the file must match its size, otherwise the
+   core logs "corrupt config file" and stops saving settings (nothing else
+   breaks).
 3. Put the two remaining files into `/pcxt` (they are not included, see
    `pcxt/README.txt`): `ega_bios.rom` (required) and a hard disk image such
    as `freedos.vhd`.
@@ -40,11 +42,41 @@ XTIDE boot menu (F2) otherwise.
 | HDMI | output mode: 720p 50/60, 576p, 640x480, 720x480, 800x600 |
 | Sound | Adlib / Sound Blaster FM / none; Tandy sound; Sound Blaster on IRQ 7 (default IRQ 5); PC speaker volume; boost |
 | Display | monitor the EGA card drives (5154 EGA, 5153 CGA, 5151 mono; at reset); tint (color, green, amber, black and white); VGA connector: 31 kHz for VGA monitors, 15 kHz or 15 kHz + composite sync for CRTs and SCART |
-| Input | joystick 1 and 2 (MEGA65 ports, digital), swap; write-protect A: / B:; mouse off / 1351 / Amiga (port 1) |
+| Input | joystick 1 and 2 (MEGA65 ports, digital), swap; write-protect A: / B:; **A: internal drive** (the MEGA65's own floppy drive, see below); mouse off / 1351 / Amiga (port 1) |
 | Network | NE1000 Ethernet card at port 320h: Off / IRQ 5 (default) / IRQ 7 |
 | HDMI: CRT emulation, Zoom-in, Audio improvements | framework video and audio options |
 
 Settings are saved when the menu closes, if `/m2m/m2mcfg` exists.
+
+## The internal floppy drive
+
+Switch on **"A: internal drive"** in Input Settings and drive A: becomes the
+MEGA65's own 3.5" drive instead of an image from the SD card. Real PC disks
+are read and written, and `FORMAT A: /U` formats a blank or foreign disk into
+a standard 1.44 MB PC disk that any PC reads.
+
+* 1.44 MB (HD) and 720 KB (DD) disks are detected automatically from the disk
+  itself. A disk with its write-protect tab open mounts read-only, and DOS
+  reports "write protect error" as it would on a real PC.
+* The drive is only touched when DOS uses it, so it is silent when idle. An
+  empty drive answers "Not ready" at once; insert a disk and press **R** for
+  Retry and it is picked up (about 1.5 s).
+* Booting from a real disk works: with no hard disk mounted, Ctrl+Alt+Del boots
+  drive A:, or pick it from the XTIDE boot menu (F2).
+* `FORMAT A:` alone is not enough on a disk that already holds files: DOS then
+  does a quick format, which only rewrites the directory. Use `FORMAT A: /U`
+  for a real format.
+* A **blank or unreadable disk mounts as 1.44 MB** so that `FORMAT` can reach
+  it. A blank 720 KB disk therefore cannot be formatted as 720 KB; use a
+  720 KB disk that already holds a PC filesystem, or format it on a PC.
+* An **unrecoverable read or write error parks drive A:** until the core is
+  reset (the emulated controller cannot be told about disk errors). Reads
+  recover by themselves on Retry; a failed write needs the reset button.
+* Drive B: and the hard disk are unaffected and keep using SD card images.
+
+**1.44 MB disks need the alternative BIOS.** The default `pcxt.rom` cannot do
+high-density floppies at all, so install `pcxt/bios-hd-floppy/` as described
+under "Known limitations" before using HD disks in the internal drive.
 
 ## Network
 
@@ -97,7 +129,8 @@ lacks:
   HDMI is unaffected and shows everything. See docs/analog-video.md.
 
 - The Turbo XT BIOS in `pcxt.rom` has no high-density floppy support: 1.44 MB
-  and 1.2 MB images mount but DOS reports "drive not ready" on them. Either
+  and 1.2 MB images mount but DOS reports "drive not ready" on them, and **the
+  internal drive needs it for 1.44 MB disks**. Either
   use 360 KB or 720 KB images, or switch to the alternative BIOS shipped in
   `pcxt/bios-hd-floppy/`: copy its `pcxt-xt.rom` over `/pcxt/pcxt.rom` and
   its `xtide.rom` to `/pcxt/xtide.rom`. That is Sergey Kiselev's 8088 BIOS
