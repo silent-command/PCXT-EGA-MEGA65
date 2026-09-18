@@ -27,12 +27,12 @@ never learn the difference. Phases:
    sector's data field only (22 bytes after the ID CRC to the end of the data CRC
    plus two bytes of gap), the sector taken from the FDC's block buffer, a
    background read-after-write verify, the mount read-write unless the tab says no.
-4. **Formatting** (done 2026-09-17, "Phase 4" at the end): the FDC's FORMAT TRACK
+4. **Formatting** (done 2026-09-17, confirmed on the R6 2026-09-18): the FDC's FORMAT TRACK
    arrives at the firmware as a run of fill-byte block writes; a tap on floppy.v
    tells them from data, the engine writes the whole track from index to index
    (FORMAT_TRACK) on the first one and the rest are acknowledged; blank disks are
    mounted as 1.44 MB so that `FORMAT A:` can reach them.
-5. **Disk detection on demand** (done 2026-09-17, section at the end): the drive is
+5. **Disk detection on demand** (done 2026-09-17, confirmed on the R6 2026-09-18): the drive is
    never touched while idle; an eject unmounts, DOS's own access attempt (seen in
    floppy.v) triggers the probe and detection, floppy.v drops a parked request on
    the FDC software reset the BIOS issues.
@@ -912,7 +912,7 @@ mux and the gap counters are the 167 LUTs. `rom_loader`: 336 LUTs, 644 FFs
   a drive that needs time before the first transition eats into gap 4a (80
   bytes, 1.3 ms), which a PC ignores anyway.
 
-## Board session, 2026-09-18: detection and writes confirmed, format still open
+## Board session, 2026-09-18: phase 4 confirmed on the R6
 Build with phase 4, the on-demand detection and the keyboard fix (`fmtkbd.bit`,
 WNS 0.21 ns), loaded over JTAG.
 
@@ -927,11 +927,27 @@ Confirmed on the R6:
   QuickFormat* (the UnFormat mirror of 24 sectors, the FAT area, the boot
   sector) completed and reported 1,474,560 bytes.
 
-Still untested: `FORMAT A: /U`, i.e. the FORMAT_TRACK path itself. FreeDOS
-chooses a quick format on any disk that already holds a filesystem, and a quick
-format never issues AH=05h, so an ordinary `FORMAT A:` on a used disk does not
-reach any of phase 4. Everything under "What only the board can prove" above is
-therefore still open.
+* **`FORMAT A: /U` works.** FreeDOS "Full Formatting (wiping all data)" ran to
+  100 %, then the FAT area, and reported 1,474,560 bytes total / 1,457,664 free,
+  512 bytes per allocation unit, 2,847 units, with a fresh volume serial. So
+  FORMAT_TRACK lays down all 160 tracks at 500 kbit/s, the read-back finds every
+  sector, and DOS accepts the result as a 1.44 MB disk.
+* **The formatted disk is usable**: `COPY` onto it, `DIR` and `TYPE` back.
+* **A PC reads a MEGA65-formatted disk**: `DIR` and `CHKDSK` on a real PC drive,
+  and a file copied on from the PC. This was the one thing only the board could
+  settle - the sync fields, address marks and gaps are written by our clock and a
+  PC's controller has to lock onto them. It does.
+
+**The `/U` trap**: FreeDOS picks a *Safe QuickFormat* for any disk that already
+holds a filesystem, and a quick format only rewrites the boot sector, FATs and
+root directory - it never issues AH=05h. So a plain `FORMAT A:` on a used disk
+does not touch phase 4 at all, however often it is run. Only `/U` (or a disk
+with no recognisable filesystem) reaches FORMAT_TRACK.
+
+Of "What only the board can prove" above, these remain open: the DD paths
+(720 KB blanks, `FORMAT /F:720` refusal - the owner has no 720 KB media), the
+`gap 4b` count on the real spindle (the serial capture missed the run that
+formatted), and the total format time.
 
 ### The write-protect red herring (a debugging rule)
 Half the session went into "every write fails, and the firmware logs nothing at
