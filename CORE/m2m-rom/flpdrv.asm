@@ -310,6 +310,8 @@ FLP_INIT        SYSCALL(enter, 1)
                 MOVE    0, @R0
                 MOVE    FLP_VFY_ERR, R0
                 MOVE    0, @R0
+                MOVE    FLP_NAMED, R0
+                MOVE    0, @R0
                 MOVE    FLP_RO, R0
                 MOVE    1, @R0
                 RSUB    FLPF_INIT, 1            ; FORMAT state (flpfmt.asm)
@@ -443,13 +445,26 @@ _FLP_STR_2      MOVE    FLP_DRIVE, R8
                 XOR     R12, R12                ; image type 0
                 RSUB    VD_STROBE_IM, 1
                 CMP     0, R7
-                RBRA    _FLP_STR_RET, Z         ; unmount: no name
+                RBRA    _FLP_STR_UNM, Z         ; unmount: no name
+                RSUB    FLP_SET_NAME, 1
+                RBRA    _FLP_STR_RET, 1
+_FLP_STR_UNM    MOVE    FLP_NAMED, R0           ; the next mount writes it again
+                MOVE    0, @R0
+_FLP_STR_RET    SYSCALL(leave, 1)
+                RET
 
-                ; the menu "%s" of the Drive A line: string slot of vdrive
-                ; FLP_DRIVE in the options heap (see _HM_SDMOUNTED3A)
+; FLP_SET_NAME: put FLP_STR_NAME into the "%s" string slot of the Drive A
+; menu line (the slot of vdrive FLP_DRIVE in the options heap, see
+; _HM_SDMOUNTED3A) and clear that line's "%s is replaced" flag.
+; The heap does not exist yet while PREP_START runs, and the start-up mount of
+; the internal drive happens there, so this cannot be done once at mount time:
+; without the retry from FLP_POLL the menu shows the raw "Drive A:%s" until the
+; toggle is switched off and on again. FLP_NAMED is 1 once it has stuck.
+; Registers preserved.
+FLP_SET_NAME    SYSCALL(enter, 1)
                 MOVE    OPTM_HEAP, R0
                 MOVE    @R0, R0
-                RBRA    _FLP_STR_RET, Z         ; heap not ready (no menu yet)
+                RBRA    _FLP_SN_RET, Z          ; no menu yet: FLP_POLL retries
                 MOVE    FLP_DRIVE, R8
                 MOVE    SCR$OSM_O_DX, R9
                 MOVE    @R9, R9
@@ -463,7 +478,9 @@ _FLP_STR_2      MOVE    FLP_DRIVE, R8
                 SUB     1, R8
                 ADD     R0, R8
                 MOVE    0, @R8
-_FLP_STR_RET    SYSCALL(leave, 1)
+                MOVE    FLP_NAMED, R0
+                MOVE    1, @R0
+_FLP_SN_RET     SYSCALL(leave, 1)
                 RET
 
 ; FLP_NODISK: no disk (a probe left DISK CHANGE asserted, a detect read
@@ -596,7 +613,17 @@ FLP_POLL        SYSCALL(enter, 1)
                 MOVE    SP, R8
                 RSUB    SAVE_DEVSEL, 1
 
-                CMP     FLP_S_NODISK, R1
+                ; the menu line still shows the raw "%s"? (the start-up mount
+                ; runs before the options heap exists, FLP_SET_NAME)
+                MOVE    FLP_NAMED, R2
+                CMP     0, @R2
+                RBRA    _FLP_POLL_NM, !Z
+                MOVE    FLP_MOUNTED, R2
+                CMP     1, @R2
+                RBRA    _FLP_POLL_NM, !Z
+                RSUB    FLP_SET_NAME, 1
+
+_FLP_POLL_NM    CMP     FLP_S_NODISK, R1
                 RBRA    _FLP_POLL_ND, Z
                 CMP     FLP_S_PROBING, R1
                 RBRA    _FLP_POLL_PR, Z

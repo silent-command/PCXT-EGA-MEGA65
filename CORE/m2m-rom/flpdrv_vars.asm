@@ -16,5 +16,6 @@ FLP_LAST_ERR    .BLOCK 1                        ; engine status of the last fail
 FLP_RO          .BLOCK 1                        ; 1 = mounted read-only (drive write protected)
 FLP_N_WR        .BLOCK 1                        ; block writes served
 FLP_VFY_ERR     .BLOCK 1                        ; 1 = a write failed its read-back: park the next request
+FLP_NAMED       .BLOCK 1                        ; 1 = the drive name is in the menu line (FLP_SET_NAME)
 
 #include "flpfmt_vars.asm"
