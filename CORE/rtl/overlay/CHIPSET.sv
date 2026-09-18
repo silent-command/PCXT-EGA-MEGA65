@@ -179,6 +179,7 @@ module CHIPSET #(
         input   logic   [1:0]   floppy_wp,
         output  logic   [1:0]   fdd_present,
         output  logic   [1:0]   fdd_request,
+        output  logic           fdd_access,             // MEGA65: DOS access attempt on drive A
         output  logic   [2:0]   ide0_request,
         // XTEGACTL register file
         output  logic   [7:0]   xtegactl_cpu,
@@ -509,6 +510,7 @@ module CHIPSET #(
         .floppy_wp                          (floppy_wp),
         .fdd_present                        (fdd_present),
         .fdd_request                        (fdd_request),
+        .fdd_access                         (fdd_access),
         .ide0_request                       (ide0_request),
         .fdd_dma_req                        (fdd_dma_req),
         .fdd_dma_ack                        (~dma_acknowledge_n[2]),

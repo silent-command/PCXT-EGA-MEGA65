@@ -368,6 +368,7 @@ signal main_flp_enable        : std_logic;
 signal main_flp_chg_clr       : std_logic;
 signal main_flp_vfy_clr       : std_logic;
 signal main_flp_blk_err       : std_logic;
+signal main_flp_access        : std_logic;   -- floppy.v: a DOS access attempt on drive A (one clock)
 signal main_flp_busy          : std_logic;
 signal main_flp_err           : std_logic_vector(7 downto 0);
 signal main_flp_det_max_r     : std_logic_vector(7 downto 0);
@@ -393,6 +394,9 @@ signal main_flp_buf_data      : std_logic_vector(7 downto 0);
 signal main_flp_buf_we        : std_logic;
 signal main_flp_buf_rd        : std_logic;
 signal main_flp_buf_rdata     : std_logic_vector(7 downto 0);
+signal main_flp_arg2          : std_logic_vector(15 downto 0);   -- FORMAT_TRACK: gap 3 (15..8), fill byte (7..0)
+signal main_flp_fmt           : std_logic_vector(15 downto 0);   -- the format tap of the request being served (main.vhd)
+signal main_flp_fmt_tail      : std_logic_vector(15 downto 0);   -- gap 4b bytes of the last FORMAT_TRACK
 
 begin
 
@@ -572,6 +576,8 @@ begin
          flp_buf_rd_i         => main_flp_buf_rd,
          flp_buf_rdata_o      => main_flp_buf_rdata,
          flp_blk_err_i        => main_flp_blk_err,
+         flp_access_o         => main_flp_access,
+         flp_fmt_o            => main_flp_fmt,
 
          -- M2M Keyboard interface
          kb_key_num_i         => main_kb_key_num_i,
@@ -670,6 +676,9 @@ begin
          cmd_force_i       => main_flp_arg0(10),
          cmd_sector_i      => main_flp_arg1(4 downto 0),
          cmd_spt_i         => main_flp_arg1(12 downto 8),
+         cmd_fill_i        => main_flp_arg2(7 downto 0),
+         cmd_gap3_i        => main_flp_arg2(15 downto 8),
+         fmt_tail_o        => main_flp_fmt_tail,
          busy_o            => main_flp_busy,
          err_o             => main_flp_err,
          det_max_r_o       => main_flp_det_max_r,
@@ -865,6 +874,9 @@ begin
          flp_cmd_code_o    => main_flp_cmd_code,
          flp_arg0_o        => main_flp_arg0,
          flp_arg1_o        => main_flp_arg1,
+         flp_arg2_o        => main_flp_arg2,
+         flp_fmt_i         => main_flp_fmt,
+         flp_fmt_tail_i    => main_flp_fmt_tail,
          flp_enable_o      => main_flp_enable,
          flp_chg_clr_o     => main_flp_chg_clr,
          flp_vfy_clr_o     => main_flp_vfy_clr,
@@ -872,6 +884,7 @@ begin
          flp_busy_i        => main_flp_busy,
          flp_res_i         => main_flp_res,
          flp_live_i        => main_flp_live,
+         flp_access_i      => main_flp_access,
          flp_dbg_i         => main_flp_dbg,
          dbg_a_i           => main_dbg_bus_reads,
          dbg_b_i           => main_dbg_vsync,

@@ -28,6 +28,15 @@
 //     MIN_MARGIN bytes before the next ID sync field (last_wr_lead / last_wr_margin report the bytes from
 //     the ID CRC to the splice and from WRITE GATE off to the next sync); no write across the index.
 //     corrupt_next = 1 drops the CORRUPT_AT-th recorded transition of the next write (verify error).
+//   * formatting (phase 4): with fmt_expect set by the bench the next write may start in gap 4a right
+//     after the index and must end within a few bytes after the next index; it replaces the whole
+//     recording of the track (a full-track write). The bench tells the model the layout it expects
+//     (fmt_nsec, fmt_gap3) and the model builds the region map of a formatted track from it, scaled by the
+//     writer's bit rate against the disk's spindle speed, so that later sector writes are checked against
+//     the new gap 2 / gap 3 positions. speed_hd / speed_dd set the spindle speed factor per rate (< 1 =
+//     fast), nsec_ovr / gap3_ovr override the synthetic track's layout (a MEGA65/1581-style 10-sector
+//     track), disk_blank plays no flux at all (an unformatted disk); last_wr_full / last_wr_end report
+//     the last write.
 // The bench drives eject() / insert() and reads pos / dskchg / model_steps / revs hierarchically; the
 // model's own checks count into n_pass / n_fail, which the bench adds to its totals.
 `timescale 1ns/1ps
@@ -73,6 +82,11 @@ module floppy_drive_model #(
    bit  disk_present = 0;
    bit  disk_hd      = 0;
    bit  disk_wp      = 0;
+   bit  disk_blank   = 0;          // no flux transitions at all (unformatted)
+   int  nsec_ovr     = 0;          // sectors per track of the synthetic track (0 = 18 / 9 by rate)
+   int  gap3_ovr     = 0;          // its gap 3 (0 = 108 / 80 by rate)
+   real speed_hd     = 1.03;       // spindle speed factor of the half cell: > 1 = slow, < 1 = fast
+   real speed_dd     = 0.97;
    int  pos          = 5;          // head position at power-up
    bit  dskchg       = 1;          // latched until a step with a disk in
    int  bad_id       = BAD_ID_SECTOR;
@@ -90,11 +104,36 @@ module floppy_drive_model #(
       f_dskchg = (sel && dskchg)                  ? 1'b0 : 1'b1;
    end
 
+   // the written overlay, per cylinder and side (key = cylinder * 2 + side): recorded transitions and
+   // erased raw bits; a new disk starts without any
+   localparam int MAX_RAW = 12500 * 16;
+   real wq[0:165][$];                  // transition positions in raw bits (fractional), sorted
+   bit  er[0:165][0:MAX_RAW-1];        // erased raw bits
+   bit  er_dirty[0:165];               // ... which keys have any (a new disk clears only those)
+   bit  wq_dirty = 0;
+   // a formatted track (full-track write): the layout the DUT wrote, in writer bytes, mapped onto the disk
+   bit  fmt_expect = 0;                 // the bench expects the next write to be a full-track write
+   int  fmt_nsec = 18, fmt_gap3 = 84;   // the layout the bench expects the DUT to write
+   bit  fmt_valid[0:165];
+   int  fmt_n[0:165], fmt_g3[0:165];
+   real fmt_start[0:165];               // disk raw bit at which the format's WRITE GATE went on
+   real fmt_scale[0:165];               // disk raw bits per writer raw bit
+   int  last_wr_full = 0, last_wr_end = -1;
+
    task automatic eject();
       disk_present = 0; dskchg = 1;
    endtask
    task automatic insert(input bit hd, input bit wp);
-      disk_present = 1; disk_hd = hd; disk_wp = wp; dskchg = 1;
+      disk_present = 1; disk_hd = hd; disk_wp = wp; dskchg = 1; disk_blank = 0;
+      for (int k = 0; k < 166; k++) begin
+         wq[k].delete();
+         fmt_valid[k] = 0;
+         if (er_dirty[k]) begin
+            for (int p = 0; p < MAX_RAW; p++) er[k][p] = 0;
+            er_dirty[k] = 0;
+         end
+      end
+      wq_dirty = 1;
    endtask
 
    // step timing checks and the step itself
@@ -136,7 +175,6 @@ module floppy_drive_model #(
    // track image: IBM System 34, 512-byte sectors, N = 2, with a region map for the write checks
    // ------------------------------------------------------------------------------------------
    localparam int R_GAP4A = 0, R_SYNC_ID = 1, R_ID = 2, R_GAP2 = 3, R_SYNC_D = 4, R_DATA = 5, R_GAP3 = 6;
-   localparam int MAX_RAW = 12500 * 16;
 
    byte trk[];          // bytes
    bit  mrk[];          // 1 = A1/C2 mark with the missing clock
@@ -149,13 +187,45 @@ module floppy_drive_model #(
       trk[i] = b; mrk[i] = m; region[i] = cur_reg; sec_of[i] = cur_sec; i++;
    endtask
 
+   // the region map of a formatted track: the DUT's layout in writer bytes (146 bytes of lead-in, then
+   // per sector 12 sync + 10 ID + 22 gap 2 + 12 sync + 518 data + gap 3)
+   task automatic build_layout(input int nsec, input int gap3, ref int lreg[], ref int lsec[], output int n);
+      int i = 0;
+      n = 146 + nsec * (574 + gap3) + 8;
+      lreg = new[n]; lsec = new[n];
+      for (int k = 0; k < 146; k++) begin lreg[i] = R_GAP4A; lsec[i] = 0; i++; end
+      for (int s = 1; s <= nsec; s++) begin
+         for (int k = 0; k < 12;  k++) begin lreg[i] = R_SYNC_ID; lsec[i] = s; i++; end
+         for (int k = 0; k < 10;  k++) begin lreg[i] = R_ID;      lsec[i] = s; i++; end
+         for (int k = 0; k < 22;  k++) begin lreg[i] = R_GAP2;    lsec[i] = s; i++; end
+         for (int k = 0; k < 12;  k++) begin lreg[i] = R_SYNC_D;  lsec[i] = s; i++; end
+         for (int k = 0; k < 518; k++) begin lreg[i] = R_DATA;    lsec[i] = s; i++; end
+         for (int k = 0; k < gap3; k++) begin lreg[i] = R_GAP3;   lsec[i] = s; i++; end
+      end
+      while (i < n) begin lreg[i] = R_GAP3; lsec[i] = nsec; i++; end
+   endtask
+
    task automatic build_track(input bit hd, input int cyl, input int hd_side);
-      int  i = 0, nsec, gap3;
+      int  i = 0, nsec, gap3, key, ln, j;
       byte hdr[8], dat[516];
       logic [15:0] c;
-      nsec    = hd ? 18 : 9;
-      gap3    = hd ? 108 : 80;
+      int  lreg[], lsec[];
+      nsec    = (nsec_ovr != 0) ? nsec_ovr : (hd ? 18 : 9);
+      gap3    = (gap3_ovr != 0) ? gap3_ovr : (hd ? 108 : 80);
       trk_len = hd ? 12500 : 6250;
+      key     = cyl * 2 + hd_side;
+      if (fmt_valid[key]) begin
+         // every original bit is erased; only the region map matters, in the DUT's layout scaled onto the disk
+         trk = new[trk_len]; mrk = new[trk_len]; region = new[trk_len]; sec_of = new[trk_len];
+         build_layout(fmt_n[key], fmt_g3[key], lreg, lsec, ln);
+         for (i = 0; i < trk_len; i++) begin
+            trk[i] = 8'h4E; mrk[i] = 0;
+            j = int'($floor((real'(i) - fmt_start[key] / 16.0) / fmt_scale[key]));
+            if (j < 0 || j >= ln) begin region[i] = R_GAP4A; sec_of[i] = 0; end
+            else begin region[i] = lreg[j]; sec_of[i] = lsec[j]; end
+         end
+         return;
+      end
       trk = new[trk_len]; mrk = new[trk_len]; region = new[trk_len]; sec_of = new[trk_len];
       cur_reg = R_GAP4A; cur_sec = 0;
       for (int k = 0; k < 80; k++) put(8'h4E, 0, i);                  // gap 4a
@@ -195,12 +265,8 @@ module floppy_drive_model #(
    endtask
 
    // ------------------------------------------------------------------------------------------
-   // the written overlay, per cylinder and side: recorded transitions and erased raw bits
+   // the written overlay (declared with the media above): recording state
    // ------------------------------------------------------------------------------------------
-   real wq[0:165][$];                  // transition positions in raw bits (fractional), sorted
-   bit  er[0:165][0:MAX_RAW-1];        // erased raw bits
-   bit  wq_dirty = 0;
-
    int  revs = 0;                       // revolutions played (also the write-across-index check)
    // recording state
    real cur_t0;                         // ideal start time of the raw bit being played
@@ -237,8 +303,16 @@ module floppy_drive_model #(
       wr_start_pos    = pos_now();
       wr_start_rev    = revs;
       b0 = int'($floor(wr_start_pos)) / 16;
+      last_wr_full = 0;
       if (!disk_present || !sel || f_motora !== 1'b0 || b0 >= trk_len) begin
          wr_bad = 1;
+      end else if (fmt_expect) begin
+         // a full-track write: at the index, i.e. within the first bytes of gap 4a
+         check(b0 < 4, $sformatf("format: WRITE GATE on at byte %0d after the index (< 4)", b0));
+         if (b0 >= 4) wr_bad = 1;
+         last_wr_full   = 1;
+         last_wr_sector = 0;
+         last_wr_lead   = b0;
       end else begin
          check(region[b0] == R_GAP2 || region[b0] == R_SYNC_D,
                $sformatf("WRITE GATE on at byte %0d, region %0d (must be gap 2 or the data sync field)", b0, region[b0]));
@@ -257,8 +331,30 @@ module floppy_drive_model #(
       real q[$];
       wr_end_pos = pos_now();
       writes++;
-      check(revs == wr_start_rev, "write across the index");
-      if (!wr_bad && revs == wr_start_rev) begin
+      if (last_wr_full) begin
+         // a full-track write: exactly one index inside it, off within a few bytes after that index; the
+         // recording replaces the whole track and the region map follows the layout the bench announced
+         b1 = int'($floor(wr_end_pos)) / 16;
+         last_wr_end = b1;
+         check(revs == wr_start_rev + 1, $sformatf("format: %0d index pulses inside the write (1)", revs - wr_start_rev));
+         check(b1 < 8, $sformatf("format: WRITE GATE off at byte %0d after the index (< 8)", b1));
+         if (!wr_bad && revs == wr_start_rev + 1) begin
+            key = cur_key;
+            q.delete();
+            for (int k = 0; k < cur_wr.size(); k++) q.push_back(cur_wr[k]);
+            q.sort();
+            wq[key] = q;
+            wq_dirty = 1;
+            fmt_valid[key] = 1;
+            fmt_n[key]     = fmt_nsec;
+            fmt_g3[key]    = fmt_gap3;
+            fmt_start[key] = wr_start_pos;
+            fmt_scale[key] = (disk_hd ? 1000.0 : 2000.0) / cur_hc;
+         end
+         fmt_expect = 0;
+      end else begin
+       check(revs == wr_start_rev, "write across the index");
+       if (!wr_bad && revs == wr_start_rev) begin
          b1 = int'($floor(wr_end_pos)) / 16;
          if (b1 >= trk_len) b1 = trk_len - 1;
          // off inside the sector's own gap 3, or still inside the old data field when the disk turns slower
@@ -280,6 +376,7 @@ module floppy_drive_model #(
          q.sort();
          wq[key] = q;
          wq_dirty = 1;
+       end
       end
       cur_wr.delete();
    end
@@ -365,15 +462,15 @@ module floppy_drive_model #(
                pulse();
                wi++;
             end
-            // the original bit, unless erased
-            if (raw[b] && !er[key][p]) begin
+            // the original bit, unless erased (or the disk is blank)
+            if (raw[b] && !er[key][p] && !disk_blank) begin
                t_pulse = t_ideal + jit * (real'($urandom_range(0, 2000)) / 1000.0 - 1.0);
                if (t_pulse > $realtime) #(t_pulse - $realtime);
                pulse();
             end else begin
                if (t_ideal > $realtime) #(t_ideal - $realtime);
             end
-            if (wg0 || wg_on) er[key][p] = 1;                              // written over
+            if (wg0 || wg_on) begin er[key][p] = 1; er_dirty[key] = 1; end   // written over
             if (f_motora !== 1'b0 || !disk_present) stop = 1;           // motor off / ejected
          end
       end
@@ -387,7 +484,7 @@ module floppy_drive_model #(
          play_pos  = pos;
          play_head = head;
          build_track(disk_hd, pos, head);
-         hc_eff = disk_hd ? 1000.0 * 1.03 : 2000.0 * 0.97;              // +3 % / -3 % speed
+         hc_eff = disk_hd ? 1000.0 * speed_hd : 2000.0 * speed_dd;      // +3 % / -3 % speed by default
          jit    = disk_hd ? 120.0 : 240.0;                              // +-12 % of a half cell
          revs++;
          if (sel) f_index = 0;

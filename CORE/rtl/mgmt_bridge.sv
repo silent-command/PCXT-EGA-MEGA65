@@ -53,6 +53,14 @@
 // BIOS and DOS reports an error instead of believing the write succeeded.
 // The hold cannot be tied to the request dropping (as fd_hold is) because
 // for the last sector of a write the request has already dropped.
+// Since the on-demand detection of docs/floppy.md the overlay floppy.v drops a
+// parked request on the FDC software reset the BIOS issues on its error path,
+// so fd_hold clears there too and the retry raises a fresh request. A read
+// block that arrives after its request was abandoned that way is checked
+// against floppy.v's current request word (S_FDD_RD_CHK): the same drive and
+// LBA still pending (the retry of the same sector) takes it, anything else
+// drops it and the live request is dispatched afresh - a stale block never
+// lands in another sector's FIFO.
 //
 // Hard-disk geometry (replaces ARM 2.2's 128-entry size table): at mount the
 // bridge reads block 0 of the image through the block interface (the same
@@ -97,6 +105,11 @@ module mgmt_bridge #(
     output reg  [31:0] blk_lba,        // block number
     input  wire [2:0]  blk_ack,        // level: high while the block moves; complete when it falls
     input  wire        blk_err,        // level, sampled when a floppy block's ack falls: read: the block carries no data; write: the write failed, park the drive (see header)
+    // the format tap (docs/floppy.md phase 4): floppy.v's management register 1, sampled when a floppy
+    // request is dispatched and held until the next one: [15] this block is the fill of a FORMAT TRACK
+    // sector, [14:8] the command's sector count, [7:0] its filler byte. The firmware reads it (rom_loader
+    // register 14) while it serves the block; a level tap would be gone for the last sector of a track.
+    output reg  [15:0] fd_fmt,
     // 512-byte sector buffer shared with the framework
     output reg  [8:0]  buf_addr,
     output reg  [7:0]  buf_wdata,
@@ -244,7 +257,7 @@ module mgmt_bridge #(
         S_IDE_OK_REGS, S_IDE_ABORT_REGS,
         // floppy (MGMT 5.3, ARM 4.4-4.6)
         S_FDD_EJECT, S_FDD_INSERT,
-        S_FDD_REQ, S_FDD_DISPATCH, S_FDD_DISPATCH2, S_FDD_RD_TX, S_FDD_WR_STORE, S_FDD_WAIT, S_FDD_ERR
+        S_FDD_REQ, S_FDD_DISPATCH, S_FDD_TAP, S_FDD_DISPATCH2, S_FDD_RD_CHK, S_FDD_RD_CHK2, S_FDD_RD_TX, S_FDD_WR_STORE, S_FDD_WAIT, S_FDD_ERR
     } state_t;
 
     state_t state, bus_ret, seq_ret;
@@ -429,6 +442,7 @@ module mgmt_bridge #(
             fd_hold   <= 1'b0;
             fd_dead   <= 1'b0;
             fd_blk_wr <= 1'b0;
+            fd_fmt    <= 16'd0;
             img_mounted_q <= 3'b000;
         end else begin
             // defaults: strobes are one clock wide
@@ -607,8 +621,9 @@ module mgmt_bridge #(
                 if (!blk_ack[blk_drv]) begin
                     // a floppy read the firmware could not serve: no data for floppy.v (header);
                     // a floppy write it could not do: the drive is dead until the reset
-                    if (blk_err && seq_ret == S_FDD_RD_TX) state <= S_FDD_ERR;
-                    else                                   state <= seq_ret;
+                    // a served read: first make sure the request is still the one it was fetched for
+                    if (seq_ret == S_FDD_RD_TX) state <= blk_err ? S_FDD_ERR : S_FDD_RD_CHK;
+                    else                        state <= seq_ret;
                     if (blk_err && fd_blk_wr) fd_dead <= 1'b1;
                     fd_blk_wr <= 1'b0;
                 end
@@ -1013,8 +1028,14 @@ module mgmt_bridge #(
                 state     <= S_BUS_RD1;
             end
             S_FDD_DISPATCH: begin
-                fd_drv <= bus_rdata[15];
-                fd_lba <= bus_rdata[14:0];
+                fd_drv    <= bus_rdata[15];
+                fd_lba    <= bus_rdata[14:0];
+                mgmt_addr <= FDD_BASE | 16'h0001; // R 0xF201 -> the format tap (header), a constant 1 in the upstream floppy.v
+                bus_ret   <= S_FDD_TAP;
+                state     <= S_BUS_RD1;
+            end
+            S_FDD_TAP: begin
+                fd_fmt <= bus_rdata;
                 state  <= S_FDD_DISPATCH2;
             end
             S_FDD_DISPATCH2: begin
@@ -1036,6 +1057,15 @@ module mgmt_bridge #(
                     seq_ret <= S_FDD_WR_STORE;
                     state   <= S_RX_RD;
                 end
+            end
+            S_FDD_RD_CHK: begin                    // the request may have been abandoned (FDC software reset,
+                mgmt_addr <= FDD_BASE;             // header) while the firmware fetched the block: re-read it
+                bus_ret   <= S_FDD_RD_CHK2;
+                state     <= S_BUS_RD1;
+            end
+            S_FDD_RD_CHK2: begin
+                if (mgmt_req[6] && bus_rdata[15] == fd_drv && bus_rdata[14:0] == fd_lba) state <= S_FDD_RD_TX;
+                else state <= S_IDLE;              // gone or another sector: drop this block, dispatch the live request afresh
             end
             S_FDD_RD_TX: begin
                 xcnt    <= 10'd0;

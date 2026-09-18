@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Icarus run of mgmt_bridge_tb: the MEGA65 storage bridge against the real
-# ide.v / floppy.v from the pinned submodule.
+# ide.v from the pinned submodule and the floppy.v that is built (the overlay
+# in CORE/rtl/overlay, docs/floppy.md).
 #
 #   ./run_mgmt_bridge_tb.sh          build and run
 #   WAVE=1 ./run_mgmt_bridge_tb.sh   also dump mgmt_bridge_tb.vcd into the build dir
@@ -20,7 +21,7 @@ defs=()
 iverilog -g2012 "${defs[@]}" -o "$build/mgmt_bridge_tb.vvp" \
     "$core/rtl/mgmt_bridge.sv" \
     "$here/mgmt_bridge_tb.sv" \
-    "$src/ide.v" "$src/floppy.v" "$src/simple_fifo.v" > "$build/build.log" 2>&1
+    "$src/ide.v" "$core/rtl/overlay/floppy.v" "$src/simple_fifo.v" > "$build/build.log" 2>&1
 if [ $? -ne 0 ]; then
     echo "BUILD FAILED, see $build/build.log"
     grep -iE "error|sorry" "$build/build.log" | head -20

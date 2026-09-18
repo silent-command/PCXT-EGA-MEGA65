@@ -26,6 +26,15 @@
 // sector before its verify; a write the model corrupts fails its background verify and the flag clears;
 // a seek waits for the pending verify; bad arguments, a sector the track does not have, no disk; the same
 // at 250 kbit/s on the DD disk; write precompensation is on from cylinder 20 in this bench (4 clocks).
+// Phase 4 (FORMAT_TRACK): a blank HD disk on a 3 % fast spindle is detected as "index, no headers";
+// C0 H0 is formatted with 18 sectors (the model checks WRITE GATE on within 4 bytes of the index and off
+// within 8 bytes of the next one, one index inside the write), the engine's own read-back finds all 18
+// sectors, every sector compares as 512 x the fill byte, the gap 4b count says how much of the fast
+// revolution was left; the same track formatted with the BIOS table's gap 3 of 0x6C overruns the index
+// (err 11), which is why the default is 0x54; C40 H1 after a seek, then a WRITE_SECTOR on the freshly
+// formatted track (the splice lands in our own gap 2) and a full compare; write protect refused before
+// WRITE GATE; a MEGA65/1581-style DD disk with 10 sectors and a short gap 3 is formatted with 9 (both
+// sides), its old sector 10 is gone; no disk (no index); bad arguments.
 // Disabling drops the motor, the select and the cache.
 //   powershell -File run_floppy_sector_engine_tb.ps1
 `timescale 1ns/1ps
@@ -42,9 +51,10 @@ module floppy_sector_engine_tb;
    localparam int MAX_HOME     = 85;
 
    localparam logic [3:0] CMD_DETECT = 4'd1, CMD_READ = 4'd2, CMD_COPY = 4'd3, CMD_PROBE = 4'd4, CMD_MOTOROFF = 4'd5,
-                          CMD_WRITE = 4'd6;
+                          CMD_WRITE = 4'd6, CMD_FORMAT = 4'd7;
    localparam logic [7:0] E_OK = 8'd0, E_NO_INDEX = 8'd1, E_RECAL = 8'd2, E_NO_IDAM = 8'd3, E_WRONG_TRK = 8'd4,
-                          E_BAD_ARG = 8'd5, E_DISABLED = 8'd6, E_WPROT = 8'd7, E_NO_SECTOR = 8'd9;
+                          E_BAD_ARG = 8'd5, E_DISABLED = 8'd6, E_WPROT = 8'd7, E_NO_SECTOR = 8'd9,
+                          E_FMT_VFY = 8'd10, E_FMT_OVER = 8'd11;
 
    // ------------------------------------------------------------------------------------------
    // clock, reset, DUT
@@ -58,6 +68,8 @@ module floppy_sector_engine_tb;
    logic [7:0]  cmd_cyl = 0;
    logic        cmd_head = 0, cmd_rate = 0, cmd_force = 0;
    logic [4:0]  cmd_sector = 0, cmd_spt = 0;
+   logic [7:0]  cmd_fill = 8'hF6, cmd_gap3 = 8'h00;
+   wire  [15:0] fmt_tail;
    wire         busy;
    wire [7:0]   err, det_max_r, cache_cyl, head_track, state;
    wire         det_hd, det_dd, cache_head, cache_rate, cache_valid, wp, dskchg, dskchg_live, track0, motor, index_seen;
@@ -87,7 +99,8 @@ module floppy_sector_engine_tb;
       .clk_i (clk), .rst_i (rst),
       .enable_i (enable), .chg_clr_i (chg_clr), .vfy_clr_i (vfy_clr), .cmd_valid_i (cmd_valid), .cmd_i (cmd),
       .cmd_cyl_i (cmd_cyl), .cmd_head_i (cmd_head), .cmd_rate_hd_i (cmd_rate), .cmd_force_i (cmd_force),
-      .cmd_sector_i (cmd_sector), .cmd_spt_i (cmd_spt),
+      .cmd_sector_i (cmd_sector), .cmd_spt_i (cmd_spt), .cmd_fill_i (cmd_fill), .cmd_gap3_i (cmd_gap3),
+      .fmt_tail_o (fmt_tail),
       .busy_o (busy), .err_o (err), .det_max_r_o (det_max_r), .det_hd_o (det_hd), .det_dd_o (det_dd),
       .valid_o (valid), .crcerr_o (crcerr), .cache_cyl_o (cache_cyl), .cache_head_o (cache_head),
       .cache_rate_o (cache_rate), .head_track_o (head_track), .state_o (state),
@@ -134,6 +147,7 @@ module floppy_sector_engine_tb;
       return ((k * (id + 3) + s * 13 + c * 7 + h * 29) ^ (k >> 2) ^ (id * 'h5A)) & 8'hFF;
    endfunction
    function automatic byte exp_byte(input int s, input int k, input int c, input int h);
+      if (pat_tbl[c][h][s] >= 1000) return byte'(pat_tbl[c][h][s] - 1000);      // formatted: the fill byte
       if (pat_tbl[c][h][s] != 0) return wpat(pat_tbl[c][h][s], s, k, c, h);
       return model.data_byte(s, k, c, h);
    endfunction
@@ -219,6 +233,47 @@ module floppy_sector_engine_tb;
       end else begin
          check(model.writes == w0, $sformatf("%s: no write reached the drive", what));
       end
+   endtask
+
+   // FORMAT C c, H h at rate hd with nsec sectors, fill byte and gap 3 (0 = the engine's default); expects err e
+   task automatic format_track(input int c, input int h, input bit hd, input int nsec, input byte fill,
+                               input byte gap3, input logic [7:0] e, input string what);
+      int  w0 = model.writes;
+      real t0 = $realtime;
+      logic [17:0] ev = 0;
+      for (int s = 1; s <= nsec; s++) ev[s - 1] = 1;
+      model.fmt_expect = (e == E_OK || e == E_FMT_OVER || e == E_FMT_VFY);
+      model.fmt_nsec   = nsec;
+      model.fmt_gap3   = (gap3 != 0) ? int'(gap3) : (hd ? 84 : 80);
+      cmd_fill = fill; cmd_gap3 = gap3;
+      run(CMD_FORMAT, c, h, hd, 0, 0, nsec, what, 2500.0);
+      check(err == e, $sformatf("%s: err %0d (expected %0d)", what, err, e));
+      check(f_wgate === 1'b1, $sformatf("%s: WRITE GATE released", what));
+      if (e == E_OK) begin
+         if (err == E_OK) begin
+            for (int s = 0; s < 19; s++) pat_tbl[c][h][s] = (s >= 1 && s <= nsec) ? 1000 + (int'(fill) & 32'hFF) : 0;   // byte is signed
+         end
+         check(model.writes == w0 + 1, $sformatf("%s: %0d writes recorded by the drive (1)", what, model.writes - w0));
+         check(model.last_wr_full == 1, $sformatf("%s: the drive saw a full-track write", what));
+         check(model.pos == c && head_track == c, $sformatf("%s: head on cylinder %0d (model %0d, engine %0d)", what, c, model.pos, head_track));
+         check(cache_valid && cache_cyl == c && cache_head == h[0] && cache_rate == hd,
+               $sformatf("%s: cache C%0d H%0d rate %0d valid %0d", what, cache_cyl, cache_head, cache_rate, cache_valid));
+         check(valid == ev, $sformatf("%s: read-back valid %018b (expected %018b)", what, valid, ev));
+         check(crcerr == 0, $sformatf("%s: read-back CRC errors %018b", what, crcerr));
+         check(fmt_tail > 0, $sformatf("%s: %0d gap 4b bytes written before the index (> 0)", what, fmt_tail));
+         check(!vfy_pend && !vfy_fail, $sformatf("%s: no verify pending or failed", what));
+         $display("FLP format %s: WRITE GATE on %0d bytes after the index, off %0d bytes after the next, %0d transitions, %0d gap 4b bytes, %0.1f ms",
+                  what, model.last_wr_lead, model.last_wr_end, model.last_wr_pulses, fmt_tail, ($realtime - t0) / 1.0e6);
+      end else if (e == E_FMT_OVER) begin
+         check(model.writes == w0 + 1, $sformatf("%s: the (overrunning) write reached the drive", what));
+         check(fmt_tail == 0, $sformatf("%s: no gap 4b byte written (%0d)", what, fmt_tail));
+         for (int s = 0; s < 19; s++) pat_tbl[c][h][s] = -1;                        // the track is unusable
+         $display("FLP format %s: overrun, the index came while writing sector %0d (%0d transitions)", what, dut.fr_sec, model.last_wr_pulses);
+      end else begin
+         check(model.writes == w0, $sformatf("%s: no write reached the drive", what));
+      end
+      model.fmt_expect = 0;
+      cmd_fill = 8'hF6; cmd_gap3 = 8'h00;
    endtask
 
    // wait for the background verify of every written sector
@@ -513,6 +568,92 @@ module floppy_sector_engine_tb;
       check(!vfy_pend && !vfy_fail, "end of the write tests: nothing pending, nothing failed");
       $display("FLP writes: %0d recorded by the drive", model.writes);
 
+      // ==========================================================================================
+      // phase 4: FORMAT_TRACK
+      // ==========================================================================================
+      // --- a blank HD disk on a 3 % fast spindle: index pulses, no headers at either rate ---
+      model.eject();
+      #10us;
+      model.speed_hd = 0.97;
+      model.insert(1, 0);
+      model.disk_blank = 1;
+      run(CMD_PROBE, 0, 0, 0, 0, 0, 0, "PROBE (blank HD)", 10.0);
+      @(posedge clk); chg_clr = 1; @(posedge clk); chg_clr = 0;
+      run(CMD_DETECT, 0, 0, 0, 0, 0, 0, "DETECT (blank HD)", 1500.0);
+      check(err == E_OK && !det_hd && !det_dd && det_max_r == 0 && index_seen,
+            $sformatf("blank disk: err %0d hd %0d dd %0d maxr %0d index %0d (0 0 0 0 1: the firmware's blank-disk rule)", err, det_hd, det_dd, det_max_r, index_seen));
+      run(CMD_READ, 0, 0, 1, 0, 1, 18, "READ C0 H0 on the blank disk", 1500.0);
+      check(err == E_NO_IDAM, $sformatf("read of a blank track: err %0d (3)", err));
+
+      // --- format C0 H0 with the defaults (18 sectors, gap 3 0x54, fill F6): everything reads back ---
+      t0 = $realtime;
+      format_track(0, 0, 1, 18, 8'hF6, 8'h00, E_OK, "FORMAT C0 H0 HD");
+      t1 = $realtime - t0;
+      check(t1 < 3.0 * 200.0e6 + SPINUP_CYC * 20.0 + 20.0e6, $sformatf("format + read-back in %0.1f ms (< spin-up + 3 revolutions)", t1 / 1.0e6));
+      check(fmt_tail >= 100 && fmt_tail <= 200, $sformatf("gap 4b on a 3 %% fast spindle: %0d bytes (100..200: 146 + 18 x 658 = 11990 of 12136 bytes)", fmt_tail));
+      for (int s = 1; s <= 18; s++) copy_check(s, 0, 0);
+      run(CMD_READ, 0, 0, 1, 1, 1, 18, "READ C0 H0 forced after the format", 1500.0);
+      check(err == E_OK && valid == 18'h3FFFF && crcerr == 0, "forced re-read of the formatted track: 18 valid, no CRC error");
+      for (int s = 1; s <= 18; s++) copy_check(s, 0, 0);
+      run(CMD_DETECT, 0, 0, 0, 0, 0, 0, "DETECT after the format", 1500.0);
+      check(det_hd && !det_dd && det_max_r == 18, $sformatf("DETECT after the format: hd %0d dd %0d maxr %0d (1 0 18)", det_hd, det_dd, det_max_r));
+
+      // --- the BIOS table's gap 3 (0x6C = 108) does not fit a 3 % fast revolution: overrun, err 11 ---
+      format_track(0, 1, 1, 18, 8'hF6, 8'h6C, E_FMT_OVER, "FORMAT C0 H1 HD with gap 3 0x6C");
+      check(!cache_valid || valid == 0, "overrun: no sector believed valid");
+      // ... and the same track formatted again with the default is fine
+      format_track(0, 1, 1, 18, 8'hE5, 8'h00, E_OK, "FORMAT C0 H1 HD again with the default gap 3");
+      for (int s = 1; s <= 18; s++) copy_check(s, 0, 1);
+
+      // --- after a seek (cylinder 40, precompensation on), then a sector write onto our own format ---
+      steps0 = model.model_steps;
+      format_track(40, 1, 1, 18, 8'h00, 8'h00, E_OK, "FORMAT C40 H1 HD (fill 00)");
+      check(model.model_steps - steps0 == 40, $sformatf("seek 0 -> 40 before the format: %0d steps", model.model_steps - steps0));
+      write_sector(5, 40, 1, 1, 11, E_OK, "WRITE C40 H1 s5 on the formatted track");
+      wait_verify("WRITE C40 H1 s5 on the formatted track", 0);
+      run(CMD_READ, 40, 1, 1, 1, 1, 18, "READ C40 H1 forced after the write", 1500.0);
+      check(err == E_OK && valid == 18'h3FFFF && crcerr == 0, "formatted track + one sector write: 18 valid");
+      for (int s = 1; s <= 18; s++) copy_check(s, 40, 1);
+
+      // --- write protect: refused before WRITE GATE; the track is untouched ---
+      model.disk_wp = 1;
+      #10us;
+      format_track(40, 0, 1, 18, 8'hF6, 8'h00, E_WPROT, "FORMAT on a protected disk");
+      model.disk_wp = 0;
+      #10us;
+
+      // --- a MEGA65/1581-style DD disk (10 sectors, short gap 3) formatted as 720 KB, both sides ---
+      model.eject();
+      #10us;
+      model.nsec_ovr = 10; model.gap3_ovr = 30;
+      model.insert(0, 0);
+      model.bad_id = 0; model.bad_data = 0;
+      run(CMD_PROBE, 0, 0, 0, 0, 0, 0, "PROBE (1581 DD)", 10.0);
+      @(posedge clk); chg_clr = 1; @(posedge clk); chg_clr = 0;
+      run(CMD_DETECT, 0, 0, 0, 0, 0, 0, "DETECT (1581 DD)", 1500.0);
+      check(det_dd && !det_hd && det_max_r == 10, $sformatf("1581-style disk: dd %0d hd %0d maxr %0d (1 0 10)", det_dd, det_hd, det_max_r));
+      format_track(0, 0, 0, 9, 8'hF6, 8'h00, E_OK, "FORMAT C0 H0 DD");
+      check(f_density === 1'b0, "DENSITY = G_DENSITY_DD while formatting at 250 kbit/s");
+      check(fmt_tail >= 10 && fmt_tail <= 60, $sformatf("gap 4b at 250 kbit/s on a 3 %% fast spindle: %0d bytes (10..60: 146 + 9 x 654 = 6032 of 6068)", fmt_tail));
+      for (int s = 1; s <= 9; s++) copy_check(s, 0, 0);
+      run(CMD_READ, 0, 0, 0, 0, 10, 18, "READ C0 H0 DD sector 10 after the format", 1500.0);
+      check(err == E_OK && valid == 18'h001FF && !valid[9], "the old sector 10 is gone: 9 valid");
+      format_track(0, 1, 0, 9, 8'hF6, 8'h00, E_OK, "FORMAT C0 H1 DD (side switch)");
+      for (int s = 1; s <= 9; s++) copy_check(s, 0, 1);
+      run(CMD_DETECT, 0, 0, 0, 0, 0, 0, "DETECT after the DD format", 1500.0);
+      check(det_dd && !det_hd && det_max_r == 9, $sformatf("DETECT after the DD format: dd %0d hd %0d maxr %0d (1 0 9)", det_dd, det_hd, det_max_r));
+      model.nsec_ovr = 0; model.gap3_ovr = 0;
+
+      // --- no disk, bad arguments ---
+      model.eject();
+      #10us;
+      @(posedge clk); chg_clr = 1; @(posedge clk); chg_clr = 0;
+      format_track(1, 0, 0, 9, 8'hF6, 8'h00, E_NO_INDEX, "FORMAT with no disk");
+      format_track(83, 0, 1, 18, 8'hF6, 8'h00, E_BAD_ARG, "FORMAT cylinder 83");
+      format_track(1, 0, 1, 0, 8'hF6, 8'h00, E_BAD_ARG, "FORMAT with 0 sectors");
+      format_track(1, 0, 1, 19, 8'hF6, 8'h00, E_BAD_ARG, "FORMAT with 19 sectors");
+      $display("FLP writes after the format tests: %0d recorded by the drive", model.writes);
+
       // --- disable ---
       enable = 0;
       #1us;
@@ -528,7 +669,7 @@ module floppy_sector_engine_tb;
    end
 
    initial begin
-      #20s;
+      #45s;
       $display("FLP RESULT: FAIL (timeout; %0d failed, %0d passed so far)", n_fail + model.n_fail, n_pass + model.n_pass);
       $finish;
    end

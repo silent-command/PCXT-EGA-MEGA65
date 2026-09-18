@@ -27,8 +27,15 @@ never learn the difference. Phases:
    sector's data field only (22 bytes after the ID CRC to the end of the data CRC
    plus two bytes of gap), the sector taken from the FDC's block buffer, a
    background read-after-write verify, the mount read-write unless the tab says no.
-4. **Formatting**: whole-track writes from the FDC's format command (the FDC already
-   collects C/H/R/N per sector into its buffer for the image path).
+4. **Formatting** (done 2026-09-17, "Phase 4" at the end): the FDC's FORMAT TRACK
+   arrives at the firmware as a run of fill-byte block writes; a tap on floppy.v
+   tells them from data, the engine writes the whole track from index to index
+   (FORMAT_TRACK) on the first one and the rest are acknowledged; blank disks are
+   mounted as 1.44 MB so that `FORMAT A:` can reach them.
+5. **Disk detection on demand** (done 2026-09-17, section at the end): the drive is
+   never touched while idle; an eject unmounts, DOS's own access attempt (seen in
+   floppy.v) triggers the probe and detection, floppy.v drops a parked request on
+   the FDC software reset the BIOS issues.
 
 ## The spike, 2026-09-17
 `CORE/vhdl/floppy_phy_spike.vhd` (GPL, VHDL, 50 MHz chipset clock), bench
@@ -260,16 +267,14 @@ error and DOS printed "Write protect error writing drive A"; since phase 3 the
 mount follows the drive's write-protect line.
 
 ### No disk, disk change
-With no readable disk at mount time the FDC is left unmounted (`media_present` = 0):
-a DOS access "hangs at start" in floppy.v, the BIOS times out and DOS prints
-"Not ready reading drive A. Abort, Retry, Fail?" like a real PC, and the FDC stays
-clean. While in that state the firmware issues a PROBE every 2 s: one step in
-and one out without the motor. A step with a disk in clears the drive's latched
-DISK CHANGE, so the line afterwards tells a disk from none. A disk found is
-detected and mounted, so a Retry after inserting the disk works. A disk change
-while mounted (the engine latches the rising edge of DISK CHANGE, checked in the
-main loop and before every request) re-runs DETECT and re-mounts: floppy.v sees
-eject/insert, sets its change line, DOS re-reads the disk; a removed disk unmounts.
+With no disk the FDC is unmounted (`media_present` = 0): its change bit stays set,
+the BIOS answers every DOS access with "not ready" at once and DOS prints "Not
+ready reading drive A. Abort, Retry, Fail?" like a real PC with the door open.
+Phase 2 then probed the drive every 2 s (one step in and out without the motor,
+which clears the drive's DISK CHANGE latch when a disk is in) and re-ran DETECT on
+every change while mounted; that made an empty drive click for ever and is gone.
+Since "Disk detection on demand" (end of this document) an eject unmounts at once
+and the probe runs only when DOS tries to use the drive.
 
 ### Read errors: what floppy.v allows, and what was chosen
 floppy.v cannot be told about a read error: the ARM sends 512 bytes whatever
@@ -281,19 +286,21 @@ attempts leave sector R invalid (ID never seen, data CRC bad, no index), the
 firmware acknowledges the block with the block-error flag set and the bridge
 streams nothing: floppy.v keeps waiting, the BIOS's INT 13h times out (error 80h),
 DOS retries and prints "Not ready reading drive A"; the still-pending request is
-parked so the hard disk keeps being served; drive A is dead until the next core
-reset (the reset button), because only that releases floppy.v's state machine.
-A later phase can add an abort register to floppy.v if that trade-off is not
-acceptable. `mgmt_bridge_tb` test 16 covers all of it (5121 checks, pass).
+parked so the hard disk keeps being served. In phase 2 drive A was then dead until
+the next core reset, because only that released floppy.v's state machine; since
+"Disk detection on demand" the overlay floppy.v drops the request on the FDC
+software reset the BIOS issues on its error path, so a Retry raises a fresh one.
+`mgmt_bridge_tb` test 16 covers all of it (5121 checks in phase 2, now with the
+DOR reset as the recovery).
 
 ### Menu
 "A: internal drive" is a single-select toggle in Input Settings, saved with the
 other settings. On: any image mounted on A: is unmounted, the engine is enabled,
-DETECT runs, the drive is mounted (or left "no disk"); the Drive A line shows
-"Internal drive" and is inert while the toggle is on (`HANDLE_MOUNTING` returns
-without browsing). Off: unmount, engine disabled (motor off, drive deselected).
-At start-up `PREP_START` applies the saved toggle and waits for the detection so
-that the BIOS can boot from A:. `FLP_MENU_LINE` (76) and `FLP_MENU_GRP` (21) in
+one PROBE runs and, with a disk in, DETECT and the mount (or the drive is left
+"no disk", unmounted); the Drive A line shows "Internal drive" and is inert while
+the toggle is on (`HANDLE_MOUNTING` returns without browsing). Off: unmount, engine
+disabled (motor off, drive deselected). At start-up `PREP_START` applies the saved
+toggle and waits for the probe and detection so that the BIOS can boot from A:. `FLP_MENU_LINE` (76) and `FLP_MENU_GRP` (21) in
 `flpdrv.asm` must follow config.vhd.
 
 ### Registers
@@ -343,15 +350,17 @@ core has 165 free).
 * Everything the spike could not prove (select, input senses, DENSITY, margins).
 * **PROBE / DISK CHANGE**: that a step without the motor clears the drive's latch
   when a disk is in and leaves it when not (mega65-core's wording; the model does
-  the same). If the drive needs the motor for that, `S_PROBE_*` gets a spin-up.
+  the same). Proven by the first board result below: the re-inserted disk was
+  noticed by exactly such a probe.
 * **The BIOS timeout** against the first-sector latency (spin-up 0.5 s + recalibrate
   + seek + up to 2 revolutions): the 8088_bios INT 13h timeout is 2 s like IBM's; if
   it bites, shorten `G_CAP_INDEX` handling or keep the motor on longer.
 * **Sequential throughput**: the cache should make a track cost one or two
   revolutions; the serial log's `FLP:` lines and the `hdd=`-style counters tell.
-* **The dead-drive-after-error behaviour** and that the reset button revives A:.
+* **The dead-drive-after-error behaviour** and that the reset button revives A:
+  (superseded: see "Disk detection on demand", the BIOS reset revives it).
 * **DOS's reaction to the eject/insert re-mount** on a disk change with the same
-  geometry.
+  geometry (superseded: an eject now unmounts, see "Disk detection on demand").
 
 ## First board result, 2026-09-17: DOS reads a real disk
 Build of commit 03ba1c6 (WNS +0.177, no violations) on the R6, a 1.44 MB
@@ -642,3 +651,255 @@ the disk in a PC drive lists the files and COMMAND.COM is intact. So the
 splice point, the write timing at 500 kbit/s, the background verify and the
 read-write mount all hold on real media. Not yet exercised on the board:
 720 KB (250 kbit/s) writes, a write-protected disk, formatting (phase 4).
+
+---
+
+## Phase 4: formatting, 2026-09-17
+`FORMAT A:` from DOS on a blank, erased or foreign disk in the internal drive
+produces a standard 1.44 MB disk (or a 720 KB one from a disk detected as 720 KB).
+**Not yet run on the board**; what only the board can prove is at the end of this
+section. floppy.v is *tapped* (a read-only management register) and, separately,
+*fixed* in one condition: with this core's DMA timing it never wrote the last
+sector of a track and ended every FORMAT TRACK with "abnormal termination", which
+the BIOS turns into error 20h "controller failure" - so `FORMAT A:` could not have
+worked on this core even with an image (see "The floppy.v fix").
+
+### How DOS formats, and what the firmware sees
+FreeDOS FORMAT issues INT 13h AH=05h per cylinder and head (with an ID list of
+C, H, R = 1..SPT, N = 2), reads the track back (its verify pass, AH=04h or 02h),
+and at the end writes the boot sector, the FATs and the root directory with
+ordinary AH=03h writes. The 8088_bios (`floppy2.inc` `int_13_fn05`) seeks, sends the
+uPD765 FORMAT TRACK command `4D HD/DS N=2 SC GPL D` with SC / GPL / D from its INT 1Eh
+table (1.44 MB: 18 / 0x6C / 0xF6, 720 KB: 9 / 0x50 / 0xF6) and DMAs the ID list with
+a count of SC x 4 - 1. floppy.v (`CORE/rtl/overlay/floppy.v`, ao486's image-based
+controller) refuses the command outright (it "hangs", the BIOS times out) when SC
+is not the mounted image's sectors per track; otherwise, per ID field, it computes
+`sd_sector = (C * 2 + H) * SPT + R - 1` from the ID's C and R (the head from the
+command byte), enters `S_SD_FORMAT_WAIT_FOR_FILL` with `request[1]` set and lets
+the bridge pop 512 x the filler byte through its FIFO. **So what reaches the
+firmware is 18 (or 9) ordinary block writes of fill bytes to consecutive LBAs**,
+indistinguishable from DOS writing those sectors - and they must be
+distinguished, because formatting destroys a track while a data write to a bad
+sector must not silently reformat it (a heuristic "a write to a sector whose
+ID header is missing is a format" was rejected for that reason).
+
+### The tap
+* floppy.v: management register 1 (address `F201`, which the original ARM side
+  never reads; it returned a constant 1) now returns `{fill, SC[6:0], D[7:0]}`:
+  bit 15 = the controller is in `S_SD_FORMAT_WAIT_FOR_FILL` for a format command
+  (this request is a fill), bits 14..8 = the command's sector count, 7..0 = its
+  filler byte. Nothing the CPU sees changes.
+* `mgmt_bridge.sv`: one extra bus read per floppy request (`S_FDD_TAP`, after the
+  LBA read) latches that word into `fd_fmt`, held until the next dispatch. It has
+  to be sampled *per request*: floppy.v's format command ends 80 us after the
+  bridge pops the last sector's fill, long before the firmware handles that
+  block, so a level would be gone for the last sector.
+* `main.vhd` `flp_fmt_o` -> `mega65.vhd` -> `rom_loader.vhd` register **14** of
+  window `0xFFFD` (a 16-bit `xpm_cdc_array_single`; the word is stable from more
+  than 512 core clocks before the block request rises until the firmware's
+  acknowledge, so the bit-wise crossing is safe). Register **15** shows the gap 4b
+  count of the last FORMAT_TRACK (debug), **write 4** carries the engine's third
+  argument (fill byte 7..0, gap 3 length 15..8, 0 = default). Control bit 4 and
+  register 13 belong to the on-demand detection.
+
+### The floppy.v fix (DOS-visible, deliberate)
+`Peripherals.sv` presents the 8237's terminal count to floppy.v in the same
+clock as the acknowledge of the last byte (`dma_tc = fdd_dma_tc &
+fdd_dma_rw_ack`), i.e. together with the 4th ID byte of the last sector.
+Upstream's `cmd_format_in_input_finish = ~execute_ndma && dma_has_terminated`
+then pre-empted the completed ID field in `S_WAIT_FOR_FORMAT_INPUT`: the last
+sector's fill was never requested and the command ended from that state with
+ST0 = 0x40. `fdc_get_error` maps that to 20h; every AH=05h failed. (ao486's own
+DMA presumably presents TC a clock later, where the code works.) The overlay
+adds `&& format_data_count != 3'd4`: a completed ID field is processed first,
+the terminal count then ends the command normally in `S_CHECK_TC` after that
+sector - what a uPD765 does (after TC it formats to the end of the track and
+reports normal termination). `mgmt_bridge_tb` test 19 saw 17 fills and ST0 0x40
+before the fix, 18 fills (LBA 36..53) and ST0 0x00 after it. Image-based
+floppies get the same fix: the last sector of every formatted track is now
+written too.
+
+### The engine: FORMAT_TRACK (command 7)
+`floppy_sector_engine.vhd`, arguments cylinder / head / rate / spt (1..18) /
+fill / gap 3. Refused with err 7 while the drive reports write protect, before
+anything moves; err 5 for cylinder > 82 or spt 0 / > 18. Then motor, the wait
+for pending verifies if the head must move, recalibrate / seek / settle as for
+a write; at the seek-settle point every slot, CRC-error bit and pending verify of
+the track is dropped (the track is about to disappear; `cache_valid` stays set
+for the read-back). `S_FMT_INDEX` waits for the leading edge of the INDEX pulse
+(err 1 after 1 s: no disk); at the edge WRITE GATE goes on and the byte
+sequencer (`fr`, `fr_cnt`, `fr_sec`) feeds the writer the IBM System 34 track:
+
+| region | bytes | content |
+|---|---|---|
+| gap 4a | 80 | 4E |
+| sync | 12 | 00 |
+| IAM | 4 | C2 C2 C2 (raw 0x5224, the writer's new `mark_c2_i`) FC |
+| gap 1 | 50 | 4E |
+| per sector: ID | 12 + 3 + 1 + 4 + 2 = 22 | 00 x 12, A1 A1 A1 (raw 0x4489), FE, C, H, R, 02, CRC |
+| gap 2 | 22 | 4E |
+| data | 12 + 3 + 1 + 512 + 2 = 530 | 00 x 12, A1 A1 A1, FB, 512 x fill, CRC |
+| gap 3 | 84 (HD, 0x54) / 80 (DD, 0x50) | 4E |
+| gap 4b | until the next index | 4E |
+
+CRC-16/CCITT 0x1021 preset FFFF over A1 A1 A1 FE C H R N and over A1 A1 A1 FB +
+data, computed on the fly as the writer takes each byte (`wr_crc`, reset when
+the sync field ends). At the next INDEX edge the sequencer stops the writer
+(`fmt_stop`; the writer drains its window and drops WRITE GATE within about
+2 bytes) and, if the index came before gap 4b, reports err 11 (the track did
+not fit). `fmt_tail_o` counts the gap 4b bytes written = the margin left. Then
+the reader is reset and the engine runs its normal track capture once
+(`S_CAPTURE`, early exit when all spt sectors are in): that is the format's
+verify *and* it leaves the track in the cache, so DOS's own verify pass costs
+no disk time; if not every sector 1..spt came back with good CRCs the command
+ends with err 10 (`valid_o` says which did; err 3 if nothing was read back).
+
+### The timing budget, and why gap 3 is 0x54 and not the BIOS table's 0x6C
+The writer runs at exactly 500 / 250 kbit/s (50 / 100 clocks per raw bit); the
+spindle is what varies, and a fast spindle brings the next index *before* the
+sequencer has finished. Bytes per revolution: 12500 (HD, 200 ms at 16 us) /
+6250 (DD, 32 us); at +3 % spindle speed 12136 / 6068. What must lie before the
+index is everything up to and including the last sector's data CRC; gap 3 of
+the last sector and gap 4b are filler.
+
+| | lead-in | per sector | last CRC ends at | whole track | fits +3 % fast? | gap 4b at nominal |
+|---|---|---|---|---|---|---|
+| HD, gap 3 0x6C (108, BIOS 1.44 MB table) | 146 | 682 | 12314 | 12422 | **no**: 12136 available, 178 bytes of sector 18 cut; fits only up to +1.5 % (1 byte spare) | 78 |
+| HD, gap 3 0x54 (84, the datasheet's 15-sector / 1.2 MB value) | 146 | 658 | 11906 | 11990 | yes, 230 bytes (3.7 ms) spare before the last CRC, 146 bytes of gap 4b | 510 |
+| DD, gap 3 0x50 (80, the BIOS 720 KB table) | 146 | 654 | 5952 | 6032 | yes, 116 bytes spare, 36 bytes of gap 4b | 218 |
+
+So the task's requirement (never overrun the index with a +-3 % spindle)
+cannot be met with 0x6C at 500 kbit/s: the IBM value assumes a drive within
+about +1.5 %. 84 bytes of gap 3 is still three times what the WRITE_SECTOR
+splice needs (the model's minimum margin is 30 bytes; a data field written on a
+3 % slower drive than the formatter's lands 16 bytes longer) and more than the
+uPD765's minimum read/write gap for 512-byte MFM sectors (0x1B). The engine
+defaults are `G_FMT_GAP3_HD` = 84 / `G_FMT_GAP3_DD` = 80; the firmware passes
+0 (= default). The bench formats the same track with 0x6C on a 3 % fast disk
+and gets err 11, and with the default gets 100..200 bytes of gap 4b.
+
+Per track on the board: seek (3 ms per step + 15 ms settle) + up to one
+revolution to the index (200 ms) + one revolution of writing + the read-back
+(one revolution when every sector comes back, two otherwise): about 0.45 to
+0.65 s, so a 1.44 MB disk formats in roughly 80..105 s of drive time plus DOS's
+verify pass (cache hits) and the FAT / root writes; the motor is spun up once
+(0.5 s) and stays on between tracks. The BIOS's 2 s INT 13h timeout covers the
+first fill's acknowledge (spin-up + format + read-back < 1.5 s); the other 17
+fills are acknowledged within the firmware's poll latency.
+
+### The ack rule (firmware, `CORE/m2m-rom/flpfmt.asm`)
+`FLPF_WR_HOOK`, called from `FLP_DRV_WR` once the request is converted and
+checked (LBA in range, mounted read-write, no verify failure pending, no disk
+change), reads register 14. Bit 15 clear: an ordinary write, back to
+WRITE_SECTOR. Bit 15 set: the block is a fill; the track key is C * 2 + H.
+* R = 1, or a track other than the one formatted last (`FLPF_TRK`): run
+  FORMAT_TRACK with the tap's sector count and filler and the rate of the mount,
+  two attempts (the second with a recalibrate), none after a write-protect
+  refusal; on success remember the key and acknowledge, on failure log
+  "format error status=", forget the key and acknowledge with the block error
+  (the bridge parks the drive as for a failed write, DOS's next access fails
+  and FORMAT reports the track).
+* otherwise (R > 1 of the track formatted last): acknowledge without any disk
+  activity - the content is the filler byte and it is on the disk already
+  (`FLPF_N_ACK` counts them). 18 WRITE_SECTORs would cost 18 revolutions.
+R = 1 always formats so that a retry of the same track (FORMAT's own retry
+after a verify error, or a second FORMAT run) never gets acknowledged fills for
+a track that was not written again. The boot sector, FATs and root directory
+arrive as ordinary writes afterwards and take the phase 3 path. `FLPF_INIT`
+(from `FLP_INIT`) initialises the state; the include of `flpfmt.asm` sits at the
+end of `flpdrv.asm` and of `flpfmt_vars.asm` at the end of `flpdrv_vars.asm`, so
+the emulator bench `flp_ondemand.asm` gets both.
+
+### The blank-disk mount decision
+With the on-demand detection a disk that DETECT cannot read at either rate
+was "no disk": unmounted, `FORMAT A:` got "Not ready". Now `FLP_DET_APPLY` asks
+`FLPF_BLANK`: when the DETECT ended without error (index pulses came, so a disk
+turns) but neither rate produced a header, the disk is mounted **as 1.44 MB
+read-write** (read-only if the tab says so) with the log line "turns but nothing
+readable: blank or foreign disk, mounted as 1.44 MB for FORMAT". That covers a
+blank disk, an erased one and foreign formats (Amiga, a MEGA65/1581 disk):
+DOS reading it gets errors (the BIOS's FDC reset releases the request, "Abort,
+Retry, Fail?"), `FORMAT A:` makes it a PC disk. 1.44 MB because the interface
+has no way to sense the HD hole (the drive senses it itself and sets its write
+current accordingly) and the MEGA65's drive is an HD drive; a DD blank
+formatted this way would fail its read-back on the first track (write current
+/ media mismatch) and FORMAT would report track 0 - the documented limitation.
+Not supported: `FORMAT A: /F:720` on a disk mounted as 1.44 MB. floppy.v refuses
+the FORMAT TRACK whose SC (9) is not the mount's (18) before it reaches the
+firmware, the BIOS times out (error 80h), FORMAT reports the track, the disk is
+untouched; so the sector count in the tap always equals `FLP_SPT`. A 720 KB PC
+disk (detected as such) formats as 720 KB with plain `FORMAT A:`. The mechanics
+for /F:720 exist (a tap of the refused command's SC, a re-mount with that
+geometry, the user's second FORMAT then succeeds) but are not built.
+
+### Benches
+* `run_floppy_sector_engine_tb.ps1`: the drive model (`floppy_drive_model.sv`)
+  gained blank disks (no flux at all), a sector-count / gap 3 override (a
+  MEGA65/1581-style DD disk: 10 sectors, gap 3 30), a spindle speed factor per
+  rate, and full-track writes: with `fmt_expect` set, a write may start within
+  4 bytes after the index (gap 4a) and must end within 8 bytes after the next
+  one with exactly one index inside; it replaces the whole recording of the
+  track, and the region map of a formatted track is rebuilt from the layout the
+  bench announced, scaled by the writer's rate against the spindle, so that
+  later sector writes are still checked against the new gap 2 / gap 3. New
+  cases, after the phase 3 ones: a blank HD disk on a 3 % *fast* spindle
+  (DETECT: err 0, no HD, no DD, index seen - the firmware's blank rule; a read
+  finds no header); FORMAT C0 H0 with the defaults (18 sectors read back by the
+  engine, every sector compared as 512 x F6, then a forced re-read and DETECT
+  finding 18 sectors); the same track with gap 3 0x6C: err 11 overrun, then
+  formatted again with fill E5; C40 H1 after a seek with precompensation, then a
+  WRITE_SECTOR onto the fresh format (the splice lands in our own gap 2) and a
+  full compare; write protect refused before WRITE GATE; the 1581-style DD disk
+  (DETECT sees 10 sectors) formatted with 9 on both sides, its old sector 10 gone,
+  DETECT then sees 9; no disk (err 1); cylinder 83, 0 and 19 sectors (err 5).
+  Result: **PASS, 847954 checks** (66805 in phase 3; the format cases measure 135 gap 4b bytes at 500 kbit/s and 31 at 250 kbit/s on a 3 % fast spindle).
+* `run_mgmt_bridge_tb.sh` (WSL, Icarus, the overlay floppy.v): test 19: a
+  FORMAT TRACK of C1 H0 through the BIOS's exact sequence (6 command bytes, the
+  ID list by DMA with TC on the last byte) produces 18 block writes of 512 x F6 to
+  LBA 36..53 with `fd_fmt` = {1, 18, F6} at every dispatch and a normal
+  termination; a normal write and a read afterwards are dispatched with the tap
+  bit clear (the fill bytes read back). Result: **PASS, 9481 checks** (8306
+  before; the same bench showed 17 fills and ST0 0x40 before the floppy.v fix).
+* `run_rom_loader_tb.ps1`: registers 14 / 15 read back through the window,
+  write 4 reaches the engine with a FORMAT_TRACK (code 7) command. Result: PASS.
+* `tools/vdrive-latency-bench/run_flp_ondemand.sh` (the real flpdrv.asm +
+  flpfmt.asm in the QNICE emulator): tests 20..22: the fill of C1 H0 R1 issues
+  exactly one FORMAT_TRACK with arg0 = C1 H0 HD, arg1 = SC 18, arg2 = F6 and is
+  acknowledged clean; the fills of R2 and R18 are acknowledged without a
+  command; C1 H1 R1 and a fill of R5 of a track not formatted are formatted; R1
+  of the track just formatted formats again; the same LBA without the tap bit is
+  a WRITE_SECTOR; a format that fails: two attempts (the second with force), the
+  block error, the next fill of that track formats again; write protected: one
+  attempt; a blank disk (index, no headers) mounts as 1.44 MB read-write with
+  SPT 18 at 500 kbit/s, without index pulses it is NODISK. Result: **PASS, 155
+  checks** (117 before).
+* `run_vd_glue_tb.ps1`: unchanged, re-run: PASS, 8 checks. `run_floppy_phy_spike_tb.ps1`
+  on the extended model: PASS, 1844 checks (unchanged).
+* The firmware assembles (`make_rom.sh`, 27295 ROM lines).
+
+### Resources (Vivado 2026.1 out of context, `synth-vhdl-ooc.tcl`)
+`floppy_sector_engine` with its three modules: 1417 LUTs, 846 FFs, 4 RAMB36 +
+1 RAMB18 (phase 3: 1250 / 793 / the same RAM): the format sequencer, its byte
+mux and the gap counters are the 167 LUTs. `rom_loader`: 336 LUTs, 644 FFs
+(311 / 555 in phase 3; includes the on-demand access flag). No latches, no
+`Synth 8-327`.
+
+### What only the board can prove
+* **PC readability of a MEGA65-formatted disk**: `FORMAT A:` here, then the disk in
+  a PC drive: `DIR`, `CHKDSK`, a file copied both ways. The sync fields, IAM and
+  gaps are written by our clock; a PC's controller must lock onto them.
+* **The DOS FORMAT verify pass** against the cache: FORMAT reads every track back
+  right after formatting it; those reads should be cache hits (the `FLP:` log
+  shows no READ_TRACK disk time between "formatted, gap 4b bytes=" lines).
+* **The gap 4b count** (`FLP: formatted, gap 4b bytes=`, register 15) on the real
+  spindle: about 500 at nominal speed, 146 at +3 %; a value near 0 or an err 11
+  means the drive is faster than +3 % and `G_FMT_GAP3_HD` must come down.
+* **Write current on a DD blank**: a 720 KB blank is mounted as 1.44 MB and should
+  fail its read-back on track 0 (documented); a 720 KB PC disk formats as 720 KB.
+* **FORMAT /F:720 on an HD mount**: the FDC-level refusal should end in FORMAT's
+  error message with the disk untouched.
+* **The BIOS timeout on the first fill** (spin-up + up to one revolution to the
+  index + the write + the read-back) and the total format time.
+* **Erase-to-write turn-on at the index**: WRITE GATE goes on at the index edge;
+  a drive that needs time before the first transition eats into gap 4a (80
+  bytes, 1.3 ms), which a PC ignores anyway.
