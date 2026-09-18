@@ -259,7 +259,11 @@ begin
    -- The purpose is to right-shift the position of the OSM
    -- on the HDMI output. This will be removed when the
    -- M2M framework supports two different OSM VRAMs.
-   hdmi_shift <= hdmi_video_mode.H_PIXELS - integer(G_VGA_DX);
+   -- PCXT-EGA fix: clamped at zero. In a mode narrower than the core's own picture (640x480 with
+   -- a 720-pixel MDA raster) this went negative into video_overlay's vga_cfg_shift_i, which is a
+   -- natural - the OSM would land off-screen, and it is an outright range error in simulation.
+   hdmi_shift <= hdmi_video_mode.H_PIXELS - integer(G_VGA_DX)
+                 when hdmi_video_mode.H_PIXELS >= integer(G_VGA_DX) else 0;
 
    ---------------------------------------------------------------------------------------------
    -- Digital output (HDMI) - Audio part

@@ -182,3 +182,14 @@ set_false_path -to [get_pins {CORE/i_eth_mac/tx_eof_meta_reg/D CORE/i_eth_mac/tx
 set_false_path -from [get_ports {f_index_i f_track0_i f_writeprotect_i f_rdata_i f_diskchanged_i}]
 set_false_path -to   [get_ports {f_density_o f_motora_o f_selecta_o f_side1_o f_stepdir_o f_step_o f_wdata_o f_wgate_o}]
 set_property IOB TRUE [get_ports {f_stepdir_o f_step_o}]
+
+## ----------------------------------------------------------------------------------------------
+## Analog video from the scaler (docs/analog-video.md section 10, G_ANALOG_FROM_SCALER)
+## ----------------------------------------------------------------------------------------------
+## The VDAC clock is switched between the core's video clock and the scaler's pixel clock by a
+## BUFGCTRL, whose select comes from the Display menu ("VGA: 31 kHz" vs the two 15 kHz items). It
+## is a quasi-static level from the clk_57_ps domain and the two clocks are asynchronous, so the
+## tool otherwise times it against hdmi_clk with an almost-zero requirement and reports a few ns
+## of failure. BUFGCTRL is built for exactly this: it changes over only when both clocks are low,
+## so the select is asynchronous by design. The worst a menu change can do is drop one frame.
+set_false_path -to [get_pins -hier -filter {NAME =~ *i_vdac_clk_mux/S*}]
