@@ -819,9 +819,9 @@ FLP_DRV_WR      SYSCALL(enter, 1)
                 SHL     7, R1
                 OR      R1, R0                  ; R0: LBA
                 MOVE    R0, R7                  ; R7: LBA for the log
+                CMP     0x0200, R2              ; a whole block?
+                RBRA    _FLP_WR_ERR2, !Z        ; (R2 = the odd size, logged)
                 XOR     R2, R2                  ; R2: status for the log
-                CMP     0x0200, R2
-                RBRA    _FLP_WR_ERR, !Z
                 MOVE    FLP_STATE, R1
                 CMP     FLP_S_READY, @R1        ; only READY serves requests
                 RBRA    _FLP_WR_ERR, !Z
