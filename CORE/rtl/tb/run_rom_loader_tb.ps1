@@ -15,5 +15,5 @@ Set-Location $work
 & "$bin\xvlog.bat" -sv "$here\rom_loader_tb.sv"
 & "$bin\xvlog.bat" "$vivado\data\verilog\src\glbl.v" | Out-Null
 & "$bin\xelab.bat" -L xpm -debug typical rom_loader_tb glbl -s rom_loader_sim 2>&1 | Select-String -Pattern 'ERROR' | ForEach-Object { $_.Line }
-& "$bin\xsim.bat" rom_loader_sim -R 2>&1 | Select-String -Pattern 'ERROR|FATAL|words delivered|RESULT|Time resolution' | ForEach-Object { $_.Line }
+& "$bin\xsim.bat" rom_loader_sim -R 2>&1 | Select-String -Pattern 'ERROR|FATAL|words delivered|register checks|RESULT|Time resolution' | ForEach-Object { $_.Line }
 

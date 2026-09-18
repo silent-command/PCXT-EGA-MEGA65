@@ -36,5 +36,6 @@ self-checking; each prints `RESULT: PASS`.
 | `ram_lookahead_avm_tb.sv` | `run_ram_avm_tb.sh` (Icarus, WSL) | KFSDRAM overlay: the chipset's RAM handshake on the Avalon byte bus (56 checks) |
 | `rom_load_tb.sv` | `run_rom_load_tb.sh` (Verilator, WSL) | Full `pcxt_core` wrapper: ROM download stream lands in the BIOS windows |
 | `rom_loader_tb.sv` | `run_rom_loader_tb.ps1` (xsim) | QNICE side of `rom_loader.vhd`: device writes, CDC, timeouts, status |
-| `keyboard_tb.vhd` | `run_keyboard_tb.sh` (GHDL, WSL) | MEGA65 key numbers to PS/2 set-2 frames, host reset (FF) handshake |
+| `keyboard_tb.vhd` | `run_keyboard_tb.sh` (GHDL, WSL) | MEGA65 key numbers to PS/2 set-2 frames, forced Shift around ":" "*" "]" after physical Shift use (docs/keyboard-colon.md), host reset (FF) handshake, host inhibit mid-frame (resend) and after the stop bit (no repeat) |
+| `kbd_colon_sys_tb.sv` | `run_kbd_colon_sys_tb.ps1` (xsim) | Real MCL86 + real 8088 BIOS: types "*", Shift+"*", "a:", "c:", "A:", "C:", ":"+Enter with rollover / fast taps through keyboard.vhd, ps2_tx, KFPS2KB and the real INT 9; checks the BIOS keyboard buffer at 40:1E |
 | `mgmt_bridge_tb.sv` | `run_mgmt_bridge_tb.sh` (Icarus, WSL) | Storage bridge against the real `ide.v`/`floppy.v`: mount with MBR geometry detection (7 x 17 FreeDOS layout, fallbacks to 16 x 63), IDENTIFY, CHS/LBA reads and writes, 8272 DMA reads/writes (1387 checks) |

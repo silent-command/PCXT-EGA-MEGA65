@@ -32,6 +32,36 @@
 // floppy mounts, floppy request.  Only one floppy request can exist at a
 // time (one floppy.v serves both drives), so A/B priority never arises.
 //
+// Floppy read errors (docs/floppy.md, the internal drive): floppy.v has no
+// way to report a read error - the ARM sends 512 bytes no matter what and
+// its SD state machine leaves S_SD_READ_WAIT_FOR_DATA only on fifo_full or
+// the chip reset (not on the DOR software reset). When the firmware
+// acknowledges a floppy block with blk_err high, the block is NOT streamed:
+// floppy.v keeps waiting, the BIOS's INT 13h times out (error 80h), DOS
+// prints "Not ready reading drive A" and drive A stays dead until the next
+// core reset - but no garbage reaches DOS and the machine does not hang.
+// The still-pending request is parked (fd_hold) so that the hard disk keeps
+// being served; the hold clears when the request finally drops (core reset).
+// Floppy write errors (the internal drive's write path): floppy.v completes
+// a WRITE DATA sector as soon as its FIFO has been drained, long before the
+// firmware has written the disk, so a failed physical write (or a failed
+// read-back verify of an earlier one) can only be reported on the request
+// that follows. When the firmware acknowledges a floppy write block with
+// blk_err high, the bridge sets fd_dead: every later floppy request is
+// ignored until the chip reset, so the next DOS access (the next sector of
+// the same multi-sector write, the FAT update, or a read) times out in the
+// BIOS and DOS reports an error instead of believing the write succeeded.
+// The hold cannot be tied to the request dropping (as fd_hold is) because
+// for the last sector of a write the request has already dropped.
+// Since the on-demand detection of docs/floppy.md the overlay floppy.v drops a
+// parked request on the FDC software reset the BIOS issues on its error path,
+// so fd_hold clears there too and the retry raises a fresh request. A read
+// block that arrives after its request was abandoned that way is checked
+// against floppy.v's current request word (S_FDD_RD_CHK): the same drive and
+// LBA still pending (the retry of the same sector) takes it, anything else
+// drops it and the live request is dispatched afresh - a stale block never
+// lands in another sector's FIFO.
+//
 // Hard-disk geometry (replaces ARM 2.2's 128-entry size table): at mount the
 // bridge reads block 0 of the image through the block interface (the same
 // blk_rd/blk_ack/buffer path an IDE read uses, so it waits on the SD card
@@ -74,6 +104,12 @@ module mgmt_bridge #(
     output reg  [2:0]  blk_wr,
     output reg  [31:0] blk_lba,        // block number
     input  wire [2:0]  blk_ack,        // level: high while the block moves; complete when it falls
+    input  wire        blk_err,        // level, sampled when a floppy block's ack falls: read: the block carries no data; write: the write failed, park the drive (see header)
+    // the format tap (docs/floppy.md phase 4): floppy.v's management register 1, sampled when a floppy
+    // request is dispatched and held until the next one: [15] this block is the fill of a FORMAT TRACK
+    // sector, [14:8] the command's sector count, [7:0] its filler byte. The firmware reads it (rom_loader
+    // register 14) while it serves the block; a level tap would be gone for the last sector of a track.
+    output reg  [15:0] fd_fmt,
     // 512-byte sector buffer shared with the framework
     output reg  [8:0]  buf_addr,
     output reg  [7:0]  buf_wdata,
@@ -221,7 +257,7 @@ module mgmt_bridge #(
         S_IDE_OK_REGS, S_IDE_ABORT_REGS,
         // floppy (MGMT 5.3, ARM 4.4-4.6)
         S_FDD_EJECT, S_FDD_INSERT,
-        S_FDD_REQ, S_FDD_DISPATCH, S_FDD_DISPATCH2, S_FDD_RD_TX, S_FDD_WR_STORE, S_FDD_WAIT
+        S_FDD_REQ, S_FDD_DISPATCH, S_FDD_TAP, S_FDD_DISPATCH2, S_FDD_RD_CHK, S_FDD_RD_CHK2, S_FDD_RD_TX, S_FDD_WR_STORE, S_FDD_WAIT, S_FDD_ERR
     } state_t;
 
     state_t state, bus_ret, seq_ret;
@@ -287,6 +323,9 @@ module mgmt_bridge #(
     logic        fd_idx;              // drive being (un)mounted
     logic        fd_is_wr, fd_drv;
     logic [14:0] fd_lba;
+    logic        fd_hold;             // a floppy read failed: ignore its request until it drops
+    logic        fd_dead;             // a floppy write failed: ignore every floppy request until the reset
+    logic        fd_blk_wr;           // the block transfer in flight is a floppy write
     // mount strobes: the framework holds img_mounted for as long as the QNICE
     // firmware takes between its set and clear register writes, so only the
     // rising edge is a mount; a level would otherwise re-arm the mount on
@@ -400,6 +439,10 @@ module mgmt_bridge #(
             fd_is_wr  <= 1'b0;
             fd_drv    <= 1'b0;
             fd_lba    <= 15'd0;
+            fd_hold   <= 1'b0;
+            fd_dead   <= 1'b0;
+            fd_blk_wr <= 1'b0;
+            fd_fmt    <= 16'd0;
             img_mounted_q <= 3'b000;
         end else begin
             // defaults: strobes are one clock wide
@@ -409,6 +452,7 @@ module mgmt_bridge #(
             img_mounted_q <= img_mounted;
             if (fd_timer0 != 24'd0) fd_timer0 <= fd_timer0 - 24'd1;
             if (fd_timer1 != 24'd0) fd_timer1 <= fd_timer1 - 24'd1;
+            if (mgmt_req[7:6] == 2'b00) fd_hold <= 1'b0;
 
             case (state)
             // ---------------------------------------------------------- dispatcher
@@ -447,7 +491,7 @@ module mgmt_bridge #(
                 end else if (fd_wait[1] && fd_timer1 == 24'd0) begin
                     fd_idx <= 1'b1;
                     state  <= S_FDD_INSERT;
-                end else if (mgmt_req[7:6] != 2'b00) begin
+                end else if (mgmt_req[7:6] != 2'b00 && !fd_hold && !fd_dead) begin
                     state <= S_FDD_REQ;
                 end
             end
@@ -574,7 +618,15 @@ module mgmt_bridge #(
                 end
             end
             S_BLK_ACK_LO: begin
-                if (!blk_ack[blk_drv]) state <= seq_ret;
+                if (!blk_ack[blk_drv]) begin
+                    // a floppy read the firmware could not serve: no data for floppy.v (header);
+                    // a floppy write it could not do: the drive is dead until the reset
+                    // a served read: first make sure the request is still the one it was fetched for
+                    if (seq_ret == S_FDD_RD_TX) state <= blk_err ? S_FDD_ERR : S_FDD_RD_CHK;
+                    else                        state <= seq_ret;
+                    if (blk_err && fd_blk_wr) fd_dead <= 1'b1;
+                    fd_blk_wr <= 1'b0;
+                end
             end
 
             // ---------------------------------------------------------- divider
@@ -976,8 +1028,14 @@ module mgmt_bridge #(
                 state     <= S_BUS_RD1;
             end
             S_FDD_DISPATCH: begin
-                fd_drv <= bus_rdata[15];
-                fd_lba <= bus_rdata[14:0];
+                fd_drv    <= bus_rdata[15];
+                fd_lba    <= bus_rdata[14:0];
+                mgmt_addr <= FDD_BASE | 16'h0001; // R 0xF201 -> the format tap (header), a constant 1 in the upstream floppy.v
+                bus_ret   <= S_FDD_TAP;
+                state     <= S_BUS_RD1;
+            end
+            S_FDD_TAP: begin
+                fd_fmt <= bus_rdata;
                 state  <= S_FDD_DISPATCH2;
             end
             S_FDD_DISPATCH2: begin
@@ -999,6 +1057,15 @@ module mgmt_bridge #(
                     seq_ret <= S_FDD_WR_STORE;
                     state   <= S_RX_RD;
                 end
+            end
+            S_FDD_RD_CHK: begin                    // the request may have been abandoned (FDC software reset,
+                mgmt_addr <= FDD_BASE;             // header) while the firmware fetched the block: re-read it
+                bus_ret   <= S_FDD_RD_CHK2;
+                state     <= S_BUS_RD1;
+            end
+            S_FDD_RD_CHK2: begin
+                if (mgmt_req[6] && bus_rdata[15] == fd_drv && bus_rdata[14:0] == fd_lba) state <= S_FDD_RD_TX;
+                else state <= S_IDLE;              // gone or another sector: drop this block, dispatch the live request afresh
             end
             S_FDD_RD_TX: begin
                 xcnt    <= 10'd0;
@@ -1024,9 +1091,10 @@ module mgmt_bridge #(
                 // it long before this block write completed, and only ever
                 // re-raises it after advancing sd_sector to the next LBA.
                 if (fd_ok && !fd_ro[fd_drv]) begin
-                    blk_wr  <= fd_drv ? 3'b010 : 3'b001;
-                    seq_ret <= S_IDLE;
-                    state   <= S_BLK_ACK_HI;
+                    blk_wr    <= fd_drv ? 3'b010 : 3'b001;
+                    fd_blk_wr <= 1'b1;
+                    seq_ret   <= S_IDLE;
+                    state     <= S_BLK_ACK_HI;
                 end else begin
                     seq_ret <= S_FDD_WAIT;
                     state   <= S_FDD_WAIT;          // read-only / no media: nothing stored (no slow block follows)
@@ -1034,6 +1102,10 @@ module mgmt_bridge #(
             end
             S_FDD_WAIT: begin                      // read path (and the discarded-write path): the request
                 if (mgmt_req[7:6] == 2'b00) state <= S_IDLE;   // bit fell on the 512th transfer just performed (MGMT 5.3 step 6)
+            end
+            S_FDD_ERR: begin                       // park the request, keep serving everything else
+                fd_hold <= 1'b1;
+                state   <= S_IDLE;
             end
 
             default: state <= S_IDLE;

@@ -150,6 +150,7 @@ module PERIPHERALS #(
         input   logic   [1:0]   floppy_wp,
         output  logic   [1:0]   fdd_present,
         output  logic   [1:0]   fdd_request,
+        output  logic           fdd_access,             // MEGA65: DOS access attempt on drive A (floppy.v fdd0_access)
         output  logic   [2:0]   ide0_request,
         output  logic           fdd_dma_req,
         input   logic           fdd_dma_ack,
@@ -1716,6 +1717,7 @@ end
         .io_writedata               (write_to_fdd),
 
         //        .fdd0_inserted              (),
+        .fdd0_access                (fdd_access),
 
         .mgmt_address               (mgmt_address[3:0]),
         .mgmt_fddn                  (mgmt_address[7]),

@@ -532,16 +532,14 @@ begin
    -- through MEGA65_Core's eth_* ports below); the framework's idle tie-offs were:
    --    eth_clock_o <= '0'; eth_led2_o <= '0'; eth_mdc_o <= '0'; eth_mdio_io <= 'Z';
    --    eth_reset_o <= '1'; eth_txd_o <= (others => '0'); eth_txen_o <= '0';
-   f_density_o           <= '1';
-   f_motora_o            <= '1';
+   -- PCXT-EGA addition: the drive A lines of the internal floppy are driven by the core
+   -- (CORE/vhdl/floppy_phy_spike.vhd through MEGA65_Core's f_* ports below, docs/floppy.md); the
+   -- framework's idle tie-offs were:
+   --    f_density_o <= '1'; f_motora_o <= '1'; f_selecta_o <= '1'; f_side1_o <= '1';
+   --    f_stepdir_o <= '1'; f_step_o <= '1'; f_wdata_o <= '1'; f_wgate_o <= '1';
+   -- Drive B stays inactive (active low):
    f_motorb_o            <= '1';
-   f_selecta_o           <= '1';
    f_selectb_o           <= '1';
-   f_side1_o             <= '1';
-   f_stepdir_o           <= '1';
-   f_step_o              <= '1';
-   f_wdata_o             <= '1';
-   f_wgate_o             <= '1';
    joystick_5v_disable_o <= '0'; -- Enable 5V power supply to joysticks
    led_g_n_o             <= '1'; -- Off
    led_r_n_o             <= '1'; -- Off
@@ -894,6 +892,21 @@ begin
          eth_rxer_i              => eth_rxer_i,
          eth_txd_o               => eth_txd_o,
          eth_txen_o              => eth_txen_o,
+
+         -- PCXT-EGA addition: internal floppy drive, drive A lines (CORE/vhdl/floppy_phy_spike.vhd)
+         f_density_o             => f_density_o,
+         f_motora_o              => f_motora_o,
+         f_selecta_o             => f_selecta_o,
+         f_side1_o               => f_side1_o,
+         f_stepdir_o             => f_stepdir_o,
+         f_step_o                => f_step_o,
+         f_wdata_o               => f_wdata_o,
+         f_wgate_o               => f_wgate_o,
+         f_index_i               => f_index_i,
+         f_track0_i              => f_track0_i,
+         f_writeprotect_i        => f_writeprotect_i,
+         f_rdata_i               => f_rdata_i,
+         f_diskchanged_i         => f_diskchanged_i,
 
          --------------------------------------------------------------------------------------------------------
          -- Provide support for external memory (Avalon Memory Map)
