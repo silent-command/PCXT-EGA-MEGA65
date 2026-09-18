@@ -808,8 +808,9 @@ reserved polarity combination, and the blanking geometry) are consistent with
 that. Driving from the scaler makes all of them moot at once: standard timing,
 standard polarity per mode, standard blanking, continuous sync.
 
-Still to confirm on the board: "EGA monitor 5154" (the 350-line rasters that
-started this, and the case the line doubler was written for), the M2M welcome
+Confirmed the same day: "EGA monitor 5154" works very well too - the 350-line
+rasters that started this, and the case analog_line_doubler.vhd was written and
+abandoned for. Still to confirm: the M2M welcome
 screen (section 8: the pins carried no sync there at all), and a direct
 connection without the adapter, which is the honest test - an adapter locks
 onto timings a monitor's own VGA input can refuse.
