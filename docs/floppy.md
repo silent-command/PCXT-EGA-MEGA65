@@ -293,6 +293,14 @@ software reset the BIOS issues on its error path, so a Retry raises a fresh one.
 `mgmt_bridge_tb` test 16 covers all of it (5121 checks in phase 2, now with the
 DOR reset as the recovery).
 
+That abort is deliberately limited to `S_SD_READ_WAIT_FOR_DATA`. On a write or a
+format fill the bridge is draining floppy.v's FIFO into the block buffer and has
+no equivalent of the `S_FDD_RD_CHK` re-check, so cancelling the state underneath
+it would lose the request with nothing able to notice; a failed write therefore
+still parks the drive until the core reset, as in phase 3. The recovery this buys
+is a read-path problem anyway: a write that reaches the disk at all reports
+through the verify instead.
+
 ### Menu
 "A: internal drive" is a single-select toggle in Input Settings, saved with the
 other settings. On: any image mounted on A: is unmounted, the engine is enabled,

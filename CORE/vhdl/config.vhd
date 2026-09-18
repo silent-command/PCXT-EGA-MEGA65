@@ -88,7 +88,7 @@ constant SCR_WELCOME : string :=
    "MEGA                 Alt         ALT: AltGr\n" &
    "RUN/STOP, ESC        Esc\n" &
    "INS/DEL              Backspace\n" &
-   "Shift+INS/DEL        Insert      MEGA+: Delete\n" &
+   "Shift+INS/DEL        Insert   MEGA+: Delete\n" &
    "CLR/HOME             Home\n" &
    "NO SCROLL            Scroll Lock\n" &
    "HELP                 Options menu\n" &
@@ -155,7 +155,7 @@ constant HELP_3 : string :=
    "   write-protect A: and B:, A: internal\n" &
    "   drive (a real floppy, read-only), mouse.\n" &
    " Network: NE1000 card off / IRQ 5 / IRQ 7\n" &
-   "   (port 320h; use the IRQ the SB is not on).\n\n" &
+   "   (port 320h; not the IRQ the SB uses).\n\n" &
 
    " /pcxt/pcxt.rom      PC/XT BIOS with XTIDE\n" &
    " /pcxt/ega_bios.rom  EGA BIOS (required)\n" &

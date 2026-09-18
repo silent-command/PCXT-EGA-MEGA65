@@ -712,12 +712,17 @@ reg [3:0] state;
 always @(posedge clk) begin
 	if(~rst_n)                                                                    state <= S_IDLE;
 
-	// MEGA65 overlay: the FDC software reset (DOR bit 2 low, DSR bit 7) abandons a transfer that
-	// still waits for the management side. A block the firmware could not deliver (the internal
-	// drive, docs/floppy.md) is then released by the BIOS reset on its error path, not only by the
-	// core reset; the request drops with the state and the FIFO clears in S_IDLE.
-	else if(sw_reset && (state == S_SD_READ_WAIT_FOR_DATA || state == S_SD_WRITE_WAIT_FOR_EMPTY_FIFO ||
-	                     state == S_SD_FORMAT_WAIT_FOR_FILL))                                 state <= S_IDLE;
+	// MEGA65 overlay: the FDC software reset (DOR bit 2 low, DSR bit 7) abandons a READ that still
+	// waits for the management side. A block the firmware could not deliver (the internal drive,
+	// docs/floppy.md) is then released by the BIOS reset on its error path, not only by the core
+	// reset; the request drops with the state and the FIFO clears in S_IDLE. mgmt_bridge re-reads
+	// the request word after the block it fetched arrives (S_FDD_RD_CHK), so a block whose request
+	// vanished this way is dropped instead of landing in another sector's FIFO.
+	// Only the read state: on a write or a format fill the bridge is draining floppy.v's FIFO into
+	// the block buffer and has no such re-check, so pulling the state out from under it would lose
+	// the request with no way to notice. Those stay parked until the core reset, as they did before
+	// the on-demand detection; the Retry recovery this buys is a read-path problem anyway.
+	else if(sw_reset && state == S_SD_READ_WAIT_FOR_DATA)                         state <= S_IDLE;
 
 	//start read/write
 	else if(state == S_IDLE && cmd_read_write_ok_at_start)                        state <= S_PREPARE_COUNT;
