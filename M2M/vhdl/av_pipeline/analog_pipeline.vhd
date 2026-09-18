@@ -16,6 +16,14 @@ entity analog_pipeline is
       -- video_mixer, for the 350-line EGA/MDA rasters. Default false, so a core that does not use it
       -- is bit-for-bit unchanged and pays no block RAM for it.
       G_ANALOG_LINE_DOUBLER   : boolean := false;
+      -- PCXT-EGA addition (docs/analog-video.md section 10): drive the VGA DAC from ascal's scaled
+      -- output (scaler_*_i, hdmi_clk domain) instead of from the core's own raster. The analog path
+      -- has no timing generator of its own, so with this off the connector carries whatever the core
+      -- emits - 21.8 kHz for a 350-line EGA raster, which no LCD accepts. With it on the connector
+      -- carries the standard, free-running VESA timing of the selected HDMI mode, with the OSM on it,
+      -- from the moment hdmi_clk locks. Cost: VGA and HDMI necessarily share one mode, and the
+      -- 15 kHz / CSync settings below no longer reach the pins. Default false.
+      G_ANALOG_FROM_SCALER    : boolean := false;
       G_VGA_DX                : natural;                 -- Actual format of video from Core (in pixels).
       G_VGA_DY                : natural;
       G_FONT_FILE             : string;
@@ -53,6 +61,17 @@ entity analog_pipeline is
       -- Is the input from the core in the retro 15 kHz analog RGB mode : 0=no/1=yes
       -- (Hint : Scandoubler off does not automatically mean retro 15 kHz on.)
       video_retro15kHz_i      : in  std_logic;
+
+      -- PCXT-EGA addition: ascal's scaled picture with the OSM on it and the mode's sync polarity
+      -- already applied (digital_pipeline). Only read when G_ANALOG_FROM_SCALER is true; the
+      -- defaults keep a core that does not use it from having to wire anything up.
+      hdmi_clk_i              : in  std_logic := '0';
+      scaler_red_i            : in  std_logic_vector(7 downto 0) := (others => '0');
+      scaler_green_i          : in  std_logic_vector(7 downto 0) := (others => '0');
+      scaler_blue_i           : in  std_logic_vector(7 downto 0) := (others => '0');
+      scaler_hs_i             : in  std_logic := '0';
+      scaler_vs_i             : in  std_logic := '0';
+      scaler_de_i             : in  std_logic := '0';
 
       -- Video output (VGA)
       vga_red_o               : out std_logic_vector(7 downto 0);
@@ -308,23 +327,51 @@ begin
    -- Last but not least for guaranteeing a minimum of routing delays, we are putting these registers
    -- in a VHDL block so that we can use a PBLOCK in the XDC file to tack the registers near to the
    -- FPGAs VGA output pins.
+   -- The two branches stay inside this block so that the PBLOCK in MEGA65-Rx.xdc, which matches
+   -- i_analog_pipeline/VGA_OUT_PHASE_SHIFTED.*, still holds the output registers near the pins.
    VGA_OUT_PHASE_SHIFTED : block
    begin
-      phase_shift_vga_signals : process(video_clk_i)
-      begin
-         if falling_edge(video_clk_i) then -- phase shifting by using the negative edge of the video clock
-            vga_red_o   <= vga_red_ps;
-            vga_green_o <= vga_green_ps;
-            vga_blue_o  <= vga_blue_ps;
+      -- The core's own raster (the M2M default)
+      gen_from_core : if not G_ANALOG_FROM_SCALER generate
+         phase_shift_vga_signals : process(video_clk_i)
+         begin
+            if falling_edge(video_clk_i) then -- phase shifting by using the negative edge of the video clock
+               vga_red_o   <= vga_red_ps;
+               vga_green_o <= vga_green_ps;
+               vga_blue_o  <= vga_blue_ps;
 
-            -- Standard VGA outputs horizontal sync on pin 13 and vertical sync on pin 14 of the VGA
-            -- connector, see: https://en.wikipedia.org/wiki/VGA_connector
-            -- Composite sync output that is compatible with the MiSTer VGA to SCART adaptor needs
-            -- the composite sync signal on pin 13 and HIGH on pin 14, see: https://misterfpga.org/viewtopic.php?t=1811
-            vga_hs_o    <= vga_hs_ps when not video_csync_i else not vga_cs_ps;
-            vga_vs_o    <= vga_vs_ps when not video_csync_i else '1';
-         end if;
-      end process;
+               -- Standard VGA outputs horizontal sync on pin 13 and vertical sync on pin 14 of the VGA
+               -- connector, see: https://en.wikipedia.org/wiki/VGA_connector
+               -- Composite sync output that is compatible with the MiSTer VGA to SCART adaptor needs
+               -- the composite sync signal on pin 13 and HIGH on pin 14, see: https://misterfpga.org/viewtopic.php?t=1811
+               vga_hs_o    <= vga_hs_ps when not video_csync_i else not vga_cs_ps;
+               vga_vs_o    <= vga_vs_ps when not video_csync_i else '1';
+            end if;
+         end process;
+      end generate gen_from_core;
+
+      -- PCXT-EGA addition: ascal's scaled raster (docs/analog-video.md section 10). Same phase
+      -- shift, but on the scaler's pixel clock, and the picture is blanked outside the active
+      -- area because the DAC is never blanked by vdac_blankn_o. Sync polarity was applied in
+      -- digital_pipeline, so the csync / 15 kHz settings do not reach here.
+      gen_from_scaler : if G_ANALOG_FROM_SCALER generate
+         phase_shift_vga_signals : process(hdmi_clk_i)
+         begin
+            if falling_edge(hdmi_clk_i) then
+               if scaler_de_i = '1' then
+                  vga_red_o   <= scaler_red_i;
+                  vga_green_o <= scaler_green_i;
+                  vga_blue_o  <= scaler_blue_i;
+               else
+                  vga_red_o   <= (others => '0');
+                  vga_green_o <= (others => '0');
+                  vga_blue_o  <= (others => '0');
+               end if;
+               vga_hs_o <= scaler_hs_i;
+               vga_vs_o <= scaler_vs_i;
+            end if;
+         end process;
+      end generate gen_from_scaler;
    end block VGA_OUT_PHASE_SHIFTED;
 
    -- Make the MEGA65 VDAC (ADV7125BCPZ170) output the image:
@@ -336,7 +383,8 @@ begin
    -- blank the screen (i.e. set the analog R, G and B to 0), we hard-wire blank to 1.
    vdac_syncn_o  <= '0';
    vdac_blankn_o <= '1';
-   vdac_clk_o    <= video_clk_i;
+   -- the DAC samples on the clock of whichever raster drives the pins
+   vdac_clk_o    <= hdmi_clk_i when G_ANALOG_FROM_SCALER else video_clk_i;
 
 end architecture synthesis;
 

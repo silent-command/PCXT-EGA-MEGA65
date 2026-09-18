@@ -24,7 +24,10 @@ generic (
    G_BOARD : string;                                        -- Which platform are we running on.
    -- PCXT-EGA addition (docs/analog-video.md): build the analog-only line doubler inside av_pipeline.
    -- Default false, so an unmodified core is bit-for-bit unchanged and pays no block RAM for it.
-   G_ANALOG_LINE_DOUBLER : boolean := false
+   G_ANALOG_LINE_DOUBLER : boolean := false;
+   -- PCXT-EGA addition (docs/analog-video.md section 10): drive the VGA DAC from ascal's scaled
+   -- output instead of the core's raster, so the analog connector carries a standard VESA timing.
+   G_ANALOG_FROM_SCALER  : boolean := false
 );
 port (
    clk_i                   : in    std_logic;                  -- 100 MHz clock
@@ -870,6 +873,7 @@ begin
       generic map (
          G_VIDEO_MODE_VECTOR     => VIDEO_MODE_VECTOR,
          G_ANALOG_LINE_DOUBLER   => G_ANALOG_LINE_DOUBLER,
+         G_ANALOG_FROM_SCALER    => G_ANALOG_FROM_SCALER,
          G_AUDIO_CLOCK_RATE      => 12_288_000,
          G_VGA_DX                => VGA_DX,
          G_VGA_DY                => VGA_DY,

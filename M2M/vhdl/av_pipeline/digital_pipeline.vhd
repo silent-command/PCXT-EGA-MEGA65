@@ -68,6 +68,18 @@ entity digital_pipeline is
       video_hdmax_o            : out natural range 0 to 4095;
       video_vdmax_o            : out natural range 0 to 4095;
 
+      -- MEGA65 port addition (docs/analog-video.md section 10): the scaled picture with the
+      -- on-screen menu on it, in the hdmi_clk domain, with the sync polarity of the selected
+      -- video mode already applied - the same signals vga_to_hdmi gets. analog_pipeline can
+      -- drive the VGA DAC from these instead of from the core's own raster, which is what
+      -- gives the analog output a standard, free-running VESA timing.
+      scaler_red_o             : out std_logic_vector(7 downto 0);
+      scaler_green_o           : out std_logic_vector(7 downto 0);
+      scaler_blue_o            : out std_logic_vector(7 downto 0);
+      scaler_hs_o              : out std_logic;
+      scaler_vs_o              : out std_logic;
+      scaler_de_o              : out std_logic;
+
       -- QNICE connection to ascal's mode register
       qnice_ascal_mode_i       : in  unsigned(4 downto 0);
 
@@ -486,6 +498,17 @@ begin
          vga_vs_o          => hdmi_osm_vs,
          vga_de_o          => hdmi_osm_de
       ); -- i_video_overlay
+
+   -- MEGA65 port addition: the same picture vga_to_hdmi receives, for the VGA DAC.
+   -- vga_to_hdmi applies the mode's polarity internally (vga_hs_p <= vga_hs xnor hs_pol_s);
+   -- the analog side has no such stage, so it is applied here. ascal emits positive-going
+   -- sync, so H_POL/V_POL = '1' leaves it positive and '0' inverts it.
+   scaler_red_o   <= hdmi_osm_red;
+   scaler_green_o <= hdmi_osm_green;
+   scaler_blue_o  <= hdmi_osm_blue;
+   scaler_hs_o    <= hdmi_osm_hs xnor hdmi_video_mode.H_POL;
+   scaler_vs_o    <= hdmi_osm_vs xnor hdmi_video_mode.V_POL;
+   scaler_de_o    <= hdmi_osm_de;
 
    i_vga_to_hdmi : entity work.vga_to_hdmi
       port map (

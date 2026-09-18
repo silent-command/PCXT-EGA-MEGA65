@@ -26,6 +26,10 @@ entity av_pipeline is
       -- ANALOG branch only. Off by default, so a core that does not need it is bit-for-bit unchanged and
       -- pays nothing (the doubler's two line buffers are not built at all).
       G_ANALOG_LINE_DOUBLER   : boolean := false;
+      -- PCXT-EGA addition (docs/analog-video.md section 10): drive the VGA DAC from ascal's
+      -- scaled output instead of the core's own raster, so the analog connector carries the
+      -- standard, free-running VESA timing of the selected HDMI mode. Off by default.
+      G_ANALOG_FROM_SCALER    : boolean := false;
       G_AUDIO_CLOCK_RATE      : natural;
       G_VGA_DX                : natural;              -- Actual format of video from Core (in pixels).
       G_VGA_DY                : natural;
@@ -183,6 +187,16 @@ signal video_osm_vram_addr    : std_logic_vector(15 downto 0);
 signal video_osm_vram_data    : std_logic_vector(15 downto 0);
 signal video_hdmax            : natural range 0 to 4095;
 signal video_vdmax            : natural range 0 to 4095;
+
+-- PCXT-EGA addition (docs/analog-video.md section 10): ascal's scaled picture with the OSM on
+-- it and the mode's sync polarity applied, in the hdmi_clk domain. Used by the analog pipeline
+-- when G_ANALOG_FROM_SCALER is on; left unread otherwise.
+signal scaler_red             : std_logic_vector(7 downto 0);
+signal scaler_green           : std_logic_vector(7 downto 0);
+signal scaler_blue            : std_logic_vector(7 downto 0);
+signal scaler_hs              : std_logic;
+signal scaler_vs              : std_logic;
+signal scaler_de              : std_logic;
 
 signal video_pps              : std_logic;
 signal video_h_pixels         : std_logic_vector(11 downto 0); -- horizontal visible display width in pixels
@@ -403,6 +417,7 @@ begin
    i_analog_pipeline : entity work.analog_pipeline
       generic map (
          G_ANALOG_LINE_DOUBLER   => G_ANALOG_LINE_DOUBLER,
+         G_ANALOG_FROM_SCALER    => G_ANALOG_FROM_SCALER,
          G_VGA_DX                => G_VGA_DX,
          G_VGA_DY                => G_VGA_DY,
          G_FONT_FILE             => G_FONT_FILE,
@@ -436,6 +451,15 @@ begin
 
          -- Configure 15 kHz mode: 0 =off/1=on
          video_retro15kHz_i      => video_retro15kHz,
+
+         -- PCXT-EGA addition: ascal's scaled picture, for G_ANALOG_FROM_SCALER
+         hdmi_clk_i              => hdmi_clk_i,
+         scaler_red_i            => scaler_red,
+         scaler_green_i          => scaler_green,
+         scaler_blue_i           => scaler_blue,
+         scaler_hs_i             => scaler_hs,
+         scaler_vs_i             => scaler_vs,
+         scaler_de_i             => scaler_de,
 
          -- Analog output (VGA and audio jack)
          vga_red_o               => vga_red,
@@ -563,6 +587,12 @@ begin
          video_vblank_i           => video_crop_vblank,
          video_hdmax_o            => video_hdmax,
          video_vdmax_o            => video_vdmax,
+         scaler_red_o             => scaler_red,
+         scaler_green_o           => scaler_green,
+         scaler_blue_o            => scaler_blue,
+         scaler_hs_o              => scaler_hs,
+         scaler_vs_o              => scaler_vs,
+         scaler_de_o              => scaler_de,
          audio_clk_i              => audio_clk_i,
          audio_rst_i              => audio_rst_i,
          audio_left_i             => signed(audio_left),
