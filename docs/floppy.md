@@ -933,6 +933,20 @@ Confirmed on the R6:
   FORMAT_TRACK lays down all 160 tracks at 500 kbit/s, the read-back finds every
   sector, and DOS accepts the result as a 1.44 MB disk.
 * **The formatted disk is usable**: `COPY` onto it, `DIR` and `TYPE` back.
+* **The detection cycle, measured** (serial log of the disk being carried to a PC
+  and back, times from the start of the capture):
+
+  | at | line |
+  |---|---|
+  | 80.0 s | `FLP: disk change` / `FLP: no disk, drive unmounted` (ejected) |
+  | 80.0 - 195.8 s | *nothing at all* - 116 s with the drive empty and silent |
+  | 195.8 s | `FLP: A: accessed, probing` (DOS touched A: after the re-insert) |
+  | 197.0 s | `FLP: detect=0112 -> 1.44 MB, mounted` / ` read-write` |
+
+  So: eject to unmount is immediate, an empty drive costs nothing while idle, and
+  an access attempt to a mounted disk takes 1.2 s (probe, then DETECT: motor,
+  recalibrate, one track read). `detect=0112` is HD with max R = 18 - read off
+  the disk this core had just formatted itself.
 * **A PC reads a MEGA65-formatted disk**: `DIR` and `CHKDSK` on a real PC drive,
   and a file copied on from the PC. This was the one thing only the board could
   settle - the sync fields, address marks and gaps are written by our clock and a
