@@ -911,3 +911,42 @@ mux and the gap counters are the 167 LUTs. `rom_loader`: 336 LUTs, 644 FFs
 * **Erase-to-write turn-on at the index**: WRITE GATE goes on at the index edge;
   a drive that needs time before the first transition eats into gap 4a (80
   bytes, 1.3 ms), which a PC ignores anyway.
+
+## Board session, 2026-09-18: detection and writes confirmed, format still open
+Build with phase 4, the on-demand detection and the keyboard fix (`fmtkbd.bit`,
+WNS 0.21 ns), loaded over JTAG.
+
+Confirmed on the R6:
+* **The drive is silent when idle.** With no disk in, the core starts, loads its
+  ROMs and then says nothing at all: no periodic PROBE, no motor. This was the
+  point of the on-demand detection and it works.
+* **No disk: "Not ready" at once**, not after the 2 s BIOS timeout, because the
+  drive is left unmounted rather than mounted-and-empty.
+* **Insert, then Retry, reads the new disk.**
+* **Writes work**: `COPY` to A:, and FreeDOS `FORMAT A:` doing a *Safe
+  QuickFormat* (the UnFormat mirror of 24 sectors, the FAT area, the boot
+  sector) completed and reported 1,474,560 bytes.
+
+Still untested: `FORMAT A: /U`, i.e. the FORMAT_TRACK path itself. FreeDOS
+chooses a quick format on any disk that already holds a filesystem, and a quick
+format never issues AH=05h, so an ordinary `FORMAT A:` on a used disk does not
+reach any of phase 4. Everything under "What only the board can prove" above is
+therefore still open.
+
+### The write-protect red herring (a debugging rule)
+Half the session went into "every write fails, and the firmware logs nothing at
+all". It was neither: the disk's write-protect tab was open from the earlier
+write-protect test. A read-only mount makes floppy.v refuse the write itself
+with the FDC's write-protect error, so no block request is ever raised and the
+QNICE side has nothing to say - the same silence a hung bridge would produce.
+The old known-good build failed identically, which is what settled it.
+
+**Rule: floppy writes failing with zero `FLP:` lines in the serial log means a
+read-only mount, not a code fault.** The firmware logs every write it refuses
+(`FLP: write error lba=`) and every park; a successful write logs nothing, so
+silence means either "all fine" or "never asked". Check the tab first, then
+whether the mount is read-only (`FLP: detect=... read-only`).
+
+Also learned: only one `tools/serial-log.ps1` may run at a time - a second one
+fails with "Access to the port 'COM8' is denied" and records nothing, which
+looks exactly like a quiet core.
