@@ -9,10 +9,12 @@ FLP_MOUNTED     .BLOCK 1                        ; 1 = the FDC has been told a di
 FLP_CTRL        .BLOCK 1                        ; shadow of the engine control register
 FLP_SPT         .BLOCK 1                        ; sectors per track the FDC was told (9 / 18)
 FLP_RATE        .BLOCK 1                        ; FLP_ARG_RATEHD or 0: the rate the disk reads at
-FLP_CYC         .BLOCK 1                        ; IO$CYC_MID of the last probe
+FLP_CYC         .BLOCK 1                        ; IO$CYC_MID when the drive was last found empty (probe hold-off)
 FLP_N_RD        .BLOCK 1                        ; block requests served
 FLP_N_ERR       .BLOCK 1                        ; ... of which failed
 FLP_LAST_ERR    .BLOCK 1                        ; engine status of the last failure
 FLP_RO          .BLOCK 1                        ; 1 = mounted read-only (drive write protected)
 FLP_N_WR        .BLOCK 1                        ; block writes served
 FLP_VFY_ERR     .BLOCK 1                        ; 1 = a write failed its read-back: park the next request
+
+#include "flpfmt_vars.asm"

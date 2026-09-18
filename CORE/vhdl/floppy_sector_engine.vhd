@@ -27,8 +27,9 @@
 --                 force = 1), seek, settle, capture as above. valid_o / crcerr_o report the slots.
 --   3 COPY        slot `sector` (1..18) -> buf_*_o, 512 bytes.
 --   4 PROBE       one step in and one out, no motor: a step with a disk in clears the drive's DISK CHANGE
---                 latch, so dskchg_live_o afterwards says whether a disk is in (the firmware polls this
---                 every 2 s while the FDC is told "no media").
+--                 latch, so dskchg_live_o afterwards says whether a disk is in (the firmware runs one
+--                 when the toggle goes on and when DOS tries to use an empty drive, never while idle:
+--                 docs/floppy.md, "Disk detection on demand").
 --   5 MOTOR_OFF   motor off now (the motor otherwise stops G_MOTOR_OFF_CYCLES after the last command).
 --   6 WRITE_SECTOR (phase 3) cyl / head / rate_hd / sector: refused with err 7 while the drive reports
 --                 write protect (before anything is touched). Loads the 512 bytes from the framework's
@@ -51,10 +52,22 @@
 -- motor stop, a disk change or the index timeout fails. vfy_pend_o / vfy_fail_o are live; vfy_clr_i clears
 -- the failures (DETECT and disable clear both). A command that would move the head, switch side or rate,
 -- recalibrate or DETECT first waits for the pending verifies (at most about two revolutions).
+--   7 FORMAT_TRACK (phase 4) cyl / head / rate_hd / spt / fill / gap3: refused with err 7 while the drive
+--                 reports write protect. Motors and seeks like WRITE_SECTOR, drops every slot and pending
+--                 verify of the track, waits for the INDEX pulse, asserts WRITE GATE and writes the whole
+--                 IBM System 34 track: gap 4a (80 x 4E), 12 x 00, IAM (3 x C2 with the missing clock, FC),
+--                 gap 1 (50 x 4E), then for R = 1..spt: 12 x 00, 3 x A1, FE, C, H, R, N = 2, CRC, gap 2
+--                 (22 x 4E), 12 x 00, 3 x A1, FB, 512 x fill, CRC, gap 3 (gap3_i, 0 = G_FMT_GAP3_HD / _DD),
+--                 then 4E until the next INDEX pulse (gap 4b) and WRITE GATE off. Then it re-reads the
+--                 track once like READ_TRACK (the verify DOS's own verify pass will find in the cache):
+--                 err 10 when not every sector 1..spt came back with good CRCs (valid_o says which did),
+--                 err 11 when the index arrived before gap 4b (the track did not fit: never with the
+--                 default gaps, see docs/floppy.md phase 4). fmt_tail_o counts the gap 4b bytes written.
 -- err_o: 0 OK, 1 no index pulse for G_INDEX_TIMEOUT_CYCLES (no disk / motor), 2 recalibrate found no
 -- TRACK0 within G_MAX_STEPS_HOME steps, 3 no good ID header at all (wrong rate, unformatted, no disk),
 -- 4 headers seen but none of this track (seek error: the next READ_TRACK recalibrates), 5 bad argument,
--- 6 engine disabled, 7 write protected, 8 (reserved), 9 the track's headers were seen but not sector R.
+-- 6 engine disabled, 7 write protected, 8 (reserved), 9 the track's headers were seen but not sector R,
+-- 10 a formatted track did not read back completely, 11 a formatted track overran the index.
 -- enable_i (level): drive selected, motor allowed. While '0' every output is inactive and the cache is
 -- dropped. A rising edge on DISK CHANGE sets dskchg_o (sticky) and drops the cache; chg_clr_i clears it.
 -- wp_o is the live write-protect line. The DENSITY pin follows the rate through G_DENSITY_HD / _DD
@@ -94,7 +107,9 @@ entity floppy_sector_engine is
       G_WR_LEAD_HC           : natural   := 4;            -- ... less this many half cells (pipeline + decode latency)
       G_WR_TAIL_BYTES        : natural   := 2;            -- 4E bytes written after the data CRC
       G_PRECOMP_CYCLES       : natural   := 0;            -- write precompensation, clocks (0 = off)
-      G_PRECOMP_FROM_CYL     : natural   := 0             -- ... from this cylinder on
+      G_PRECOMP_FROM_CYL     : natural   := 0;            -- ... from this cylinder on
+      G_FMT_GAP3_HD          : natural   := 84;           -- FORMAT_TRACK gap 3 at 500 kbit/s (0x54, docs/floppy.md phase 4)
+      G_FMT_GAP3_DD          : natural   := 80            -- ... at 250 kbit/s (0x50)
    );
    port (
       clk_i             : in    std_logic;                -- 50.000 MHz
@@ -112,6 +127,8 @@ entity floppy_sector_engine is
       cmd_force_i       : in    std_logic;                -- recalibrate first, re-read even if cached
       cmd_sector_i      : in    std_logic_vector(4 downto 0);   -- R for COPY / WRITE / the cache-hit test
       cmd_spt_i         : in    std_logic_vector(4 downto 0);   -- sectors per track for the early exit (0 = none)
+      cmd_fill_i        : in    std_logic_vector(7 downto 0) := x"F6";   -- FORMAT_TRACK: the data fill byte
+      cmd_gap3_i        : in    std_logic_vector(7 downto 0) := x"00";   -- FORMAT_TRACK: gap 3 length, 0 = default by rate
 
       -- results (hold from busy_o falling until the next command)
       busy_o            : out   std_logic;
@@ -137,6 +154,7 @@ entity floppy_sector_engine is
       index_seen_o      : out   std_logic;                -- during the last command
       vfy_pend_o        : out   std_logic;                -- a written sector awaits its read-back
       vfy_fail_o        : out   std_logic;                -- a read-back failed (sticky until vfy_clr_i)
+      fmt_tail_o        : out   std_logic_vector(15 downto 0);   -- FORMAT_TRACK: gap 4b bytes written before the index
 
       -- debug counters
       cnt_index_o       : out   std_logic_vector(15 downto 0);
@@ -177,6 +195,7 @@ architecture rtl of floppy_sector_engine is
    constant C_CMD_PROBE    : std_logic_vector(3 downto 0) := x"4";
    constant C_CMD_MOTOROFF : std_logic_vector(3 downto 0) := x"5";
    constant C_CMD_WRITE    : std_logic_vector(3 downto 0) := x"6";
+   constant C_CMD_FORMAT   : std_logic_vector(3 downto 0) := x"7";
 
    constant C_E_OK         : std_logic_vector(7 downto 0) := x"00";
    constant C_E_NO_INDEX   : std_logic_vector(7 downto 0) := x"01";
@@ -187,6 +206,8 @@ architecture rtl of floppy_sector_engine is
    constant C_E_DISABLED   : std_logic_vector(7 downto 0) := x"06";
    constant C_E_WPROT      : std_logic_vector(7 downto 0) := x"07";
    constant C_E_NO_SECTOR  : std_logic_vector(7 downto 0) := x"09";
+   constant C_E_FMT_VFY    : std_logic_vector(7 downto 0) := x"0A";
+   constant C_E_FMT_OVER   : std_logic_vector(7 downto 0) := x"0B";
 
    -- the byte sequence of a written data field (index into the sequence)
    constant C_WR_SYNC      : natural := 12;                        -- 0..11: 00
@@ -253,9 +274,31 @@ architecture rtl of floppy_sector_engine is
 
    signal wr_start      : std_logic := '0';
    signal wr_abort      : std_logic;
+   signal fmt_abort     : std_logic := '0';
    signal wr_byte       : std_logic_vector(7 downto 0);
    signal wr_mark       : std_logic;
+   signal wr_mark_c2    : std_logic;
    signal wr_stop       : std_logic;
+   signal sec_byte      : std_logic_vector(7 downto 0);   -- WRITE_SECTOR's byte sequence
+   signal sec_mark      : std_logic;
+   signal sec_stop      : std_logic;
+   signal fmt_sel       : std_logic;                      -- the writer is fed by the format sequencer
+
+   -- FORMAT_TRACK byte sequencer (phase 4): the regions of an IBM System 34 track in order
+   type t_fr is (F_GAP4A, F_SYNC0, F_IAM, F_IAMB, F_GAP1, F_ISYNC, F_IMARK, F_IDAM, F_IC, F_IH, F_IR, F_IN,
+                 F_ICRC1, F_ICRC2, F_GAP2, F_DSYNC, F_DMARK, F_DAM, F_DATA, F_DCRC1, F_DCRC2, F_GAP3, F_GAP4B);
+   signal fr            : t_fr := F_GAP4A;
+   signal fr_cnt        : natural range 0 to 1023 := 0;   -- bytes of the region already taken
+   signal fr_len        : natural range 0 to 1023;        -- bytes in the region
+   signal fr_sec        : unsigned(4 downto 0) := (others => '0');   -- R of the sector being written
+   signal fmt_byte      : std_logic_vector(7 downto 0);
+   signal fmt_mark      : std_logic;
+   signal fmt_mark_c2   : std_logic;
+   signal fmt_crc_en    : std_logic;                      -- the byte goes into the CRC
+   signal fmt_stop      : std_logic := '0';
+   signal fmt_tail      : unsigned(15 downto 0) := (others => '0');
+   signal a_fill        : std_logic_vector(7 downto 0) := x"F6";
+   signal gap3_len      : natural range 0 to 255 := 84;
    signal wr_next       : std_logic;
    signal wr_active     : std_logic;
    signal wr_done       : std_logic;
@@ -271,7 +314,7 @@ architecture rtl of floppy_sector_engine is
    ---------------------------------------------------------------------------------------------
    type t_seq is (S_IDLE, S_MOTOR, S_HOME_IN, S_HOME_OUT, S_HOME_SETTLE, S_DET_HD, S_DET_DD,
                   S_SEEK, S_SEEK_SETTLE, S_CAPTURE, S_COPY, S_PROBE_IN, S_PROBE_OUT, S_PROBE_WAIT,
-                  S_DONE, S_VFY_WAIT, S_WR_LOAD, S_WR_FIND, S_WR_GAP, S_WR_DATA);
+                  S_DONE, S_VFY_WAIT, S_WR_LOAD, S_WR_FIND, S_WR_GAP, S_WR_DATA, S_FMT_INDEX, S_FMT_WRITE);
    signal seq           : t_seq := S_IDLE;
    signal timer         : natural range 0 to C_TIMER_MAX := 0;
    signal cmd           : std_logic_vector(3 downto 0) := (others => '0');
@@ -426,7 +469,7 @@ begin
       );
 
    precomp  <= to_unsigned(G_PRECOMP_CYCLES, 5) when head_track >= G_PRECOMP_FROM_CYL else (others => '0');
-   wr_abort <= not enable_i;
+   wr_abort <= (not enable_i) or fmt_abort;
 
    i_writer : entity work.floppy_mfm_writer
       generic map (
@@ -442,6 +485,7 @@ begin
          abort_i   => wr_abort,
          byte_i    => wr_byte,
          mark_i    => wr_mark,
+         mark_c2_i => wr_mark_c2,
          stop_i    => wr_stop,
          next_o    => wr_next,
          active_o  => wr_active,
@@ -450,16 +494,52 @@ begin
          wdata_o   => wdata
       );
 
-   -- the data field as the writer takes it, byte by byte
-   wr_byte <= x"00"                when wr_idx < C_WR_SYNC else
-              x"A1"                when wr_idx < C_WR_MARK else
-              x"FB"                when wr_idx = C_WR_DAM else
-              wbuf_rdata           when wr_idx < C_WR_CRC else
-              wr_crc(15 downto 8)  when wr_idx = C_WR_CRC else
-              wr_crc(7 downto 0)   when wr_idx = C_WR_CRC + 1 else
-              x"4E";
-   wr_mark <= '1' when wr_idx >= C_WR_SYNC and wr_idx < C_WR_MARK else '0';
-   wr_stop <= '1' when wr_idx >= C_WR_TOTAL else '0';
+   -- the data field as the writer takes it, byte by byte (WRITE_SECTOR)
+   sec_byte <= x"00"                when wr_idx < C_WR_SYNC else
+               x"A1"                when wr_idx < C_WR_MARK else
+               x"FB"                when wr_idx = C_WR_DAM else
+               wbuf_rdata           when wr_idx < C_WR_CRC else
+               wr_crc(15 downto 8)  when wr_idx = C_WR_CRC else
+               wr_crc(7 downto 0)   when wr_idx = C_WR_CRC + 1 else
+               x"4E";
+   sec_mark <= '1' when wr_idx >= C_WR_SYNC and wr_idx < C_WR_MARK else '0';
+   sec_stop <= '1' when wr_idx >= C_WR_TOTAL else '0';
+
+   -- the whole track as the writer takes it (FORMAT_TRACK): region lengths, bytes, marks
+   fmt_sel <= '1' when seq = S_FMT_INDEX or seq = S_FMT_WRITE else '0';
+   with fr select fr_len <=
+      80       when F_GAP4A,
+      12       when F_SYNC0 | F_ISYNC | F_DSYNC,
+      3        when F_IAM | F_IMARK | F_DMARK,
+      50       when F_GAP1,
+      22       when F_GAP2,
+      512      when F_DATA,
+      gap3_len when F_GAP3,
+      1023     when F_GAP4B,
+      1        when others;
+   fmt_byte <= x"4E"                       when fr = F_GAP4A or fr = F_GAP1 or fr = F_GAP2 or fr = F_GAP3 or fr = F_GAP4B else
+               x"00"                       when fr = F_SYNC0 or fr = F_ISYNC or fr = F_DSYNC else
+               x"C2"                       when fr = F_IAM else
+               x"FC"                       when fr = F_IAMB else
+               x"A1"                       when fr = F_IMARK or fr = F_DMARK else
+               x"FE"                       when fr = F_IDAM else
+               std_logic_vector(a_cyl)     when fr = F_IC else
+               "0000000" & a_head          when fr = F_IH else
+               "000" & std_logic_vector(fr_sec) when fr = F_IR else
+               x"02"                       when fr = F_IN else
+               x"FB"                       when fr = F_DAM else
+               a_fill                      when fr = F_DATA else
+               wr_crc(15 downto 8)         when fr = F_ICRC1 or fr = F_DCRC1 else
+               wr_crc(7 downto 0);
+   fmt_mark    <= '1' when fr = F_IMARK or fr = F_DMARK else '0';
+   fmt_mark_c2 <= '1' when fr = F_IAM else '0';
+   fmt_crc_en  <= '1' when fr = F_IMARK or fr = F_IDAM or fr = F_IC or fr = F_IH or fr = F_IR or fr = F_IN or
+                           fr = F_DMARK or fr = F_DAM or fr = F_DATA else '0';
+
+   wr_byte    <= fmt_byte when fmt_sel = '1' else sec_byte;
+   wr_mark    <= fmt_mark when fmt_sel = '1' else sec_mark;
+   wr_mark_c2 <= fmt_mark_c2 and fmt_sel;
+   wr_stop    <= fmt_stop when fmt_sel = '1' else sec_stop;
    wbuf_raddr <= std_logic_vector(resize(to_unsigned(wr_idx, 10) - C_WR_DATA, 9)) when wr_idx >= C_WR_DATA and wr_idx < C_WR_CRC
                  else (others => '0');
    wr_gap_clocks <= (G_WR_GAP2_BYTES * 16 - G_WR_LEAD_HC) * G_HD_HALF_CELL when a_rate = '1' else
@@ -753,6 +833,16 @@ begin
                   a_force    <= cmd_force_i;
                   a_sector   <= unsigned(cmd_sector_i);
                   a_spt      <= unsigned(cmd_spt_i);
+                  a_fill     <= cmd_fill_i;
+                  if unsigned(cmd_gap3_i) /= 0 then
+                     gap3_len <= to_integer(unsigned(cmd_gap3_i));
+                  elsif cmd_rate_hd_i = '1' then
+                     gap3_len <= G_FMT_GAP3_HD;
+                  else
+                     gap3_len <= G_FMT_GAP3_DD;
+                  end if;
+                  fmt_stop   <= '0';
+                  fmt_abort  <= '0';
                   err        <= C_E_OK;
                   index_seen <= '0';
                   stepped    <= '0';
@@ -791,6 +881,14 @@ begin
                      else
                         load_i <= 0;
                         seq    <= S_WR_LOAD;
+                     end if;
+                  elsif cmd_i = C_CMD_FORMAT then
+                     if unsigned(cmd_cyl_i) > G_MAX_TRACK or unsigned(cmd_spt_i) = 0 or unsigned(cmd_spt_i) > 18 then
+                        err <= C_E_BAD_ARG;
+                     elsif wp_n = '1' then
+                        err <= C_E_WPROT;
+                     else
+                        seq <= S_MOTOR;
                      end if;
                   elsif cmd_i = C_CMD_PROBE then
                      stepdir_out <= '0';
@@ -985,6 +1083,11 @@ begin
                      crcerr(a_slot)   <= '0';
                      vfy_pend(a_slot) <= '0';
                      seq              <= S_WR_FIND;
+                  elsif cmd = C_CMD_FORMAT then
+                     valid    <= (others => '0');                  -- the whole track goes, verifies included
+                     crcerr   <= (others => '0');
+                     vfy_pend <= (others => '0');
+                     seq      <= S_FMT_INDEX;
                   else
                      seq <= S_CAPTURE;
                   end if;
@@ -1086,6 +1189,103 @@ begin
                   seq <= S_DONE;
                end if;
 
+            when S_FMT_INDEX =>
+               -- the write starts at the leading edge of the index pulse: gap 4a first
+               armed     <= '0';
+               capturing <= '0';
+               if index_edge = '1' then
+                  timer    <= 0;
+                  wr_start <= '1';
+                  wr_crc   <= (others => '1');
+                  fr       <= F_GAP4A;
+                  fr_cnt   <= 0;
+                  fr_sec   <= to_unsigned(1, 5);
+                  fmt_stop <= '0';
+                  fmt_tail <= (others => '0');
+                  seq      <= S_FMT_WRITE;
+               elsif timer = G_INDEX_TIMEOUT_CYCLES - 1 then
+                  err <= C_E_NO_INDEX;
+                  seq <= S_DONE;
+               else
+                  timer <= timer + 1;
+               end if;
+
+            when S_FMT_WRITE =>
+               -- one region after the other until the next index pulse ends gap 4b
+               armed     <= '0';
+               capturing <= '0';
+               if wr_next = '1' then
+                  if fmt_crc_en = '1' then
+                     wr_crc <= crc16_byte(wr_crc, fmt_byte);
+                  end if;
+                  if fr = F_GAP4B then
+                     fmt_tail <= fmt_tail + 1;
+                  end if;
+                  if fr_cnt + 1 >= fr_len then
+                     fr_cnt <= 0;
+                     case fr is
+                        when F_GAP4A => fr <= F_SYNC0;
+                        when F_SYNC0 => fr <= F_IAM;
+                        when F_IAM   => fr <= F_IAMB;
+                        when F_IAMB  => fr <= F_GAP1;
+                        when F_GAP1  => fr <= F_ISYNC;
+                        when F_ISYNC => fr <= F_IMARK; wr_crc <= (others => '1');
+                        when F_IMARK => fr <= F_IDAM;
+                        when F_IDAM  => fr <= F_IC;
+                        when F_IC    => fr <= F_IH;
+                        when F_IH    => fr <= F_IR;
+                        when F_IR    => fr <= F_IN;
+                        when F_IN    => fr <= F_ICRC1;
+                        when F_ICRC1 => fr <= F_ICRC2;
+                        when F_ICRC2 => fr <= F_GAP2;
+                        when F_GAP2  => fr <= F_DSYNC;
+                        when F_DSYNC => fr <= F_DMARK; wr_crc <= (others => '1');
+                        when F_DMARK => fr <= F_DAM;
+                        when F_DAM   => fr <= F_DATA;
+                        when F_DATA  => fr <= F_DCRC1;
+                        when F_DCRC1 => fr <= F_DCRC2;
+                        when F_DCRC2 => fr <= F_GAP3;
+                        when F_GAP3  =>
+                           if fr_sec >= a_spt then
+                              fr <= F_GAP4B;
+                           else
+                              fr     <= F_ISYNC;
+                              fr_sec <= fr_sec + 1;
+                           end if;
+                        when F_GAP4B => null;
+                     end case;
+                  else
+                     fr_cnt <= fr_cnt + 1;
+                  end if;
+               end if;
+               if index_edge = '1' and fmt_stop = '0' then
+                  fmt_stop <= '1';                                   -- the writer drains and drops WRITE GATE
+                  if fr /= F_GAP4B then
+                     err <= C_E_FMT_OVER;                            -- the track did not fit the revolution
+                  end if;
+               end if;
+               if wr_done = '1' then
+                  dec_reset <= '1';                                  -- the reader saw our own write
+                  timer     <= 0;
+                  idx_cnt   <= 0;
+                  saw_idam  <= '0';
+                  saw_match <= '0';
+                  if err = C_E_OK then
+                     seq <= S_CAPTURE;                               -- read the track back once
+                  else
+                     seq <= S_DONE;
+                  end if;
+               elsif enable_i = '0' then
+                  err <= C_E_DISABLED;
+                  seq <= S_DONE;
+               elsif timer = G_INDEX_TIMEOUT_CYCLES - 1 then          -- the index never came again
+                  fmt_abort <= '1';
+                  err       <= C_E_NO_INDEX;
+                  seq       <= S_DONE;
+               else
+                  timer <= timer + 1;
+               end if;
+
             when S_COPY =>
                if copy_i = 512 + 2 then                              -- pipeline drained
                   seq <= S_DONE;
@@ -1120,6 +1320,9 @@ begin
 
             when S_DONE =>
                seq <= S_IDLE;
+               if cmd = C_CMD_FORMAT and err = C_E_OK and cap_done = '0' then
+                  err <= C_E_FMT_VFY;                                -- not every sector read back
+               end if;
          end case;
 
          -- a cache drop with verifies pending (a step, a probe): they can no longer be checked
@@ -1166,6 +1369,10 @@ begin
             vfy_pend      <= (others => '0');
             vfy_fail      <= (others => '0');
             wr_start      <= '0';
+            fmt_stop      <= '0';
+            fmt_abort     <= '0';
+            fmt_tail      <= (others => '0');
+            fr            <= F_GAP4A;
          end if;
       end if;
    end process p_seq;
@@ -1194,6 +1401,7 @@ begin
    index_seen_o  <= index_seen;
    vfy_pend_o    <= '0' when vfy_pend = (17 downto 0 => '0') else '1';
    vfy_fail_o    <= '0' when vfy_fail = (17 downto 0 => '0') else '1';
+   fmt_tail_o    <= std_logic_vector(fmt_tail);
    cnt_index_o   <= std_logic_vector(cnt_index);
    cnt_idam_ok_o <= std_logic_vector(cnt_idam_ok);
    cnt_dam_ok_o  <= std_logic_vector(cnt_dam_ok);

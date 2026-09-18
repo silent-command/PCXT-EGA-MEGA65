@@ -188,6 +188,7 @@ module pcxt_core
         input  wire        mgmt_rd_i,
         output wire  [7:0] mgmt_req_o,             // [7] FDD write, [6] FDD read, [2:0] IDE request
         output wire  [1:0] fdd_present_o,
+        output wire        fdd_access_o,            // one clock per DOS access attempt on drive A (floppy.v fdd0_access, docs/floppy.md)
         // 3.9 misc
         output wire        led_disk_o,              // any FDD or IDE request pending
     // 3.10 debug: raw chipset video signals before the mixer/retime stages
@@ -1396,6 +1397,7 @@ module pcxt_core
 		.floppy_wp                          (status[20:19]),
 		.fdd_present                        (fdd_present),
 		.fdd_request                        (mgmt_req[7:6]),
+		.fdd_access                         (fdd_access_o),
 		.ide0_request                       (mgmt_req[2:0]),
 		.xtegactl_cpu                       (xtegactl_cpu),
 		.xtegactl_exp                       (xtegactl_exp),

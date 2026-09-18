@@ -7,7 +7,8 @@
 --   * MFM rule: a data byte becomes 16 raw bits, clock bit then data bit for every data bit, the clock bit
 --     being '1' only between two '0' data bits (mega65-core mfm_bits_to_gaps.vhdl bit_queue assignments,
 --     the previous byte's last data bit carried across). A byte flagged mark_i is the A1 sync mark with the
---     missing clock, raw 0x4489, which the reader detects as such.
+--     missing clock, raw 0x4489, which the reader detects as such; one flagged mark_c2_i is the C2 mark of
+--     the index address mark (raw 0x5224, phase 4: FORMAT_TRACK writes C2 C2 C2 FC after gap 4a).
 --   * A raw '1' is a flux transition: WRITE DATA is pulsed low for half a half cell (25 / 50 clocks,
 --     0.5 / 1 us) starting at the middle of the raw bit cell, like mega65-core (f_write low from
 --     transition_point = cycles_per_interval / 2 to the end of the interval); the drive acts on the falling
@@ -45,6 +46,7 @@ entity floppy_mfm_writer is
       abort_i        : in    std_logic;          -- level: stop now
       byte_i         : in    std_logic_vector(7 downto 0);
       mark_i         : in    std_logic;          -- byte_i is an A1 sync mark (raw 0x4489)
+      mark_c2_i      : in    std_logic := '0';   -- byte_i is a C2 index mark (raw 0x5224)
       stop_i         : in    std_logic;          -- no more bytes: finish after the current one
       next_o         : out   std_logic;          -- pulse: byte_i was taken, present the next one
       active_o       : out   std_logic;          -- WRITE GATE (active high)
@@ -153,6 +155,9 @@ begin
                         if mark_i = '1' then
                            v_q    := x"4489";
                            last_d <= '1';
+                        elsif mark_c2_i = '1' then
+                           v_q    := x"5224";                      -- C2 with the missing clock, last data bit 0
+                           last_d <= '0';
                         else
                            v_q    := mfm_encode(byte_i, last_d);
                            last_d <= byte_i(0);

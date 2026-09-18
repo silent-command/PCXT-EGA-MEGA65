@@ -122,6 +122,8 @@ entity main is
       flp_buf_rd_i            : in  std_logic := '0';
       flp_buf_rdata_o         : out std_logic_vector(7 downto 0);
       flp_blk_err_i           : in  std_logic := '0';
+      flp_access_o            : out std_logic;                -- one clock per DOS access attempt on drive A (floppy.v fdd0_access)
+      flp_fmt_o               : out std_logic_vector(15 downto 0);   -- the format tap of the floppy request being served (mgmt_bridge fd_fmt, docs/floppy.md phase 4)
 
       -- M2M Keyboard interface
       kb_key_num_i            : in  integer range 0 to 79;    -- cycles through all MEGA65 keys
@@ -270,6 +272,7 @@ architecture synthesis of main is
          mgmt_rd_i                 : in  std_logic;
          mgmt_req_o                : out std_logic_vector(7 downto 0);
          fdd_present_o             : out std_logic_vector(1 downto 0);
+         fdd_access_o              : out std_logic;
          led_disk_o                : out std_logic;
          dbg_de_o                  : out std_logic;
          dbg_hb_o                  : out std_logic;
@@ -341,6 +344,7 @@ architecture synthesis of main is
          blk_lba         : out std_logic_vector(31 downto 0);
          blk_ack         : in  std_logic_vector(2 downto 0);
          blk_err         : in  std_logic;
+         fd_fmt          : out std_logic_vector(15 downto 0);
          buf_addr        : out std_logic_vector(8 downto 0);
          buf_wdata       : out std_logic_vector(7 downto 0);
          buf_we          : out std_logic;
@@ -612,6 +616,7 @@ begin
          mgmt_rd_i                 => mgmt_rd,
          mgmt_req_o                => mgmt_req,
          fdd_present_o             => open,
+         fdd_access_o              => flp_access_o,
          led_disk_o                => led_disk_o,
          dbg_de_o                  => raw_de,
          dbg_hb_o                  => raw_hb,
@@ -656,6 +661,7 @@ begin
          blk_lba         => blk_lba,
          blk_ack         => blk_ack,
          blk_err         => flp_blk_err_i,
+         fd_fmt          => flp_fmt_o,
          buf_addr        => buf_addr,
          buf_wdata       => buf_wdata,
          buf_we          => buf_we,

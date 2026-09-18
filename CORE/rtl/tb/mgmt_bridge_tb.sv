@@ -1,6 +1,7 @@
 `timescale 1ns / 1ps
 // mgmt_bridge_tb.sv - self-checking bench for CORE/rtl/mgmt_bridge.sv against
-// the real rtl/common/ide.v and rtl/common/floppy.v (plus simple_fifo.v).
+// the real rtl/common/ide.v and the overlay floppy.v that is built (CORE/rtl/overlay,
+// plus rtl/common/simple_fifo.v).
 //
 // The bench plays three roles:
 //   * the chipset glue of Peripherals.sv:1527/1631/1738 (page decode F0/F2,
@@ -16,8 +17,12 @@
 //     M2M vdrives strobe that the QNICE firmware sets and clears with two
 //     register writes, ~30 clocks wide.
 //
-// Test 17 (docs/floppy.md phase 3): a floppy write block acknowledged with
-// blk_err parks the drive (fd_dead) until the chip reset.
+// Test 16 (docs/floppy.md, the internal drive): a floppy read block acknowledged with
+// blk_err streams nothing and parks the request (fd_hold) until floppy.v drops it on
+// the BIOS's FDC software reset. Test 17 (phase 3): a write block acknowledged with
+// blk_err parks the drive (fd_dead) until the chip reset. Test 18 (on-demand
+// detection): a read block arriving after its request was abandoned is taken only
+// by a retry of the same sector (S_FDD_RD_CHK).
 // Prints RESULT: PASS or RESULT: FAIL.  Build/run: run_mgmt_bridge_tb.sh.
 
 // bram.vhd's dpram as ide.v sees it: enable_*/cs_* default to '1' in the
@@ -175,6 +180,17 @@ module mgmt_bridge_tb;
     wire [31:0] blk_lba;
     reg  [2:0]  blk_ack = 3'b000;
     reg         blk_err = 1'b0;                  // the firmware's block-error flag (internal floppy drive)
+    wire [15:0] fd_fmt;                          // the format tap of the request being served (phase 4)
+    reg  [15:0] fd_fmt_seen [0:63];              // fd_fmt when each drive-A block write was issued
+    integer     fd_fmt_n = 0;
+    reg         blk_wr0_q = 1'b0;
+    always @(posedge clk) begin
+        blk_wr0_q <= blk_wr[0];
+        if (blk_wr[0] && !blk_wr0_q && fd_fmt_n < 64) begin
+            fd_fmt_seen[fd_fmt_n] = fd_fmt;
+            fd_fmt_n = fd_fmt_n + 1;
+        end
+    end
     wire [8:0]  buf_addr;
     wire [7:0]  buf_wdata;
     wire        buf_we;
@@ -198,6 +214,7 @@ module mgmt_bridge_tb;
         .blk_lba       (blk_lba),
         .blk_ack       (blk_ack),
         .blk_err       (blk_err),
+        .fd_fmt        (fd_fmt),
         .buf_addr      (buf_addr),
         .buf_wdata     (buf_wdata),
         .buf_we        (buf_we),
@@ -239,6 +256,8 @@ module mgmt_bridge_tb;
     // the next sector's mgmt request rises while the bridge is still storing
     // this one.  Default 0 keeps every existing test's timing unchanged.
     integer     blk_wr_extra = 0;
+    // the same for READ blocks: the internal-drive firmware on a slow request (test 18)
+    integer     blk_rd_extra = 0;
     // record of every completed drive-A (floppy) block write, in order
     integer     fa_wr_n = 0;
     reg  [31:0] fa_wr_lba [0:63];
@@ -255,7 +274,7 @@ module mgmt_bridge_tb;
                 lba = blk_lba;
                 check((blk_rd | blk_wr) == (3'b001 << d), "only one block transfer in flight");
                 check(!(blk_rd[d] & blk_wr[d]), "blk_rd and blk_wr not both set");
-                lat = $urandom_range(1, 24) + (is_wr ? blk_wr_extra : 0);
+                lat = $urandom_range(1, 24) + (is_wr ? blk_wr_extra : blk_rd_extra);
                 repeat (lat) @(posedge clk);
                 check(blk_rd[d] | blk_wr[d], "blk request held until ack rises");
                 blk_ack[d] <= 1'b1;
@@ -703,6 +722,30 @@ module mgmt_bridge_tb;
             fdc_wait_dma_req();
             @(posedge clk);
             fdd_dma_rd  <= wpat(i);
+            fdd_dma_ack <= 1'b1;
+            fdd_dma_tc  <= (i == tot - 1);
+            @(posedge clk);
+            fdd_dma_ack <= 1'b0;
+            fdd_dma_tc  <= 1'b0;
+        end
+    end
+    endtask
+
+    // FORMAT TRACK: the ID list (C, H, R, N = 2 per sector, R = 1..nsec) INTO the FDC by DMA, TC on the
+    // last byte, the BIOS's DMA count of nsec * 4 - 1 (int_13_fn05)
+    task fdc_dma_ids(input [7:0] c, input h, input integer nsec);
+        integer i, tot;
+    begin
+        tot = nsec * 4;
+        for (i = 0; i < tot; i = i + 1) begin
+            fdc_wait_dma_req();
+            @(posedge clk);
+            case (i % 4)
+                0: fdd_dma_rd <= c;
+                1: fdd_dma_rd <= {7'd0, h};
+                2: fdd_dma_rd <= (i / 4) + 1;
+                3: fdd_dma_rd <= 8'h02;
+            endcase
             fdd_dma_ack <= 1'b1;
             fdd_dma_tc  <= (i == tot - 1);
             @(posedge clk);
@@ -1514,15 +1557,15 @@ module mgmt_bridge_tb;
         ide_identify();                          // the hard disk is still served meanwhile
         check(mgmt_req[6] == 1'b1 && u_dut.fd_hold == 1'b1, "16: hold survives the IDE traffic");
         blk_err = 1'b0;
-        reset = 1'b1;                            // the chip reset revives floppy.v
-        repeat (5) @(posedge clk);
-        reset = 1'b0;
-        repeat (20) @(posedge clk);
-        check(mgmt_req[6] == 1'b0, "16: request dropped by the chip reset");
-        check(u_dut.fd_hold == 1'b0, "16: hold cleared");
-        mount(0, 32'd1474560, 1'b1);             // the bridge lost its mounts in the reset
-        wait_bridge_idle();
+        // the BIOS's error path after its 2 s IRQ timeout: an FDC software reset through the
+        // DOR. The overlay floppy.v abandons the waiting transfer: the request drops and the
+        // bridge's hold clears without a core reset (docs/floppy.md, on-demand detection)
         fdc_reset_recover();
+        repeat (20) @(posedge clk);
+        check(mgmt_req[6] == 1'b0, "16: request dropped by the DOR reset");
+        check(u_dut.fd_hold == 1'b0, "16: hold cleared");
+        check(u_fdd.state == 4'd0, "16: floppy.v back in S_IDLE");
+        check(u_fdd.media_present[0] == 1'b1, "16: the mount survived (no chip reset)");
         fdc_specify(8'h1F, 8'h02);
         fdc_recalibrate(1'b0);
         fdc_wait_irq_max(300_000, got, n1);
@@ -1611,6 +1654,136 @@ module mgmt_bridge_tb;
         fdc_result(st);
         wait_bridge_idle();
         check(blk_count == n0 + 1 && last_blk_lba == 32'd9 && last_blk_wr && u_dut.fd_dead == 1'b0, "17: a good write afterwards: block written, drive alive");
+
+        // ============================================================ 18. a block that arrives after its request was abandoned
+        // The firmware can take longer than the BIOS's 2 s IRQ timeout on one
+        // request (a bad sector: two attempts, the second with a recalibrate).
+        // The BIOS resets the FDC, the overlay floppy.v drops the request, DOS
+        // retries. The block then arrives for a request that is gone: the
+        // bridge re-reads floppy.v's request word (S_FDD_RD_CHK): a retry of
+        // the same sector takes the block, anything else drops it and the live
+        // request is fetched afresh, so a stale block never lands in another
+        // sector's FIFO.
+        $display("[18] late block after an FDC reset: the same sector takes it, another sector drops it and refetches");
+        fdc_wr(3'd2, 8'h1C);
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        fdc_sense_int(st, b);
+        // (a) the retry asks for the same sector
+        blk_rd_extra = 20000;                    // the firmware is slow on the next read
+        n0 = blk_count;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);   // C0 H0 R3 -> LBA 2
+        n1 = 0;
+        while (blk_rd == 3'b000 && n1 < 400000) begin @(posedge clk); n1 = n1 + 1; end
+        check(blk_rd == 3'b001, "18a: LBA 2 being fetched");
+        repeat (2000) @(posedge clk);             // (the server sampled blk_rd_extra with the request)
+        blk_rd_extra = 0;
+        fdc_reset_recover();                     // the BIOS gave up: DOR reset
+        check(mgmt_req[6] == 1'b0 && blk_rd == 3'b001, "18a: request dropped, the fetch still in flight");
+        fdc_specify(8'h1F, 8'h02);
+        i = f2ff_writes;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);   // the retry: LBA 2 again, before the block arrives
+        fdc_dma_in();
+        check(f2ff_writes == i + 512, "18a: one block streamed");
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1) if (dma_buf[i] !== fa_img[2 * 512 + i]) bad = bad + 1;
+        check(bad == 0, "18a: the retry got LBA 2's data");
+        fdc_wait_irq();
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "18a: ST0 normal termination");
+        wait_bridge_idle();
+        check(blk_count == n0 + 1, "18a: served by the late block, no second fetch");
+        // (b) DOS moved on to another sector
+        blk_rd_extra = 20000;
+        n0 = blk_count;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd3, 8'd18);   // LBA 2 again
+        n1 = 0;
+        while (blk_rd == 3'b000 && n1 < 400000) begin @(posedge clk); n1 = n1 + 1; end
+        check(blk_rd == 3'b001, "18b: LBA 2 being fetched");
+        repeat (2000) @(posedge clk);
+        blk_rd_extra = 0;
+        fdc_reset_recover();
+        fdc_specify(8'h1F, 8'h02);
+        i = f2ff_writes;
+        fdc_cmd_rw(1'b0, 8'd0, 1'b0, 8'd5, 8'd18);   // C0 H0 R5 -> LBA 4
+        fdc_dma_in();
+        check(f2ff_writes == i + 512, "18b: exactly one block streamed (the stale one was not)");
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1) if (dma_buf[i] !== fa_img[4 * 512 + i]) bad = bad + 1;
+        check(bad == 0, "18b: LBA 4's data, not the stale block");
+        fdc_wait_irq();
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "18b: ST0 normal termination");
+        wait_bridge_idle();
+        check(blk_count == n0 + 2 && last_blk_lba == 32'd4, "18b: the stale block was dropped and LBA 4 fetched");
+        check(u_dut.fd_hold == 1'b0 && u_dut.fd_dead == 1'b0, "18b: nothing parked");
+
+        // ============================================================ 19. FORMAT TRACK and the format tap (docs/floppy.md phase 4)
+        // The BIOS's fn05: 6-byte FORMAT TRACK (SC = the mount's 18, GPL 0x6C, filler F6), then the
+        // ID fields C/H/R/N of every sector by DMA with TC on the last byte. floppy.v turns each
+        // sector into an ordinary block write of 512 x F6 to (C * 2 + H) * 18 + R - 1; the bridge
+        // samples floppy.v's register 1 when it dispatches each request, so the firmware sees
+        // fd_fmt = {1, SC, F6} for every fill block, and bit 15 clear for a normal write or read.
+        $display("[19] FORMAT TRACK: fill blocks with the format tap set, a normal write and read without it");
+        mount(0, 32'd1474560, 1'b0);             // A read-write, 18 sectors per track
+        wait_bridge_idle();
+        fdc_wr(3'd2, 8'h1C);
+        fdc_specify(8'h1F, 8'h02);
+        fdc_recalibrate(1'b0);
+        fdc_wait_irq_max(300_000, got, n1);
+        fdc_sense_int(st, b);
+        fd_fmt_n = 0;
+        fa_wr_n  = 0;
+        n0 = blk_count;
+        check(fd_fmt == 16'h0000, "19: tap word clear before the format (the last request was a read)");
+        fdc_wr(3'd5, 8'h4D);                     // FORMAT TRACK, MFM
+        fdc_wr(3'd5, 8'h00);                     // head 0, drive 0
+        fdc_wr(3'd5, 8'h02);                     // N = 512 bytes
+        fdc_wr(3'd5, 8'd18);                     // SC
+        fdc_wr(3'd5, 8'h6C);                     // GPL (format gap 3 of the BIOS table)
+        fdc_wr(3'd5, 8'hF6);                     // D, the filler byte
+        fdc_dma_ids(8'd1, 1'b0, 18);             // cylinder 1 head 0: LBA 36..53
+        fdc_wait_irq_max(4_000_000, got, n1);
+        check(got, "19: the format command completes");
+        fdc_result(st);
+        check(st[7:6] == 2'b00, "19: ST0 normal termination");
+        wait_bridge_idle();
+        $display("19: %0d fill blocks written (LBA %0d..%0d), %0d tap samples", fa_wr_n, fa_wr_n ? fa_wr_lba[0] : 0, fa_wr_n ? fa_wr_lba[fa_wr_n - 1] : 0, fd_fmt_n);
+        check(fa_wr_n == 18, "19: 18 fill blocks (the overlay floppy.v handles the last ID field before the DMA TC that arrives with it; upstream wrote 17 and ended abnormally)");
+        check(blk_count == n0 + fa_wr_n, "19: every block transfer was a drive-A write");
+        bad = 0;
+        for (k = 0; k < fa_wr_n; k = k + 1) if (fa_wr_lba[k] != 36 + k) bad = bad + 1;
+        check(bad == 0, "19: the fill blocks go to consecutive LBAs from C1 H0 R1");
+        bad = 0;
+        for (i = 36 * 512; i < (36 + fa_wr_n) * 512; i = i + 1) if (fa_img[i] !== 8'hF6) bad = bad + 1;
+        check(bad == 0, "19: every fill block is 512 x the filler byte");
+        check(fd_fmt_n == fa_wr_n, "19: one tap sample per fill block");
+        bad = 0;
+        for (k = 0; k < fd_fmt_n; k = k + 1) if (fd_fmt_seen[k] !== {1'b1, 7'd18, 8'hF6}) bad = bad + 1;
+        check(bad == 0, "19: the tap says {format, SC 18, F6} for every fill block");
+        check(fd_fmt == {1'b1, 7'd18, 8'hF6}, "19: the tap holds after the last fill until the next request");
+        // a normal write afterwards: the tap bit is clear (SC and D keep their last values)
+        fd_fmt_n = 0;
+        fa_wr_n  = 0;
+        fdc_cmd_rw(1'b1, 8'd1, 1'b0, 8'd3, 8'd18);   // C1 H0 R3 -> LBA 38
+        fdc_dma_out_multi(1);
+        fdc_wait_irq_max(2_000_000, got, n1);
+        fdc_result(st);
+        wait_bridge_idle();
+        check(fa_wr_n == 1 && fa_wr_lba[0] == 32'd38, "19: the normal write went to LBA 38");
+        check(fd_fmt_n == 1 && fd_fmt_seen[0] == {1'b0, 7'd18, 8'hF6}, "19: the tap bit is clear for a normal write");
+        // and a read: dispatched with the tap bit clear as well
+        n0 = blk_count;
+        fdc_cmd_rw(1'b0, 8'd1, 1'b0, 8'd2, 8'd18);   // LBA 37: fill bytes
+        fdc_dma_in();
+        fdc_wait_irq();
+        fdc_result(st);
+        wait_bridge_idle();
+        bad = 0;
+        for (i = 0; i < 512; i = i + 1) if (dma_buf[i] !== 8'hF6) bad = bad + 1;
+        check(bad == 0 && blk_count == n0 + 1, "19: a formatted sector reads back as fill bytes");
+        check(fd_fmt[15] == 1'b0, "19: the tap bit is clear for a read");
 
         $display("%0d checks, %0d failures", checks, errors);
         if (errors == 0) $display("RESULT: PASS");

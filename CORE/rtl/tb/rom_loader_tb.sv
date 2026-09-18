@@ -27,7 +27,8 @@
 // could see "idle" too early), that the result words read back exactly once the busy bit is clear, that a
 // command written while busy is dropped, that the enable / block-error levels and the disk-change and
 // verify-fail clear pulses cross (each on its own, together, and never spuriously), that the nine live
-// flags read back (seven in the status word, the two write-verify ones in register 12), that a
+// flags read back (seven in the status word, the two write-verify ones in register 12), that the sticky
+// access flag of register 13 is set by one core-clock pulse and cleared by control bit 4 only, that a
 // WRITE_SECTOR command (code 6) passes like any other, and that floppy-window writes never produce a ROM
 // word.
 //
@@ -66,7 +67,11 @@ module rom_loader_tb;
     logic        flp_busy = 1'b0;
     logic [95:0] flp_res = 96'h0;
     logic [8:0]  flp_live = 9'h0;
+    logic        flp_access = 1'b0;     // floppy.v fdd0_access: a DOS access attempt on drive A (pulse)
     logic [95:0] flp_dbg = 96'h0;
+    wire  [15:0] flp_arg2;              // FORMAT_TRACK fill / gap 3 (write 4)
+    logic [15:0] flp_fmt = 16'h0;       // the format tap (read 14)
+    logic [15:0] flp_fmt_tail = 16'h0;  // gap 4b count (read 15)
 
     rom_loader #(.G_TIMEOUT(20000), .G_WORD_TIMEOUT(5000)) dut (
         .qnice_clk_i(qnice_clk), .qnice_rst_i(qnice_rst),
@@ -79,7 +84,8 @@ module rom_loader_tb;
         .eth_mac_o(eth_mac), .eth_mac_valid_o(eth_mac_valid),
         .flp_cmd_o(flp_cmd), .flp_cmd_code_o(flp_cmd_code), .flp_arg0_o(flp_arg0), .flp_arg1_o(flp_arg1),
         .flp_enable_o(flp_enable), .flp_chg_clr_o(flp_chg_clr), .flp_vfy_clr_o(flp_vfy_clr), .flp_blk_err_o(flp_blk_err),
-        .flp_busy_i(flp_busy), .flp_res_i(flp_res), .flp_live_i(flp_live), .flp_dbg_i(flp_dbg)
+        .flp_busy_i(flp_busy), .flp_res_i(flp_res), .flp_live_i(flp_live), .flp_dbg_i(flp_dbg), .flp_access_i(flp_access),
+        .flp_arg2_o(flp_arg2), .flp_fmt_i(flp_fmt), .flp_fmt_tail_i(flp_fmt_tail)
     );
 
     //------------------------------------------------------------------------
@@ -435,6 +441,28 @@ module rom_loader_tb;
             flp_expect(4'd12, 16'h0003, "verify pending and failed");
             flp_live = 9'b00_0000000;
             repeat (10) @(posedge qnice_clk);
+            // the access flag (register 13, docs/floppy.md on-demand detection): sticky from one core-clock
+            // pulse, cleared by control bit 4 only, never set spuriously
+            flp_expect(4'd13, 16'h0000, "access flag clear at start");
+            @(posedge core_clk); flp_access <= 1'b1; @(posedge core_clk); flp_access <= 1'b0;
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd13, 16'h0001, "access flag set by one pulse");
+            flp_write(4'd3, 16'h0001);                       // enable only: the flag stays
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd13, 16'h0001, "access flag survives a control write without bit 4");
+            flp_write(4'd3, 16'h0011);                       // enable + access clear
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd13, 16'h0000, "access flag cleared by control bit 4");
+            if (flp_clrs != clrs0 + 2 || flp_vclrs != vclrs0 + 2) begin flp_errors = flp_errors + 1; $display("ERROR FLP: the access clear pulsed a disk-change or verify clear"); end
+            // set again after a clear, cleared again
+            flp_write(4'd3, 16'h0011);
+            @(posedge core_clk); flp_access <= 1'b1; @(posedge core_clk); flp_access <= 1'b0;
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd13, 16'h0001, "access flag set again after a clear");
+            flp_write(4'd3, 16'h0011);
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd13, 16'h0000, "access flag cleared again");
+            flp_expect(4'd0, 16'h0000, "status word untouched by the access flag");
             // a command with a busy engine: busy set by the write, results only after the stub finished
             cmds0 = flp_cmds;
             flp_busy_len = 400;
@@ -461,6 +489,32 @@ module rom_loader_tb;
             #1;
             flp_expect(4'd6, 16'h0001, "debug word 6");
             flp_expect(4'd11, 16'h0006, "debug word 11");
+            // phase 4: the format tap (read 14) and the gap 4b count (read 15) read back; write 4 (fill / gap 3)
+            // reaches the engine with the command like the other arguments (FORMAT_TRACK, code 7)
+            flp_expect(4'd14, 16'h0000, "format tap clear at start");
+            flp_expect(4'd15, 16'h0000, "gap 4b count clear at start");
+            flp_fmt = 16'h92F6;                              // a fill of a FORMAT TRACK: SC 18, filler F6
+            flp_fmt_tail = 16'h0092;
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd14, 16'h92F6, "format tap word");
+            flp_expect(4'd15, 16'h0092, "gap 4b count");
+            flp_expect(4'd0, 16'h0007, "status word untouched by the format tap (still the last result)");
+            flp_fmt = 16'h0000;
+            flp_fmt_tail = 16'h0000;
+            repeat (10) @(posedge qnice_clk);
+            flp_expect(4'd14, 16'h0000, "format tap cleared");
+            cmds0 = flp_cmds;
+            flp_busy_len = 200;
+            flp_next_res = 96'h0000_0000_0000_0000_0000_0000;
+            flp_write(4'd4, 16'h54F6);                       // gap 3 0x54, fill F6
+            flp_command(4'd7, 16'h0228, 16'h1200, busy_now); // FORMAT_TRACK C40 H1 HD, 18 sectors
+            if (!busy_now) begin flp_errors = flp_errors + 1; $display("ERROR FLP: busy not set by the FORMAT_TRACK write"); end
+            repeat (20) @(posedge core_clk);
+            if (flp_cmds != cmds0 + 1 || flp_last_code !== 4'd7 || flp_last_a0 !== 16'h0228 || flp_last_a1 !== 16'h1200 || flp_arg2 !== 16'h54F6) begin
+                flp_errors = flp_errors + 1; $display("ERROR FLP: FORMAT_TRACK pulse/args: n=%0d code=%0h a0=%04h a1=%04h a2=%04h", flp_cmds - cmds0, flp_last_code, flp_last_a0, flp_last_a1, flp_arg2);
+            end
+            flp_wait_idle("FORMAT_TRACK stub");
+            flp_expect(4'd0, 16'h0000, "FORMAT_TRACK result: err 0");
             // WRITE_SECTOR (code 6) with its arguments crosses like any other command
             cmds0 = flp_cmds;
             flp_busy_len = 200;
