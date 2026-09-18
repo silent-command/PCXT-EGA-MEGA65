@@ -11,7 +11,11 @@
 -- receiver sampling on the falling edge sees stable data. A frame starts only
 -- while the host leaves both lines high; the XT keyboard controller pulls its
 -- clock low while a scancode interrupt is pending, and a frame in flight is
--- abandoned then.
+-- abandoned then. As the PS/2 protocol requires, a byte whose stop bit had not
+-- been clocked when the host inhibited the line is sent again once the line is
+-- released: the byte leaves the queue only at its stop bit's clock edge. (The
+-- XT controller raises its interrupt, and so inhibits the clock, right at that
+-- edge on every byte - such a byte is complete and is not repeated.)
 --
 -- Host -> device: the chipset's KFPS2KB_Send_Data issues a keyboard reset (FF)
 -- whenever the BIOS enables the keyboard via port B bit 6: clock low, then data
@@ -143,7 +147,9 @@ begin
          end if;
 
          -- the host pulled its clock low: abandon a frame at once (a real keyboard
-         -- does the same; the host does not wait for it)
+         -- does the same; the host does not wait for it). The byte is still at
+         -- the head of the queue unless its stop bit has been clocked, so it is
+         -- sent again when the host releases the line.
          if tx_state /= 0 and host_clk_q(1) = '0' then
             tx_state <= 0;
             data_out <= '1';
@@ -180,6 +186,9 @@ begin
                   end if;
                elsif tx_state /= 0 then
                   clk_out <= '0';
+                  if tx_state = 11 then
+                     pop := true;                  -- stop bit clocked: the byte is delivered
+                  end if;
                elsif idle_gap > 0 then
                   idle_gap <= idle_gap - 1;
                end if;
@@ -216,7 +225,7 @@ begin
                         rx_state <= 0;
                   end case;
                elsif tx_state /= 0 and host_clk_q(1) = '0' then
-                  tx_state <= 0;                     -- inhibited mid-frame, frame lost
+                  tx_state <= 0;                     -- inhibited mid-frame: resent later
                   data_out <= '1';
                   idle_gap <= 3;
                elsif host_rts = '1' and tx_state = 0 then
@@ -229,8 +238,7 @@ begin
                   case tx_state is
                      when 0 =>
                         if idle_gap = 0 and count /= 0 and host_idle = '1' then
-                           tx_byte  <= fifo(to_integer(rptr));
-                           pop      := true;
+                           tx_byte  <= fifo(to_integer(rptr));   -- popped at the stop bit
                            parity   <= '1';
                            data_out <= '0';             -- start bit
                            tx_state <= 1;

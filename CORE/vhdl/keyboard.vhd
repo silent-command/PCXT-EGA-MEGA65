@@ -12,7 +12,13 @@
 -- Where a legend needs a different shift state on a PC than on the MEGA65
 -- (":" is shift+";" on a PC, "@" is shift+2, the shifted digit row differs),
 -- the translator forces the PC shift state around that key and restores the
--- physical shift state when it is released. Keys the MEGA65 lacks:
+-- physical shift state when it is released. The PC's view of its two shift
+-- keys is modelled in pc_lshift / pc_rshift, updated at the one place where a
+-- shift make or break is queued, whatever its origin (physical key or forced
+-- fix), so the model cannot drift from the byte stream. (An earlier version
+-- kept a single flag that only shift makes refreshed; a physical shift
+-- release left it stale and the next forced-shift key lost its shift, which
+-- is how ":" typed after Shift+letter came out as ";".) Keys the MEGA65 lacks:
 --
 --   ` ~      <- arrow-left, shift+arrow-left          [ ]  <- shift+:  shift+;
 --   ^ |      <- arrow-up,   shift+arrow-up            { }  <- shift+@  shift+*
@@ -275,13 +281,22 @@ architecture beh of keyboard is
    signal key_pressed_q  : std_logic := '0';
 
    -- event being processed
-   type ev_state_t is (IDLE, LOOKUP, SHIFT_FIX, PREFIX, CODE, BREAK_FIX, DONE);
+   --   SHIFT_FIX  make of a key with a forced shift state: bring the PC's shift
+   --              to the wanted state (one make, or one break per PC shift key)
+   --   FIX/FIX2   queue one shift make (code) or break (F0 code), then go on
+   --              to fix_next
+   --   RESTORE    after the release of the key that forced the shift state:
+   --              bring the PC's shift keys back to the physical ones
+   type ev_state_t is (IDLE, LOOKUP, SHIFT_FIX, FIX, FIX2, PREFIX, CODE, DONE, RESTORE);
    signal ev_state       : ev_state_t := IDLE;
    signal ev_key         : integer range 0 to 79 := 0;
    signal ev_make        : std_logic := '0';
    signal ev_entry       : entry_t := NONE;
    signal ev_want_shift  : boolean := false;
    signal ev_release_sub : natural range 0 to 2 := 0;
+   signal fix_code       : std_logic_vector(7 downto 0) := K_LSHIFT;
+   signal fix_make       : boolean := false;
+   signal fix_next       : ev_state_t := IDLE;
 
    -- per-key remembered translation, so a release sends the break of what
    -- the press sent even if the modifiers changed meanwhile
@@ -289,7 +304,11 @@ architecture beh of keyboard is
    signal sent_entry     : entry_arr_t := (others => NONE);
 
    signal phys_shift     : boolean;
-   signal emitted_shift  : boolean := false;      -- what the PC currently believes
+   -- the PC's view of its shift keys, and the shift state it derives from them
+   signal pc_lshift      : boolean := false;
+   signal pc_rshift      : boolean := false;
+   signal emitted_shift  : boolean;
+   -- the key (if any) whose forced shift state is in effect
    signal override_key   : integer range 0 to 79 := 0;
    signal override_on    : boolean := false;
 
@@ -303,7 +322,8 @@ architecture beh of keyboard is
 
 begin
 
-   phys_shift <= pressed(m65_left_shift) = '1' or pressed(m65_right_shift) = '1';
+   phys_shift    <= pressed(m65_left_shift) = '1' or pressed(m65_right_shift) = '1';
+   emitted_shift <= pc_lshift or pc_rshift;
 
    ---------------------------------------------------------------------------
    -- Scan: sample the framework's 1 kHz scan and raise one event per edge.
@@ -339,53 +359,50 @@ begin
                ev_entry <= ent;
                if ent = NONE then
                   ev_state <= DONE;
-               elsif ev_make = '1' then
-                  -- decide the shift the PC must see for this key
-                  case ent.shift is
-                     when KEEP  => ev_want_shift <= emitted_shift;
-                     when S_ON  => ev_want_shift <= true;
-                     when S_OFF => ev_want_shift <= false;
-                  end case;
-                  ev_state <= SHIFT_FIX;
+               elsif ev_make = '1' and ent.shift /= KEEP then
+                  -- this key needs a definite PC shift state: force it, and
+                  -- undo that when the key is released
+                  ev_want_shift <= ent.shift = S_ON;
+                  override_on   <= true;
+                  override_key  <= ev_key;
+                  ev_state      <= SHIFT_FIX;
                else
+                  -- everything else, the physical shift keys included, passes
+                  -- straight through (CODE keeps the PC model in step with a
+                  -- shift key's make and break alike)
                   ev_state <= PREFIX;
                end if;
 
             when SHIFT_FIX =>
-               -- physical shift keys themselves pass straight through; the PC
-               -- shift state then follows the physical one
-               if ev_key = m65_left_shift or ev_key = m65_right_shift then
-                  emitted_shift <= (ev_make = '1')
-                                or (pressed(m65_left_shift) = '1' and ev_key /= m65_left_shift)
-                                or (pressed(m65_right_shift) = '1' and ev_key /= m65_right_shift);
-                  ev_state <= PREFIX;
-               elsif ev_want_shift /= emitted_shift then
-                  if tx_full = '0' then
-                     if ev_want_shift then
-                        tx_data <= K_LSHIFT; tx_we <= '1';     -- shift make
-                        emitted_shift <= true;
-                        override_on  <= ev_entry.shift /= KEEP and ev_make = '1';
-                        override_key <= ev_key;
-                        if ev_entry = NONE then ev_state <= DONE; else ev_state <= PREFIX; end if;
-                     else
-                        tx_data <= x"F0"; tx_we <= '1';        -- shift break, first byte
-                        ev_state <= BREAK_FIX;
-                     end if;
-                  end if;
+               if ev_want_shift and not emitted_shift then
+                  fix_code <= K_LSHIFT; fix_make <= true;  fix_next <= PREFIX;    ev_state <= FIX;
+               elsif not ev_want_shift and pc_lshift then
+                  fix_code <= K_LSHIFT; fix_make <= false; fix_next <= SHIFT_FIX; ev_state <= FIX;
+               elsif not ev_want_shift and pc_rshift then
+                  fix_code <= K_RSHIFT; fix_make <= false; fix_next <= SHIFT_FIX; ev_state <= FIX;
                else
-                  override_on  <= ev_entry.shift /= KEEP and ev_make = '1';
-                  override_key <= ev_key;
-                  if ev_entry = NONE then ev_state <= DONE; else ev_state <= PREFIX; end if;
+                  ev_state <= PREFIX;
                end if;
 
-            when BREAK_FIX =>
-               -- second byte of the shift break
+            when FIX =>
+               -- a shift make, or the first byte of a shift break
                if tx_full = '0' then
-                  tx_data <= K_LSHIFT; tx_we <= '1';
-                  emitted_shift <= false;
-                  override_on  <= ev_entry.shift /= KEEP and ev_make = '1';
-                  override_key <= ev_key;
-                  if ev_entry = NONE then ev_state <= DONE; else ev_state <= PREFIX; end if;
+                  if fix_make then
+                     tx_data <= fix_code; tx_we <= '1';
+                     if fix_code = K_LSHIFT then pc_lshift <= true; else pc_rshift <= true; end if;
+                     ev_state <= fix_next;
+                  else
+                     tx_data <= x"F0"; tx_we <= '1';
+                     ev_state <= FIX2;
+                  end if;
+               end if;
+
+            when FIX2 =>
+               -- second byte of a shift break
+               if tx_full = '0' then
+                  tx_data <= fix_code; tx_we <= '1';
+                  if fix_code = K_LSHIFT then pc_lshift <= false; else pc_rshift <= false; end if;
+                  ev_state <= fix_next;
                end if;
 
             when PREFIX =>
@@ -409,6 +426,11 @@ begin
                      ev_release_sub <= 0;
                   else
                      tx_data <= ev_entry.code; tx_we <= '1';
+                     -- a physical shift key: the PC's view follows the byte
+                     if not ev_entry.ext then
+                        if ev_entry.code = K_LSHIFT then pc_lshift <= ev_make = '1'; end if;
+                        if ev_entry.code = K_RSHIFT then pc_rshift <= ev_make = '1'; end if;
+                     end if;
                      ev_state <= DONE;
                   end if;
                end if;
@@ -423,17 +445,20 @@ begin
                      key_word <= (not key_toggle) & ev_make & '0' & ev_entry.code;
                   end if;
                end if;
-               -- a release of the key that forced a shift override: put the
-               -- PC's shift back to the physical state
+               -- a release of the key that forced a shift state: put the PC's
+               -- shift keys back to the physical ones
                if ev_make = '0' and override_on and ev_key = override_key then
                   override_on <= false;
-                  if phys_shift /= emitted_shift then
-                     ev_want_shift <= phys_shift;
-                     ev_entry <= NONE;
-                     ev_state <= SHIFT_FIX;
-                  else
-                     ev_state <= IDLE;
-                  end if;
+                  ev_state    <= RESTORE;
+               else
+                  ev_state <= IDLE;
+               end if;
+
+            when RESTORE =>
+               if (pressed(m65_left_shift) = '1') /= pc_lshift then
+                  fix_code <= K_LSHIFT; fix_make <= pressed(m65_left_shift) = '1';  fix_next <= RESTORE; ev_state <= FIX;
+               elsif (pressed(m65_right_shift) = '1') /= pc_rshift then
+                  fix_code <= K_RSHIFT; fix_make <= pressed(m65_right_shift) = '1'; fix_next <= RESTORE; ev_state <= FIX;
                else
                   ev_state <= IDLE;
                end if;
@@ -442,7 +467,8 @@ begin
          if rst_i = '1' then
             pressed       <= (others => '0');
             ev_state      <= IDLE;
-            emitted_shift <= false;
+            pc_lshift     <= false;
+            pc_rshift     <= false;
             override_on   <= false;
             tx_we         <= '0';
             key_toggle    <= '0';
