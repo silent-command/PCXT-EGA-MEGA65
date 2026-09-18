@@ -626,3 +626,19 @@ latches, no `Synth 8-327` (the 77 warnings are the XPM memories' unconnected por
   the place to look (the engine's part is 10 us for the load plus the gap).
 * **DOS after a failed write**: that the parked drive produces "Abort, Retry,
   Fail?" and the reset button revives A:, as for reads.
+
+## Phase 3 on the board, 2026-09-17: writes work
+First attempt (commit 42ef96d): every write refused with "write error
+lba=0013 status=0000" - FLP_DRV_WR cleared its status register before
+comparing the block size with 512 (fixed in ec28ea1, one line; the read
+handler never had the slip). The disk was untouched, because DOS writes
+data before the directory and the first data write was refused.
+
+Second attempt (ec28ea1 built, WNS +0.053, no violations), 1.44 MB PC disk
+with the write-protect slider closed: `DIR A:`, `COPY C:\FDCONFIG.SYS A:\`,
+`DIR A:`, `TYPE A:\FDCONFIG.SYS` (reads back correctly), `COPY C:\COMMAND.COM
+A:\` (85 KB, a few seconds), `DEL A:\FDCONFIG.SYS`, `DIR A:` - all correct;
+the disk in a PC drive lists the files and COMMAND.COM is intact. So the
+splice point, the write timing at 500 kbit/s, the background verify and the
+read-write mount all hold on real media. Not yet exercised on the board:
+720 KB (250 kbit/s) writes, a write-protected disk, formatting (phase 4).
