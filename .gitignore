@@ -49,3 +49,5 @@ CORE/retry_open_fs.log
 tools/vdrive-latency-bench/_pp_*.asm
 tools/vdrive-latency-bench/*.lis
 tools/vdrive-latency-bench/*.txt
+CORE/rebuild-impl.*
+CORE/retry-impl.*
