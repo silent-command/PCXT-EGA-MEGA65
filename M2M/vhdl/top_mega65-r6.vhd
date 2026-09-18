@@ -576,7 +576,11 @@ begin
       -- analog branch of av_pipeline. Set to true to build it (docs/analog-video.md).
       -- Held at false while the "no signal on VGA in every mode" diagnostic build is in the tree,
       -- so the analog path is bit-for-bit what it was before analog_line_doubler.vhd existed.
-      G_ANALOG_LINE_DOUBLER => false
+      G_ANALOG_LINE_DOUBLER => false,
+      -- PCXT-EGA: drive the VGA connector from ascal's scaled output, so it carries the standard
+      -- VESA timing of the selected HDMI mode instead of the core's 21.8 kHz EGA raster
+      -- (docs/analog-video.md section 10). VGA and HDMI then share one mode.
+      G_ANALOG_FROM_SCALER  => true
    )
    port map (
       -- Connect to I/O ports
