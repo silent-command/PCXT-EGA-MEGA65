@@ -792,3 +792,24 @@ all (entity at `:13-76`), `H_POL`/`V_POL` appear only in the digital path
 the VGA pins. Nothing obstructs the change either: the arbiter slave count is a
 generic, `hdmi_clk_i` is already a port of `av_pipeline` (`:132`), and
 `G_ANALOG_LINE_DOUBLER` is precedent for a framework-local generic defaulted off.
+
+### First board result, 2026-09-18: a picture on the VGA connector
+`G_ANALOG_FROM_SCALER => true` built at WNS 0.251 ns and produced a **signal on
+the VGA port for the first time**, through a VGA-to-HDMI adapter. With "CGA
+monitor 5153" the picture quality is very good: the DOS boot text is crisp and
+correct, and the OSM is composited on it (it comes from ascal's output stage,
+so the menu is part of the scaled raster rather than a separate analog overlay).
+
+For contrast, the free experiment that preceded this - "CGA monitor 5153" on the
+*old* analog path, i.e. a 200-line raster the framework scandoubler takes to
+31.40 kHz - showed **nothing** on the same monitor. So the rate was never the
+whole story, and the remaining suspects listed in section 8 (H+/V+ being the
+reserved polarity combination, and the blanking geometry) are consistent with
+that. Driving from the scaler makes all of them moot at once: standard timing,
+standard polarity per mode, standard blanking, continuous sync.
+
+Still to confirm on the board: "EGA monitor 5154" (the 350-line rasters that
+started this, and the case the line doubler was written for), the M2M welcome
+screen (section 8: the pins carried no sync there at all), and a direct
+connection without the adapter, which is the honest test - an adapter locks
+onto timings a monitor's own VGA input can refuse.
