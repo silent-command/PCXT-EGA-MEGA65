@@ -3,10 +3,16 @@
 -- over key numbers 0..79) and decodes the PS/2 frames like the chipset would
 -- (data sampled on the falling clock edge, 11-bit frames, odd parity).
 -- Checks the byte sequences for: 'a', cursor-up (E0 prefix), ':' (forced
--- shift), shift+':' = '[' (forced unshift while shift is held), HELP = F12.
+-- shift), shift+':' = '[' (forced unshift while shift is held), HELP (nothing:
+-- it belongs to the framework), shift+F11 = F12, the ":" -> ";" report ('*'
+-- typed after a physical Shift was used around a shifted '*' must still get
+-- its forced shift, in both release orders), ']' with the right Shift held
+-- (forced unshift must break the shift key the PC actually has down).
 -- Then plays the chipset's keyboard reset command (clock low, data low,
 -- release clock, shift FF on the device's falling edges) and expects the
--- device to clock 11 pulses and reply FA, AA.
+-- device to clock 11 pulses and reply FA, AA. Finally the host inhibits the
+-- clock in the middle of a frame (the byte must be sent again once the line
+-- is released) and right after a frame's stop bit (it must not be repeated).
 -- Run with run_keyboard_tb.sh (GHDL).
 
 library ieee;
@@ -29,11 +35,12 @@ architecture sim of keyboard_tb is
    signal ps2_key    : std_logic_vector(10 downto 0);
 
    -- decoded bytes
-   type byte_arr is array (0 to 63) of std_logic_vector(7 downto 0);
+   type byte_arr is array (0 to 127) of std_logic_vector(7 downto 0);
    signal rx_bytes   : byte_arr := (others => x"00");
    signal rx_count   : natural := 0;
    signal errors     : natural := 0;
    signal frame_errors : natural := 0;
+   signal aborted_frames : natural := 0;
    signal host_sending : boolean := false;
    signal dev_pulses : natural := 0;
    signal done       : boolean := false;
@@ -61,9 +68,12 @@ begin
    end process;
 
    -- host receiver: sample data on the falling edge of the device clock
-   -- (ignored while the host itself is sending)
+   -- (ignored while the host itself is sending); a frame the host inhibits
+   -- (clock pulled low) before its stop bit is dropped, as the chipset's
+   -- receiver would drop it
    p_rx : process
-      variable frame : std_logic_vector(10 downto 0);
+      variable frame   : std_logic_vector(10 downto 0);
+      variable aborted : boolean;
    begin
       wait until falling_edge(ps2_clk);
       if host_sending then
@@ -72,11 +82,17 @@ begin
       else
          report "frame start at " & time'image(now);
          frame(0) := ps2_data;                     -- start bit
+         aborted  := false;
          for i in 1 to 10 loop
-            wait until falling_edge(ps2_clk);
+            wait until falling_edge(ps2_clk) or host_clk = '0';
+            if host_clk = '0' then aborted := true; exit; end if;
             frame(i) := ps2_data;
          end loop;
-         if frame(0) = '0' and frame(10) = '1' then
+         if aborted then
+            report "frame aborted by the host at " & time'image(now);
+            aborted_frames <= aborted_frames + 1;
+            wait until host_clk = '1';
+         elsif frame(0) = '0' and frame(10) = '1' then
             rx_bytes(rx_count) <= frame(8 downto 1);
             rx_count <= rx_count + 1;
          else
@@ -97,6 +113,7 @@ begin
 
    p_stim : process
       variable pulses0 : natural := 0;
+      variable n       : natural := 0;             -- next byte index to check
       procedure press(k : integer)   is begin pressed(k) <= '1'; wait for 3 ms; end;
       procedure unpress(k : integer) is begin pressed(k) <= '0'; wait for 3 ms; end;
       procedure expect(idx : natural; b : std_logic_vector(7 downto 0); what : string) is
@@ -105,6 +122,22 @@ begin
             report "MISMATCH " & what & ": byte " & integer'image(idx) & " expected " &
                    integer'image(to_integer(unsigned(b))) & " got " &
                    integer'image(to_integer(unsigned(rx_bytes(idx)))) & " (count " & integer'image(rx_count) & ")"
+                   severity error;
+            errors <= errors + 1;
+            wait for 1 ns;
+         end if;
+      end;
+      -- the next byte in sequence
+      procedure nx(b : std_logic_vector(7 downto 0); what : string) is
+      begin
+         expect(n, b, what);
+         n := n + 1;
+      end;
+      -- so far exactly n bytes must have arrived
+      procedure count_is(what : string) is
+      begin
+         if rx_count /= n then
+            report "MISMATCH " & what & ": " & integer'image(rx_count) & " bytes received, expected " & integer'image(n)
                    severity error;
             errors <= errors + 1;
             wait for 1 ns;
@@ -147,20 +180,47 @@ begin
       press(73);  unpress(73);                    -- cursor up     -> E0 75, E0 F0 75
       press(45);  unpress(45);                    -- ':'           -> 12 4C, F0 4C F0 12
       press(15);  press(45); unpress(45); unpress(15);  -- shift+':' = '[' -> 12, F0 12 54, F0 54 12, F0 12
-      press(67);  unpress(67);                    -- HELP = F12    -> 07, F0 07
+      press(67);  unpress(67);                    -- HELP: framework key, nothing
+      press(15);  press(69); unpress(69); unpress(15);  -- shift+F11 = F12 -> 12, F0 12 07, F0 07 12, F0 12
       wait for 5 ms;
 
-      expect(0,  x"1C", "a make");     expect(1,  x"F0", "a break");   expect(2,  x"1C", "a break code");
-      expect(3,  x"E0", "up prefix");  expect(4,  x"75", "up make");
-      expect(5,  x"E0", "up brk pfx"); expect(6,  x"F0", "up break");  expect(7,  x"75", "up break code");
-      expect(8,  x"12", ": shift on"); expect(9,  x"4C", ": code");
-      expect(10, x"F0", ": break");    expect(11, x"4C", ": break code");
-      expect(12, x"F0", ": shift off");expect(13, x"12", ": shift off code");
-      expect(14, x"12", "shift make");
-      expect(15, x"F0", "[ unshift");  expect(16, x"12", "[ unshift code"); expect(17, x"54", "[ make");
-      expect(18, x"F0", "[ break");    expect(19, x"54", "[ break code");   expect(20, x"12", "[ reshift");
-      expect(21, x"F0", "shift brk");  expect(22, x"12", "shift brk code");
-      expect(23, x"07", "F12 make");   expect(24, x"F0", "F12 break");      expect(25, x"07", "F12 break code");
+      nx(x"1C", "a make");      nx(x"F0", "a break");      nx(x"1C", "a break code");
+      nx(x"E0", "up prefix");   nx(x"75", "up make");
+      nx(x"E0", "up brk pfx");  nx(x"F0", "up break");     nx(x"75", "up break code");
+      nx(x"12", ": shift on");  nx(x"4C", ": code");
+      nx(x"F0", ": break");     nx(x"4C", ": break code");
+      nx(x"F0", ": shift off"); nx(x"12", ": shift off code");
+      nx(x"12", "shift make");
+      nx(x"F0", "[ unshift");   nx(x"12", "[ unshift code"); nx(x"54", "[ make");
+      nx(x"F0", "[ break");     nx(x"54", "[ break code");   nx(x"12", "[ reshift");
+      nx(x"F0", "shift brk");   nx(x"12", "shift brk code");
+      nx(x"12", "shift make (F12)");
+      nx(x"F0", "F12 unshift"); nx(x"12", "F12 unshift code"); nx(x"07", "F12 make");
+      nx(x"F0", "F12 break");   nx(x"07", "F12 break code");   nx(x"12", "F12 reshift");
+      nx(x"F0", "shift brk");   nx(x"12", "shift brk code");
+      count_is("after F12");
+
+      -- the ":" -> ";" report, as reproduced on the board with '*': a forced-
+      -- shift key typed after a physical Shift was held around a shifted
+      -- forced-shift key (key released first, then the Shift) lost its shift
+      press(49); unpress(49);                                 -- '*'         -> 12 3E, F0 3E F0 12
+      press(15); press(49); unpress(49); unpress(15);         -- shift+'*' = '}' -> 12, 5B, F0 5B, F0 12
+      press(49); unpress(49);                                 -- '*' again   -> 12 3E, F0 3E F0 12   (was: 3E alone = "8")
+      press(15); press(49); unpress(15); unpress(49);         -- '}' again, Shift released first -> 12, 5B, F0 12, F0 5B
+      press(45); unpress(45);                                 -- ':'         -> 12 4C, F0 4C F0 12
+      press(52); press(50); unpress(50); unpress(52);         -- right shift+';' = ']' -> 59, F0 59 5B, F0 5B 59, F0 59
+      wait for 5 ms;
+
+      nx(x"12", "* shift on");  nx(x"3E", "* code");   nx(x"F0", "* break"); nx(x"3E", "* break code"); nx(x"F0", "* shift off"); nx(x"12", "* shift off code");
+      nx(x"12", "shift make");  nx(x"5B", "} code");   nx(x"F0", "} break"); nx(x"5B", "} break code"); nx(x"F0", "shift brk");    nx(x"12", "shift brk code");
+      nx(x"12", "* shift on (after Shift)"); nx(x"3E", "* code (after Shift)"); nx(x"F0", "* break"); nx(x"3E", "* break code"); nx(x"F0", "* shift off"); nx(x"12", "* shift off code");
+      nx(x"12", "shift make");  nx(x"5B", "} code");   nx(x"F0", "shift brk"); nx(x"12", "shift brk code"); nx(x"F0", "} break"); nx(x"5B", "} break code");
+      nx(x"12", ": shift on (after Shift)"); nx(x"4C", ": code");   nx(x"F0", ": break"); nx(x"4C", ": break code"); nx(x"F0", ": shift off"); nx(x"12", ": shift off code");
+      nx(x"59", "rshift make");
+      nx(x"F0", "] unshift");   nx(x"59", "] unshift code"); nx(x"5B", "] make");
+      nx(x"F0", "] break");     nx(x"5B", "] break code");   nx(x"59", "] reshift");
+      nx(x"F0", "rshift brk");  nx(x"59", "rshift brk code");
+      count_is("after the shift sequences");
 
       -- keyboard reset from the host, then a key
       pulses0 := dev_pulses;
@@ -170,13 +230,45 @@ begin
          report "device clocked " & integer'image(dev_pulses) & " pulses for the host command, expected 11" severity error;
          errors <= errors + 1; wait for 1 ns;
       end if;
-      expect(26, x"FA", "ack");        expect(27, x"AA", "self test");
+      nx(x"FA", "ack");         nx(x"AA", "self test");
       press(60); unpress(60);                     -- space after the reset -> 29, F0 29
       wait for 3 ms;
-      expect(28, x"29", "space make"); expect(29, x"F0", "space break");    expect(30, x"29", "space break code");
+      nx(x"29", "space make");  nx(x"F0", "space break");    nx(x"29", "space break code");
+      count_is("after the reset");
 
-      report "bytes received: " & integer'image(rx_count) & ", errors: " & integer'image(errors) & ", frame errors: " & integer'image(frame_errors);
-      if errors = 0 and frame_errors = 0 and rx_count = 31 then
+      -- the host inhibits the clock in the middle of a frame (3 bits in): the
+      -- device abandons the frame and sends the byte again once the line is
+      -- released (PS/2: a byte interrupted before its stop bit is resent)
+      pressed(60) <= '1';
+      wait until falling_edge(ps2_clk);           -- start bit clocked
+      wait for 250 us;                            -- ... three more bits
+      host_clk <= '0';
+      wait for 2 ms;
+      host_clk <= '1';
+      wait for 5 ms;
+      unpress(60);
+      if aborted_frames /= 1 then
+         report "expected exactly one frame aborted by the mid-frame inhibit, saw " & integer'image(aborted_frames) severity error;
+         errors <= errors + 1; wait for 1 ns;
+      end if;
+      nx(x"29", "space make resent after the inhibit"); nx(x"F0", "space break"); nx(x"29", "space break code");
+      count_is("after the mid-frame inhibit (byte sent exactly once)");
+
+      -- the host inhibits right after the stop bit was clocked (what the XT
+      -- controller does on every byte): the byte is complete, not repeated
+      pressed(60) <= '1';
+      for i in 1 to 11 loop wait until falling_edge(ps2_clk); end loop;
+      wait for 2 us;
+      host_clk <= '0';
+      wait for 2 ms;
+      host_clk <= '1';
+      wait for 5 ms;
+      unpress(60);
+      nx(x"29", "space make (inhibit after the stop bit)"); nx(x"F0", "space break"); nx(x"29", "space break code");
+      count_is("after the post-stop-bit inhibit (byte not repeated)");
+
+      report "bytes received: " & integer'image(rx_count) & ", errors: " & integer'image(errors) & ", frame errors: " & integer'image(frame_errors) & ", aborted frames: " & integer'image(aborted_frames);
+      if errors = 0 and frame_errors = 0 and rx_count = n then
          report "RESULT: PASS";
       else
          report "RESULT: FAIL";
