@@ -112,6 +112,18 @@ entity main is
       sd_buff_dout_i          : in  std_logic_vector(DW downto 0);
       sd_buff_din_o           : out vd_vec_array(2 downto 0)(DW downto 0);
       sd_buff_wr_i            : in  std_logic;
+      -- Internal floppy drive (docs/floppy.md, clk_main_i domain): the sector engine's COPY writes a block
+      -- into the vd_glue buffer and its WRITE_SECTOR reads one back; the firmware's block-error flag tells
+      -- mgmt_bridge that the floppy block it is acknowledging failed (a read carries no data, a write parks
+      -- the drive)
+      flp_buf_addr_i          : in  std_logic_vector(8 downto 0) := (others => '0');
+      flp_buf_data_i          : in  std_logic_vector(7 downto 0) := (others => '0');
+      flp_buf_we_i            : in  std_logic := '0';
+      flp_buf_rd_i            : in  std_logic := '0';
+      flp_buf_rdata_o         : out std_logic_vector(7 downto 0);
+      flp_blk_err_i           : in  std_logic := '0';
+      flp_access_o            : out std_logic;                -- one clock per DOS access attempt on drive A (floppy.v fdd0_access)
+      flp_fmt_o               : out std_logic_vector(15 downto 0);   -- the format tap of the floppy request being served (mgmt_bridge fd_fmt, docs/floppy.md phase 4)
 
       -- M2M Keyboard interface
       kb_key_num_i            : in  integer range 0 to 79;    -- cycles through all MEGA65 keys
@@ -260,6 +272,7 @@ architecture synthesis of main is
          mgmt_rd_i                 : in  std_logic;
          mgmt_req_o                : out std_logic_vector(7 downto 0);
          fdd_present_o             : out std_logic_vector(1 downto 0);
+         fdd_access_o              : out std_logic;
          led_disk_o                : out std_logic;
          dbg_de_o                  : out std_logic;
          dbg_hb_o                  : out std_logic;
@@ -330,6 +343,8 @@ architecture synthesis of main is
          blk_wr          : out std_logic_vector(2 downto 0);
          blk_lba         : out std_logic_vector(31 downto 0);
          blk_ack         : in  std_logic_vector(2 downto 0);
+         blk_err         : in  std_logic;
+         fd_fmt          : out std_logic_vector(15 downto 0);
          buf_addr        : out std_logic_vector(8 downto 0);
          buf_wdata       : out std_logic_vector(7 downto 0);
          buf_we          : out std_logic;
@@ -437,17 +452,17 @@ begin
    -- select the core's 60 Hz TV raster for mode 13h (status[10]); the analog
    -- pipeline controls live in mega65.vhd (analog_video_ctl).
    osm_vga13_tv  <= osm_control_i(63) or osm_control_i(64);
-   -- Mouse: lines 77..79 (off / C1351 / Amiga) on joystick port 1
-   osm_mouse     <= "10" when osm_control_i(79) = '1' else
-                    "01" when osm_control_i(78) = '1' else
+   -- Mouse: lines 78..80 (off / C1351 / Amiga) on joystick port 1
+   osm_mouse     <= "10" when osm_control_i(80) = '1' else
+                    "01" when osm_control_i(79) = '1' else
                     "00";
-   -- Network: lines 85..87 (off / IRQ 5 / IRQ 7). The NE1000 exists when the menu
+   -- Network: lines 86..88 (off / IRQ 5 / IRQ 7). The NE1000 exists when the menu
    -- says so and the firmware has delivered its station address (eth_enable_i);
    -- "Off" makes 320h read FFh and raises nothing. The IRQ choice moves the
    -- card's interrupt between 8259 inputs 5 and 7, each of which the Sound
    -- Blaster also uses depending on "Sound Blaster IRQ 7": pick the free one.
-   osm_eth_enable <= (osm_control_i(86) or osm_control_i(87)) and eth_enable_i;
-   osm_eth_irq7   <= osm_control_i(87);
+   osm_eth_enable <= (osm_control_i(87) or osm_control_i(88)) and eth_enable_i;
+   osm_eth_irq7   <= osm_control_i(88);
 
    -- MEGA65 mouse port -> emulated PS/2 mouse device for the core's serial-mouse
    -- converter (MSMouseWrapper). Not reset: the converter sends its init
@@ -601,6 +616,7 @@ begin
          mgmt_rd_i                 => mgmt_rd,
          mgmt_req_o                => mgmt_req,
          fdd_present_o             => open,
+         fdd_access_o              => flp_access_o,
          led_disk_o                => led_disk_o,
          dbg_de_o                  => raw_de,
          dbg_hb_o                  => raw_hb,
@@ -644,6 +660,8 @@ begin
          blk_wr          => blk_wr,
          blk_lba         => blk_lba,
          blk_ack         => blk_ack,
+         blk_err         => flp_blk_err_i,
+         fd_fmt          => flp_fmt_o,
          buf_addr        => buf_addr,
          buf_wdata       => buf_wdata,
          buf_we          => buf_we,
@@ -665,6 +683,11 @@ begin
          buf_wdata_i    => buf_wdata,
          buf_we_i       => buf_we,
          buf_rdata_o    => buf_rdata,
+         flp_buf_addr_i => flp_buf_addr_i,
+         flp_buf_data_i => flp_buf_data_i,
+         flp_buf_we_i   => flp_buf_we_i,
+         flp_buf_rd_i   => flp_buf_rd_i,
+         flp_buf_rdata_o => flp_buf_rdata_o,
          qnice_clk_i    => clk_qnice_i,
          sd_lba_o       => sd_lba_o,
          sd_blk_cnt_o   => sd_blk_cnt_o,

@@ -88,7 +88,7 @@ constant SCR_WELCOME : string :=
    "MEGA                 Alt         ALT: AltGr\n" &
    "RUN/STOP, ESC        Esc\n" &
    "INS/DEL              Backspace\n" &
-   "Shift+INS/DEL        Insert      MEGA+: Delete\n" &
+   "Shift+INS/DEL        Insert   MEGA+: Delete\n" &
    "CLR/HOME             Home\n" &
    "NO SCROLL            Scroll Lock\n" &
    "HELP                 Options menu\n" &
@@ -107,7 +107,6 @@ constant HELP_1 : string :=
 
    " IBM PC/XT (8088 or 8086) with an EGA card,\n" &
    " ported from MiSTer-devel/PCXT-EGA_MiSTer.\n" &
-   " MEGA65 port by silent-command, 2026.\n" &
    " Powered by MiSTer2MEGA65.\n\n" &
 
    " 640 KB, upper memory and 2 MB EMS live in\n" &
@@ -152,9 +151,10 @@ constant HELP_3 : string :=
    "   speaker volume, boost.\n" &
    " Display: EGA/CGA/mono monitor, tint.\n" &
    " Input: joysticks (ports 1 and 2), swap,\n" &
-   "   write-protect A: and B:, mouse.\n" &
+   "   write-protect A: and B:, A: internal\n" &
+   "   drive (real floppy, read+write), mouse.\n" &
    " Network: NE1000 card off / IRQ 5 / IRQ 7\n" &
-   "   (port 320h; use the IRQ the SB is not on).\n\n" &
+   "   (port 320h; not the IRQ the SB uses).\n\n" &
 
    " /pcxt/pcxt.rom      PC/XT BIOS with XTIDE\n" &
    " /pcxt/ega_bios.rom  EGA BIOS (required)\n" &
@@ -280,7 +280,7 @@ constant SEL_CORENAME      : std_logic_vector(15 downto 0) := x"0200";
 
 -- Currently this is only used in the debug console. Use the welcome screen and the
 -- help system to display the name and version of your core to the end user
-constant CORENAME          : string := "PCXT-EGA V0.8";
+constant CORENAME          : string := "PCXT-EGA V0.9";
 
 --------------------------------------------------------------------------------------------------------------------
 -- "Help" menu / Options menu  (Selectors 0x0300 .. 0x0312): DO NOT TOUCH
@@ -341,7 +341,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 98;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 99;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -361,9 +361,10 @@ constant OPTM_DY           : natural := 20;
 --  53..55 monitor 5154 / 5153 / 5151   57..60 tint full / green / amber / b&w
 --  62..64 VGA 31 kHz / 15 kHz / 15 kHz + csync
 --  70 joystick 1   71 joystick 2   72 swap   74 write-protect A   75 write-protect B
---  77..79 mouse off / C1351 / Amiga (port 1)
---  85..87 network (NE1000 at 320h) off / IRQ 5 / IRQ 7
---  91 CRT emulation   92 zoom   93 audio improvements
+--  76 A: internal drive (read by the firmware, flpdrv.asm FLP_MENU_LINE; not a core input)
+--  78..80 mouse off / C1351 / Amiga (port 1)
+--  86..88 network (NE1000 at 320h) off / IRQ 5 / IRQ 7
+--  92 CRT emulation   93 zoom   94 audio improvements
 constant OPTM_ITEMS        : string :=
 
    " PCXT-EGA\n"            &    --    0
@@ -447,30 +448,31 @@ constant OPTM_ITEMS        : string :=
    "\n"                     &    -- 73
    " Write-protect A:\n"    &    -- 74
    " Write-protect B:\n"    &    -- 75
-   "\n"                     &    -- 76
-   " Mouse: Off\n"          &    -- 77  port 1
-   " Mouse: C1351\n"        &    -- 78  Commodore 1351 (proportional mode)
-   " Mouse: Amiga\n"        &    -- 79  Amiga / Atari ST mouse
-   "\n"                     &    -- 80
-   " Back to main menu\n"   &    -- 81
+   " A: internal drive\n"   &    -- 76  the MEGA65's own 3.5" drive as A: (docs/floppy.md), read-only
+   "\n"                     &    -- 77
+   " Mouse: Off\n"          &    -- 78  port 1
+   " Mouse: C1351\n"        &    -- 79  Commodore 1351 (proportional mode)
+   " Mouse: Amiga\n"        &    -- 80  Amiga / Atari ST mouse
+   "\n"                     &    -- 81
+   " Back to main menu\n"   &    -- 82
 
-   " Network: %s\n"         &    -- 82  Network submenu (NE1000 at 320h, docs/ethernet.md)
-   " Network Settings\n"    &    -- 83
-   "\n"                     &    -- 84
-   " Off\n"                 &    -- 85  card absent: 320h reads FFh, no interrupt
-   " IRQ 5\n"               &    -- 86  collides with the Sound Blaster unless "Sound Blaster IRQ 7" is on
-   " IRQ 7\n"               &    -- 87  collides with the Sound Blaster when "Sound Blaster IRQ 7" is on
-   "\n"                     &    -- 88
-   " Back to main menu\n"   &    -- 89
+   " Network: %s\n"         &    -- 83  Network submenu (NE1000 at 320h, docs/ethernet.md)
+   " Network Settings\n"    &    -- 84
+   "\n"                     &    -- 85
+   " Off\n"                 &    -- 86  card absent: 320h reads FFh, no interrupt
+   " IRQ 5\n"               &    -- 87  collides with the Sound Blaster unless "Sound Blaster IRQ 7" is on
+   " IRQ 7\n"               &    -- 88  collides with the Sound Blaster when "Sound Blaster IRQ 7" is on
+   "\n"                     &    -- 89
+   " Back to main menu\n"   &    -- 90
 
-   "\n"                     &    -- 90
-   " HDMI: CRT emulation\n" &    -- 91
-   " HDMI: Zoom-in\n"       &    -- 92
-   " Audio improvements\n"  &    -- 93
-   "\n"                     &    -- 94
-   " Help\n"                &    -- 95
-   "\n"                     &    -- 96
-   " Close Menu\n";              -- 97
+   "\n"                     &    -- 91
+   " HDMI: CRT emulation\n" &    -- 92
+   " HDMI: Zoom-in\n"       &    -- 93
+   " Audio improvements\n"  &    -- 94
+   "\n"                     &    -- 95
+   " Help\n"                &    -- 96
+   "\n"                     &    -- 97
+   " Close Menu\n";              -- 98
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -497,12 +499,13 @@ constant OPTM_G_JOY2       : integer := 17;
 constant OPTM_G_JOY_SWAP   : integer := 18;
 constant OPTM_G_WP_A       : integer := 19;
 constant OPTM_G_WP_B       : integer := 20;
-constant OPTM_G_MOUSE      : integer := 21;
-constant OPTM_G_NETWORK    : integer := 22;
-constant OPTM_G_CRT        : integer := 23;
-constant OPTM_G_Zoom       : integer := 24;
-constant OPTM_G_Audio      : integer := 25;
-constant OPTM_G_HELP_ITEM  : integer := 26;
+constant OPTM_G_FLP_INT    : integer := 21;   -- "A: internal drive": flpdrv.asm FLP_MENU_GRP must match
+constant OPTM_G_MOUSE      : integer := 22;
+constant OPTM_G_NETWORK    : integer := 23;
+constant OPTM_G_CRT        : integer := 24;
+constant OPTM_G_Zoom       : integer := 25;
+constant OPTM_G_Audio      : integer := 26;
+constant OPTM_G_HELP_ITEM  : integer := 27;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -591,30 +594,31 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_LINE,                              -- 73
                                              OPTM_G_WP_A + OPTM_G_SINGLESEL,           -- 74 Write-protect A: toggle
                                              OPTM_G_WP_B + OPTM_G_SINGLESEL,           -- 75 Write-protect B: toggle
-                                             OPTM_G_LINE,                              -- 76
-                                             OPTM_G_MOUSE + OPTM_G_STDSEL,             -- 77 Mouse: Off (default)
-                                             OPTM_G_MOUSE,                             -- 78 Mouse: C1351
-                                             OPTM_G_MOUSE,                             -- 79 Mouse: Amiga
-                                             OPTM_G_LINE,                              -- 80
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 81 Back; Input submenu: END
+                                             OPTM_G_FLP_INT + OPTM_G_SINGLESEL,        -- 76 A: internal drive toggle (default off)
+                                             OPTM_G_LINE,                              -- 77
+                                             OPTM_G_MOUSE + OPTM_G_STDSEL,             -- 78 Mouse: Off (default)
+                                             OPTM_G_MOUSE,                             -- 79 Mouse: C1351
+                                             OPTM_G_MOUSE,                             -- 80 Mouse: Amiga
+                                             OPTM_G_LINE,                              -- 81
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 82 Back; Input submenu: END
 
-                                             OPTM_G_SUBMENU,                           -- 82 Network submenu: START "Network: %s"
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 83 Headline "Network Settings"
-                                             OPTM_G_LINE,                              -- 84
-                                             OPTM_G_NETWORK,                           -- 85 Off
-                                             OPTM_G_NETWORK + OPTM_G_STDSEL,           -- 86 IRQ 5 (default)
-                                             OPTM_G_NETWORK,                           -- 87 IRQ 7
-                                             OPTM_G_LINE,                              -- 88
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 89 Back; Network submenu: END
+                                             OPTM_G_SUBMENU,                           -- 83 Network submenu: START "Network: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 84 Headline "Network Settings"
+                                             OPTM_G_LINE,                              -- 85
+                                             OPTM_G_NETWORK,                           -- 86 Off
+                                             OPTM_G_NETWORK + OPTM_G_STDSEL,           -- 87 IRQ 5 (default)
+                                             OPTM_G_NETWORK,                           -- 88 IRQ 7
+                                             OPTM_G_LINE,                              -- 89
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 90 Back; Network submenu: END
 
-                                             OPTM_G_LINE,                              -- 90
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 91 On/Off toggle
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 92 On/Off toggle
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 93 On/Off toggle
-                                             OPTM_G_LINE,                              -- 94
-                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 95 Help screens (WHS 1)
-                                             OPTM_G_LINE,                              -- 96
-                                             OPTM_G_CLOSE                              -- 97 Close Menu
+                                             OPTM_G_LINE,                              -- 91
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 92 On/Off toggle
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 93 On/Off toggle
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 94 On/Off toggle
+                                             OPTM_G_LINE,                              -- 95
+                                             OPTM_G_HELP_ITEM + OPTM_G_HELP,           -- 96 Help screens (WHS 1)
+                                             OPTM_G_LINE,                              -- 97
+                                             OPTM_G_CLOSE                              -- 98 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

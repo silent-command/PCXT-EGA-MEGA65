@@ -48,6 +48,10 @@ module floppy
 	input       [7:0] io_writedata,
 
 	output            fdd0_inserted,
+	// MEGA65 overlay: one clock per DOS access attempt on drive A: a read of the digital input
+	// register (change line, port 3F7) with drive 0 selected, or the DOR motor-A bit rising. The
+	// internal-drive firmware latches it (rom_loader.vhd) and only then looks for a disk (docs/floppy.md).
+	output            fdd0_access,
 	//management
 	/*
 	0x00.[0]:      media present
@@ -76,7 +80,18 @@ always @(posedge clk) clk_rate <= clock_rate;
 
 //------------------------------------------------------------------------------ media management
 
-assign mgmt_readdata = (!mgmt_address) ? {selected_drive[0], sd_sector[14:0]} : (&mgmt_address) ? fifo_readdata : 16'd1;
+// MEGA65 overlay (docs/floppy.md phase 4, the format tap): management register 1, which the original
+// ARM side never reads, describes the block request being served: bit 15 = the fill of a FORMAT TRACK
+// sector (the controller is in S_SD_FORMAT_WAIT_FOR_FILL), bits 14:8 = the command's sector count (SC),
+// bits 7:0 = its filler byte (D). Read-only, nothing the CPU sees changes; mgmt_bridge samples it when it
+// dispatches the request, since the format command completes long before the last fill is written.
+reg [6:0] format_sc;
+always @(posedge clk) begin
+	if(~rst_n)                      format_sc <= 7'd0;
+	else if(cmd_format_ok_at_start) format_sc <= command[14:8];
+end
+wire [15:0] mgmt_format_tap = { (state == S_SD_FORMAT_WAIT_FOR_FILL) && cmd_format_in_progress, format_sc, format_filler_byte };
+assign mgmt_readdata = (!mgmt_address) ? {selected_drive[0], sd_sector[14:0]} : (&mgmt_address) ? fifo_readdata : (mgmt_address == 4'd1) ? mgmt_format_tap : 16'd1;
 assign request = (state == S_SD_READ_WAIT_FOR_DATA || state == S_SD_WRITE_WAIT_FOR_EMPTY_FIFO || state == S_SD_FORMAT_WAIT_FOR_FILL) ?
 					{cmd_write_normal_in_progress | cmd_format_in_progress, cmd_read_normal_in_progress} : 2'b00;
 
@@ -84,6 +99,7 @@ reg media_present[2];
 always @(posedge clk) if(mgmt_write && mgmt_address == 4'd0) media_present[mgmt_fddn] <= mgmt_writedata[0];
 
 assign fdd0_inserted = media_present[0];
+assign fdd0_access   = (io_read && io_address == 3'd7 && ~selected_drive[0]) || (motor_enable[0] && ~old_motor_enable[0]);
 
 reg [1:0] wp_sys;
 always @(posedge clk) if(mgmt_write && mgmt_address == 4'd1) wp_sys[mgmt_fddn] <= mgmt_writedata[0];
@@ -608,7 +624,14 @@ always @(posedge clk) begin
 	else if(state == S_SD_FORMAT_WAIT_FOR_FILL && &format_counter && fifo_read) format_sector_count <= format_sector_count - 8'd1;
 end
 
-wire cmd_format_in_input_finish = ~execute_ndma && dma_has_terminated;
+// MEGA65 overlay (docs/floppy.md phase 4): the 8237 of this core presents TC in the same clock as the
+// acknowledge of the last byte (Peripherals.sv: dma_tc = fdd_dma_tc & fdd_dma_rw_ack), i.e. together with
+// the 4th ID byte of the last sector of a FORMAT TRACK. Upstream this line pre-empted that completed ID
+// field: the last sector was never written and the command ended with ST0 = 0x40 (abnormal termination)
+// from S_WAIT_FOR_FORMAT_INPUT. A completed ID field is now handled first; the terminal count then ends
+// the command normally at S_CHECK_TC after that sector, as a uPD765 does (it formats to the end of the
+// track after TC and reports normal termination).
+wire cmd_format_in_input_finish = ~execute_ndma && dma_has_terminated && format_data_count != 3'd4;
 
 wire cmd_format_finish = cmd_format_in_progress && (
 	cmd_format_in_input_finish ||
@@ -688,6 +711,18 @@ localparam [3:0] S_SD_FORMAT_WAIT_FOR_FILL      = 13;
 reg [3:0] state;
 always @(posedge clk) begin
 	if(~rst_n)                                                                    state <= S_IDLE;
+
+	// MEGA65 overlay: the FDC software reset (DOR bit 2 low, DSR bit 7) abandons a READ that still
+	// waits for the management side. A block the firmware could not deliver (the internal drive,
+	// docs/floppy.md) is then released by the BIOS reset on its error path, not only by the core
+	// reset; the request drops with the state and the FIFO clears in S_IDLE. mgmt_bridge re-reads
+	// the request word after the block it fetched arrives (S_FDD_RD_CHK), so a block whose request
+	// vanished this way is dropped instead of landing in another sector's FIFO.
+	// Only the read state: on a write or a format fill the bridge is draining floppy.v's FIFO into
+	// the block buffer and has no such re-check, so pulling the state out from under it would lose
+	// the request with no way to notice. Those stay parked until the core reset, as they did before
+	// the on-demand detection; the Retry recovery this buys is a read-path problem anyway.
+	else if(sw_reset && state == S_SD_READ_WAIT_FOR_DATA)                         state <= S_IDLE;
 
 	//start read/write
 	else if(state == S_IDLE && cmd_read_write_ok_at_start)                        state <= S_PREPARE_COUNT;
