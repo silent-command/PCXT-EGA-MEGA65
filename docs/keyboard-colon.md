@@ -127,3 +127,7 @@ exactly the same symptom, so the device now follows the spec.
 * The stray `F0 12` the old code sent on the override release after a stale
   flag is gone; the only bytes now sent for a Shift key are the ones that
   change the PC's state.
+
+## On the board, 2026-09-18
+Confirmed on the R6 with the fix built in: the owner's sequence (`*`, Shift+`*`,
+`*`, `*`) types `* } * *`. Before the fix the third press produced `8`.
