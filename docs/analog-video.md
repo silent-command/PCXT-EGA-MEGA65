@@ -810,7 +810,10 @@ standard polarity per mode, standard blanking, continuous sync.
 
 Confirmed the same day: "EGA monitor 5154" works very well too - the 350-line
 rasters that started this, and the case analog_line_doubler.vhd was written and
-abandoned for. Still to confirm: the M2M welcome
-screen (section 8: the pins carried no sync there at all), and a direct
+abandoned for. And the M2M welcome screen is visible, which section 8 could
+never explain and never had to: ascal's output sweep free-runs, so whatever
+video_retime_reset does to the core's raster no longer reaches the pins.
+
+So all three symptoms of section 8 are gone. Still to confirm: a direct
 connection without the adapter, which is the honest test - an adapter locks
 onto timings a monitor's own VGA input can refuse.
