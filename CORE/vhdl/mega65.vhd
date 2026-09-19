@@ -341,6 +341,7 @@ signal main_dbg_bus_reads     : std_logic_vector(15 downto 0);
 signal main_dbg_vsync         : std_logic_vector(15 downto 0);
 signal main_dbg_keys          : std_logic_vector(15 downto 0);
 signal main_dbg_flags         : std_logic_vector(7 downto 0);
+signal main_dbg_mouse         : std_logic_vector(15 downto 0);   -- DIAG-MOUSE (temporary)
 
 -- NE1000 Ethernet card (docs/ethernet.md): the MAC (eth_mac.vhd, PHY pins, clk_50_ps) exchanges byte
 -- streams with the card inside main.vhd in the main_clk domain. The station address comes from the
@@ -541,6 +542,7 @@ begin
          dbg_vsync_o          => main_dbg_vsync,
          dbg_keys_o           => main_dbg_keys,
          dbg_flags_o          => main_dbg_flags,
+         dbg_mouse_o          => main_dbg_mouse,      -- DIAG-MOUSE (temporary)
 
          osm_control_i        => main_osm_control_i,
 
@@ -733,8 +735,20 @@ begin
                    main_flp_valid(15 downto 0) &                                                        -- 2
                    "000000" & main_flp_det_dd & main_flp_det_hd & main_flp_det_max_r &                  -- 1
                    x"00" & main_flp_err;                                                                -- 0
-   main_flp_dbg <= main_flp_last_chrn(15 downto 0) & main_flp_last_chrn(31 downto 16) &                -- 11, 10
-                   main_flp_cnt_steps & main_flp_cnt_dam_ok & main_flp_cnt_idam_ok & main_flp_cnt_index; -- 9, 8, 7, 6
+   -- DIAG-MOUSE (temporary, docs/mouse.md): words 6..8 carry the joystick-port readings instead of
+   -- the floppy counters, so that the serial log can show whether the paddle values move at all.
+   --   6 = pot1_y & pot1_x      7 = pot2_y & pot2_x
+   --   8 = 0000 & mouse Amiga,C1351 & port2 fire,up,down,left,right & port1 fire,up,down,left,right
+   --       (active high: a pressed direction reads 1)
+   main_flp_dbg <= main_flp_last_chrn(15 downto 0) & main_flp_last_chrn(31 downto 16) &     -- 11, 10
+                   main_dbg_mouse &                                                        -- 9 DIAG-MOUSE
+                   "0000" & main_osm_control_i(80) & main_osm_control_i(79) &                 -- 8
+                   (not main_joy_2_fire_n_i) & (not main_joy_2_up_n_i) & (not main_joy_2_down_n_i) &
+                   (not main_joy_2_left_n_i) & (not main_joy_2_right_n_i) &
+                   (not main_joy_1_fire_n_i) & (not main_joy_1_up_n_i) & (not main_joy_1_down_n_i) &
+                   (not main_joy_1_left_n_i) & (not main_joy_1_right_n_i) &
+                   main_pot2_y_i & main_pot2_x_i &                                          -- 7
+                   main_pot1_y_i & main_pot1_x_i;                                           -- 6
 
    ---------------------------------------------------------------------------------------------
    -- Audio and video settings (QNICE clock domain)

@@ -605,6 +605,7 @@ _FLP_DA_RET     SYSCALL(leave, 1)
 ; blocks (one or two register reads in the common case); registers
 ; preserved. Nothing here moves the drive unless DOS asked for A:.
 FLP_POLL        SYSCALL(enter, 1)
+                RSUB    DBGM_TICK, 1            ; DIAG-MOUSE (temporary)
                 MOVE    FLP_STATE, R0
                 MOVE    @R0, R1
                 CMP     FLP_S_OFF, R1
