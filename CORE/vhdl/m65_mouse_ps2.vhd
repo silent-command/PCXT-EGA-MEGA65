@@ -106,7 +106,13 @@ entity m65_mouse_ps2 is
 
       -- device -> host (pcxt_core ps2_mouse_clk_i / ps2_mouse_data_i)
       ps2_clk_o      : out std_logic;
-      ps2_data_o     : out std_logic
+      ps2_data_o     : out std_logic;
+
+      -- DIAG-MOUSE (temporary): 15 = reporting enabled by the host, 14..12 = accumulated motion
+      -- is non-zero, 11..8 = movement packets sent (mod 16), 7..0 = last command byte from the
+      -- host. Lets a serial capture tell "the host never enabled us" from "we send and it is
+      -- ignored". Remove with the rest of DIAG-MOUSE.
+      dbg_o          : out std_logic_vector(15 downto 0)
    );
 end entity m65_mouse_ps2;
 
@@ -168,6 +174,11 @@ architecture rtl of m65_mouse_ps2 is
    signal resolution  : std_logic_vector(7 downto 0) := x"02";
    signal bat_pending : std_logic := '0';
    signal bat_cnt     : natural range 0 to G_BAT_MS := 0;
+
+   -- DIAG-MOUSE (temporary)
+   signal dbg_pkts    : unsigned(3 downto 0) := (others => '0');
+   signal dbg_lastcmd : std_logic_vector(7 downto 0) := (others => '0');
+   signal dbg_moving  : std_logic := '0';
 
    signal ms_div      : natural range 0 to C_MS-1 := 0;
    signal ms_tick     : std_logic := '0';
@@ -317,6 +328,10 @@ begin
    ps2_clk_o  <= clk_out;
    ps2_data_o <= data_out;
 
+   -- DIAG-MOUSE (temporary)
+   dbg_o <= reporting & remote & bat_pending & dbg_moving &
+            std_logic_vector(dbg_pkts) & dbg_lastcmd;
+
    ---------------------------------------------------------------------------
    -- commands, motion, packets
    ---------------------------------------------------------------------------
@@ -443,6 +458,7 @@ begin
 
          ------------------------------------------------------------ commands and transmit buffer
          if rx_done = '1' then
+            dbg_lastcmd <= rx_sr;                     -- DIAG-MOUSE
             -- a host byte replaces whatever was queued (the host's inhibit already killed the frame)
             tx_idx <= 0;
             tx_cnt <= 1;
@@ -549,13 +565,16 @@ begin
 
          elsif rep_tick = '1' and reporting = '1' and remote = '0' and bat_pending = '0' and
                expect_arg = '0' and tx_cnt = 0 and link_idle = '1' then
+            dbg_moving <= '0';                        -- DIAG-MOUSE
             if v_ax /= 0 or v_ay /= 0 or v_ovx = '1' or v_ovy = '1' or btn /= btn_sent then
+               dbg_moving <= '1';                     -- DIAG-MOUSE
                tx_buf(0) <= v_b1;
                tx_buf(1) <= std_logic_vector(v_ax(7 downto 0));
                tx_buf(2) <= std_logic_vector(v_ay(7 downto 0));
                tx_idx    <= 0;
                tx_cnt    <= 3;
                btn_sent  <= btn;
+               dbg_pkts  <= dbg_pkts + 1;            -- DIAG-MOUSE
                v_ax  := (others => '0');
                v_ay  := (others => '0');
                v_ovx := '0';
