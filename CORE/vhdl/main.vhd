@@ -468,6 +468,11 @@ begin
    -- converter (MSMouseWrapper). Not reset: the converter sends its init
    -- command while the framework still holds the core in reset.
    i_mouse : entity work.m65_mouse_ps2
+      generic map (
+         -- The USB4AMI in C64 mode counts the other way round from a real 1351 on both axes:
+         -- without this the pointer moves opposite to the mouse. Confirmed on the R6.
+         G_POT_INVERTED => true
+      )
       port map (
          clk_i        => clk_main_i,
          rst_i        => '0',

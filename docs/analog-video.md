@@ -792,3 +792,75 @@ all (entity at `:13-76`), `H_POL`/`V_POL` appear only in the digital path
 the VGA pins. Nothing obstructs the change either: the arbiter slave count is a
 generic, `hdmi_clk_i` is already a port of `av_pipeline` (`:132`), and
 `G_ANALOG_LINE_DOUBLER` is precedent for a framework-local generic defaulted off.
+
+### First board result, 2026-09-18: a picture on the VGA connector
+`G_ANALOG_FROM_SCALER => true` built at WNS 0.251 ns and produced a **signal on
+the VGA port for the first time**, through a VGA-to-HDMI adapter. With "CGA
+monitor 5153" the picture quality is very good: the DOS boot text is crisp and
+correct, and the OSM is composited on it (it comes from ascal's output stage,
+so the menu is part of the scaled raster rather than a separate analog overlay).
+
+For contrast, the free experiment that preceded this - "CGA monitor 5153" on the
+*old* analog path, i.e. a 200-line raster the framework scandoubler takes to
+31.40 kHz - showed **nothing** on the same monitor. So the rate was never the
+whole story, and the remaining suspects listed in section 8 (H+/V+ being the
+reserved polarity combination, and the blanking geometry) are consistent with
+that. Driving from the scaler makes all of them moot at once: standard timing,
+standard polarity per mode, standard blanking, continuous sync.
+
+Confirmed the same day: "EGA monitor 5154" works very well too - the 350-line
+rasters that started this, and the case analog_line_doubler.vhd was written and
+abandoned for. And the M2M welcome screen is visible, which section 8 could
+never explain and never had to: ascal's output sweep free-runs, so whatever
+video_retime_reset does to the core's raster no longer reaches the pins.
+
+So all three symptoms of section 8 are gone. Still to confirm: a direct
+connection without the adapter, which is the honest test - an adapter locks
+onto timings a monitor's own VGA input can refuse.
+
+### Direct cable: still nothing, 2026-09-18. Parked with the win banked.
+Through a **VGA-to-HDMI adapter** the output is excellent in every mode tried
+(CGA 200-line, EGA 350-line, the welcome screen). Straight into the **monitor's
+own VGA input** there is still no picture, at 720p50 *and* at both VESA modes:
+640x480 @ 60 and 800x600 @ 60.
+
+That combination is worth writing down carefully, because it rules a lot out.
+The adapter locking on proves the raster is coherent, continuous and standard
+enough to decode: pixel clock, blanking, sync widths and frame structure are all
+sound. So whatever this particular monitor objects to is **not** the timing we
+were chasing for two sessions. And at 640x480 the design now emits 31.5 kHz with
+**negative sync on both lines** (`H_POL = V_POL = '0'`, and the `xnor` in
+digital_pipeline inverts ascal's positive-going sync accordingly) - which is
+exactly what the MEGA65's own core emits on the same monitor, cable and socket,
+where it does produce a picture (section 10, Q2).
+
+Open hypotheses for whoever picks this up, in rough order:
+* **The monitor.** Try another one first; it is one data point and the cheapest
+  to replace. The owner is doing this.
+* **Sync electrical level or drive.** HS/VS leave the FPGA as LVCMOS33 straight
+  to the connector, no level shifter. The MEGA65 core drives the same pins, so
+  the board is fine, but its edges / series termination are worth comparing on a
+  scope before anything else in the design is touched.
+* **RGB level or DC restore.** The adapter shows correct colours, so the DAC
+  output is sane, but an LCD's VGA front end clamps on the back porch and needs
+  a black level there; ascal's blanking is real black, so this is unlikely.
+* Something mode-list-related in the monitor: some panels only sync to modes in
+  their own EDID table and this one may not offer 800x600 or 640x480 over VGA.
+
+**The win is real regardless**: with a VGA-to-HDMI adapter the core now has two
+usable video outputs at once. That is what `G_ANALOG_FROM_SCALER` buys today,
+and it is worth keeping whatever the direct-cable story turns out to be.
+
+### What shipping this would still need
+* A **runtime** switch rather than the build-time generic: as built, the VGA
+  connector is always fed from the scaler, so "VGA: 15 kHz" and "15 kHz + CSync"
+  in the Display submenu no longer reach the pins. Those exist for CRTs and
+  SCART, which are exactly the displays that *want* the core's raster passed
+  through. A `BUFGCTRL` mux on `vdac_clk_o` plus a mux on the six output
+  registers, driven by a new menu line (and so a new `OPTM_SIZE` / m2mcfg size).
+* **VGA and HDMI share one mode.** The HDMI submenu now silently sets the VGA
+  timing too, and its default (720p50) is not a VGA mode. Either document the
+  pairing or have the scaled option force 640x480 / 800x600 when selected.
+* The `hdmi_shift` clamp for 640x480 (`640 - 720 = -80` into a `natural` port,
+  `video_overlay.vhd:28`) - untested, since 640x480 was only tried on a monitor
+  that showed nothing either way.
