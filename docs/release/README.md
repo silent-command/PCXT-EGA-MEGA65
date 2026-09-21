@@ -5,7 +5,7 @@ An IBM PC/XT with an EGA card on the MEGA65 R6: 8088 or 8086 CPU at 4.77,
 EMS, floppy and hard disk images from the SD card, **the MEGA65's own 3.5"
 floppy drive as A: - real disks, read, write and `FORMAT`**, Adlib, Sound
 Blaster, Tandy and PC speaker sound, an NE1000 Ethernet card on the MEGA65's
-network port, and the MEGA65 keyboard and joysticks.
+network port, and the MEGA65 keyboard, joysticks and mouse.
 
 Ported from [MiSTer-devel/PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer)
 with the [MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65) framework.
@@ -123,10 +123,14 @@ lacks:
 
 ## Known limitations
 
-- The analog VGA connector is not usable with a modern monitor for DOS text.
-  The BIOS and DOS text screens are 350-line EGA rasters, which leave the VGA
-  socket at 21.8 kHz; LCD monitors need about 30 kHz and report "no signal".
-  HDMI is unaffected and shows everything. See docs/analog-video.md.
+- The analog VGA connector shares its video mode with HDMI. With "VGA: 31 kHz"
+  selected it carries the scaled picture in whatever mode the HDMI submenu is
+  set to, and the default there (720p 50 Hz) is not a VGA timing: pick
+  **640x480 60 Hz or 800x600 60 Hz** for a VGA monitor. Verified through a
+  VGA-to-HDMI adapter in every mode; a direct connection to one particular LCD
+  is still refused even at those VESA timings, and is under investigation. The
+  "VGA: 15 kHz" settings are unaffected and still pass the core's own raster
+  through for CRTs and SCART. See docs/analog-video.md.
 
 - The Turbo XT BIOS in `pcxt.rom` has no high-density floppy support: 1.44 MB
   and 1.2 MB images mount but DOS reports "drive not ready" on them, and **the
@@ -145,8 +149,13 @@ lacks:
   `A:\JOYTEST` on the same image shows the raw port readings.
 
 - Mouse: a Commodore 1351 or an Amiga mouse in joystick port 1 appears as a
-  Microsoft serial mouse on COM1 when enabled in Input Settings; load a
-  serial mouse driver such as CTMOUSE in DOS. USB mice are not supported.
+  Microsoft serial mouse on COM1 (3F8h, IRQ 4). Pick 1351 or Amiga under
+  Input Settings and load a serial mouse driver in DOS, such as FreeDOS
+  CTMOUSE. USB mice need an adapter that presents one of those two; a USB4AMI
+  in C64 mode is what this was tested with. Turn Joystick 1 off while using a
+  mouse in port 1, since the buttons share pins with joystick 1. If the pointer
+  moves opposite to your hand, your adapter counts the other way round from a
+  real 1351 and `G_POT_INVERTED` in main.vhd flips it. See docs/mouse.md.
 - One hard disk image at a time; the second SD card slot is not used.
 - With the default `pcxt.rom` the optional `/pcxt/xtide.rom` is not needed:
   XTIDE is inside `pcxt.rom`. The startup log line "LOADING ROM #0002: FAILED"
