@@ -280,7 +280,7 @@ constant SEL_CORENAME      : std_logic_vector(15 downto 0) := x"0200";
 
 -- Currently this is only used in the debug console. Use the welcome screen and the
 -- help system to display the name and version of your core to the end user
-constant CORENAME          : string := "PCXT-EGA V0.9";
+constant CORENAME          : string := "PCXT-EGA V0.10";
 
 --------------------------------------------------------------------------------------------------------------------
 -- "Help" menu / Options menu  (Selectors 0x0300 .. 0x0312): DO NOT TOUCH
@@ -433,7 +433,9 @@ constant OPTM_ITEMS        : string :=
    " Amber\n"               &    -- 59
    " Black and white\n"     &    -- 60
    "\n"                     &    -- 61
-   " VGA: 31 kHz\n"         &    -- 62  scandoubled for VGA monitors (off in mode 13h)
+   " VGA: 31 kHz\n"         &    -- 62  for VGA monitors: with G_ANALOG_FROM_SCALER the scaled
+                                 --      raster of the selected HDMI mode, otherwise the core's
+                                 --      own raster scandoubled (and not in mode 13h)
    " VGA: 15 kHz\n"         &    -- 63  native raster for CRTs / SCART
    " VGA: 15 kHz + CSync\n" &    -- 64  composite sync on the HS pin
    "\n"                     &    -- 65

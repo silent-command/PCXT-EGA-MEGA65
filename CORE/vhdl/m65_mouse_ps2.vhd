@@ -83,7 +83,10 @@ entity m65_mouse_ps2 is
       G_REPORT_MS          : natural := 10;         -- minimum spacing of stream packets, ms
       G_BAT_MS             : natural := 20;         -- self test time after 0xFF before AA 00, ms
       G_POT_INVERTED       : boolean := false;      -- true: pot_x_i/pot_y_i shrink when moving right/up
-      G_AMIGA_RMB_POT_HIGH : boolean := true        -- true: Amiga right/middle button pressed = pot(7) = '1'
+      G_AMIGA_RMB_POT_HIGH : boolean := true;       -- true: Amiga right/middle button pressed = pot(7) = '1'
+      -- Stream packets without waiting for the host's F4 "enable reporting": MSMouseWrapper never
+      -- sends it once a serial driver has raised RTS. See the packet gate below. Off = strict PS/2.
+      G_STREAM_WITHOUT_ENABLE : boolean := true
    );
    port (
       clk_i          : in  std_logic;                     -- clk_main_i, 50 MHz chipset clock
@@ -547,7 +550,16 @@ begin
             tx_cnt      <= 2;
             bat_pending <= '0';
 
-         elsif rep_tick = '1' and reporting = '1' and remote = '0' and bat_pending = '0' and
+         -- G_STREAM_WITHOUT_ENABLE: report even though the host never enabled reporting.
+         -- MSMouseWrapper jumps straight to PS2Pr_SendM on any rising edge of RTS (:210-213) and on
+         -- to PS2Pr_Loop, abandoning its PS/2 init and never retrying it - and a serial mouse driver
+         -- raises RTS to probe for a mouse, so on this host the init never survives the driver.
+         -- PS2Pr_Loop consumes 3-byte packets whatever the init did (:274-297), so a device that
+         -- waits for permission is simply never heard; a real PS/2 mouse would be equally mute.
+         -- Measured on the R6 before the fix: one host clock falling edge ever, no request-to-send,
+         -- no command bytes, no packets - and the cursor never moved (docs/mouse.md).
+         elsif rep_tick = '1' and (reporting = '1' or G_STREAM_WITHOUT_ENABLE) and
+               remote = '0' and bat_pending = '0' and
                expect_arg = '0' and tx_cnt = 0 and link_idle = '1' then
             if v_ax /= 0 or v_ay /= 0 or v_ovx = '1' or v_ovy = '1' or btn /= btn_sent then
                tx_buf(0) <= v_b1;
