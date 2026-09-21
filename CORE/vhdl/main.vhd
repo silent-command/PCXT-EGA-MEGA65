@@ -79,7 +79,6 @@ entity main is
       dbg_vsync_o             : out std_logic_vector(15 downto 0);   -- pixel enables per frame / 64
       dbg_keys_o              : out std_logic_vector(15 downto 0);   -- hdd= : block acks of vdrive 2 (16 bit, free running)
       dbg_flags_o             : out std_logic_vector(7 downto 0);    -- hold/pause state, see p_dbg
-      dbg_mouse_o             : out std_logic_vector(15 downto 0);   -- DIAG-MOUSE (temporary)
 
       -- On-Screen-Menu selections (clk_main_i domain)
       osm_control_i           : in  std_logic_vector(255 downto 0);
@@ -469,6 +468,11 @@ begin
    -- converter (MSMouseWrapper). Not reset: the converter sends its init
    -- command while the framework still holds the core in reset.
    i_mouse : entity work.m65_mouse_ps2
+      generic map (
+         -- The USB4AMI in C64 mode counts the other way round from a real 1351 on both axes:
+         -- without this the pointer moves opposite to the mouse. Confirmed on the R6.
+         G_POT_INVERTED => true
+      )
       port map (
          clk_i        => clk_main_i,
          rst_i        => '0',
@@ -483,8 +487,7 @@ begin
          host_clk_i   => mouse_host_clk,
          host_data_i  => mouse_host_data,
          ps2_clk_o    => mouse_ps2_clk,
-         ps2_data_o   => mouse_ps2_data,
-         dbg_o        => dbg_mouse_o            -- DIAG-MOUSE (temporary)
+         ps2_data_o   => mouse_ps2_data
       ); -- i_mouse
 
    -- MEGA65 joystick ports -> game port: [0] right [1] left [2] down [3] up [4] fire

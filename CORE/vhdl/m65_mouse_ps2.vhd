@@ -83,7 +83,10 @@ entity m65_mouse_ps2 is
       G_REPORT_MS          : natural := 10;         -- minimum spacing of stream packets, ms
       G_BAT_MS             : natural := 20;         -- self test time after 0xFF before AA 00, ms
       G_POT_INVERTED       : boolean := false;      -- true: pot_x_i/pot_y_i shrink when moving right/up
-      G_AMIGA_RMB_POT_HIGH : boolean := true        -- true: Amiga right/middle button pressed = pot(7) = '1'
+      G_AMIGA_RMB_POT_HIGH : boolean := true;       -- true: Amiga right/middle button pressed = pot(7) = '1'
+      -- Stream packets without waiting for the host's F4 "enable reporting": MSMouseWrapper never
+      -- sends it once a serial driver has raised RTS. See the packet gate below. Off = strict PS/2.
+      G_STREAM_WITHOUT_ENABLE : boolean := true
    );
    port (
       clk_i          : in  std_logic;                     -- clk_main_i, 50 MHz chipset clock
@@ -106,13 +109,7 @@ entity m65_mouse_ps2 is
 
       -- device -> host (pcxt_core ps2_mouse_clk_i / ps2_mouse_data_i)
       ps2_clk_o      : out std_logic;
-      ps2_data_o     : out std_logic;
-
-      -- DIAG-MOUSE (temporary): 15 = reporting enabled by the host, 14..12 = accumulated motion
-      -- is non-zero, 11..8 = movement packets sent (mod 16), 7..0 = last command byte from the
-      -- host. Lets a serial capture tell "the host never enabled us" from "we send and it is
-      -- ignored". Remove with the rest of DIAG-MOUSE.
-      dbg_o          : out std_logic_vector(15 downto 0)
+      ps2_data_o     : out std_logic
    );
 end entity m65_mouse_ps2;
 
@@ -174,11 +171,6 @@ architecture rtl of m65_mouse_ps2 is
    signal resolution  : std_logic_vector(7 downto 0) := x"02";
    signal bat_pending : std_logic := '0';
    signal bat_cnt     : natural range 0 to G_BAT_MS := 0;
-
-   -- DIAG-MOUSE (temporary)
-   signal dbg_pkts    : unsigned(3 downto 0) := (others => '0');
-   signal dbg_lastcmd : std_logic_vector(7 downto 0) := (others => '0');
-   signal dbg_moving  : std_logic := '0';
 
    signal ms_div      : natural range 0 to C_MS-1 := 0;
    signal ms_tick     : std_logic := '0';
@@ -328,10 +320,6 @@ begin
    ps2_clk_o  <= clk_out;
    ps2_data_o <= data_out;
 
-   -- DIAG-MOUSE (temporary)
-   dbg_o <= reporting & remote & bat_pending & dbg_moving &
-            std_logic_vector(dbg_pkts) & dbg_lastcmd;
-
    ---------------------------------------------------------------------------
    -- commands, motion, packets
    ---------------------------------------------------------------------------
@@ -458,7 +446,6 @@ begin
 
          ------------------------------------------------------------ commands and transmit buffer
          if rx_done = '1' then
-            dbg_lastcmd <= rx_sr;                     -- DIAG-MOUSE
             -- a host byte replaces whatever was queued (the host's inhibit already killed the frame)
             tx_idx <= 0;
             tx_cnt <= 1;
@@ -563,18 +550,24 @@ begin
             tx_cnt      <= 2;
             bat_pending <= '0';
 
-         elsif rep_tick = '1' and reporting = '1' and remote = '0' and bat_pending = '0' and
+         -- G_STREAM_WITHOUT_ENABLE: report even though the host never enabled reporting.
+         -- MSMouseWrapper jumps straight to PS2Pr_SendM on any rising edge of RTS (:210-213) and on
+         -- to PS2Pr_Loop, abandoning its PS/2 init and never retrying it - and a serial mouse driver
+         -- raises RTS to probe for a mouse, so on this host the init never survives the driver.
+         -- PS2Pr_Loop consumes 3-byte packets whatever the init did (:274-297), so a device that
+         -- waits for permission is simply never heard; a real PS/2 mouse would be equally mute.
+         -- Measured on the R6 before the fix: one host clock falling edge ever, no request-to-send,
+         -- no command bytes, no packets - and the cursor never moved (docs/mouse.md).
+         elsif rep_tick = '1' and (reporting = '1' or G_STREAM_WITHOUT_ENABLE) and
+               remote = '0' and bat_pending = '0' and
                expect_arg = '0' and tx_cnt = 0 and link_idle = '1' then
-            dbg_moving <= '0';                        -- DIAG-MOUSE
             if v_ax /= 0 or v_ay /= 0 or v_ovx = '1' or v_ovy = '1' or btn /= btn_sent then
-               dbg_moving <= '1';                     -- DIAG-MOUSE
                tx_buf(0) <= v_b1;
                tx_buf(1) <= std_logic_vector(v_ax(7 downto 0));
                tx_buf(2) <= std_logic_vector(v_ay(7 downto 0));
                tx_idx    <= 0;
                tx_cnt    <= 3;
                btn_sent  <= btn;
-               dbg_pkts  <= dbg_pkts + 1;            -- DIAG-MOUSE
                v_ax  := (others => '0');
                v_ay  := (others => '0');
                v_ovx := '0';
