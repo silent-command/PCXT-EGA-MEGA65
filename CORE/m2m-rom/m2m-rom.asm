@@ -423,64 +423,6 @@ _DBG_CS_LOOP    MOVE    @R2++, R8
                 SYSCALL(leave, 1)
                 RET
 
-; ----------------------------------------------------------------------------
-; DIAG-MOUSE (temporary): print the joystick-port readings every ~250 ms, so
-; that a serial capture shows whether the paddle values move with the mouse.
-; Registers 6/7/8 of the PCXT ROM device carry them while this is in the tree
-; (CORE/vhdl/mega65.vhd, the DIAG-MOUSE comment there). Remove both before any
-; release: the floppy counters live in those words normally.
-; ----------------------------------------------------------------------------
-DBGM_STR_P1     .ASCII_W "MOUSE pot1(yx)="
-DBGM_STR_P2     .ASCII_W " pot2(yx)="
-DBGM_STR_J      .ASCII_W " mode/joy="
-DBGM_STR_M      .ASCII_W " ps2="
-DBGM_PERIOD     .EQU 0x00BF                     ; ~250 ms in IO$CYC_MID units (763 Hz)
-
-DBGM_TICK       SYSCALL(enter, 1)
-                MOVE    IO$CYC_MID, R0
-                MOVE    @R0, R0                 ; R0: now
-                MOVE    DBGM_LAST, R1
-                MOVE    R0, R2
-                SUB     @R1, R2
-                AND     0x7FFF, R2
-                CMP     DBGM_PERIOD, R2         ; period > elapsed?
-                RBRA    _DBGM_RET, N            ; yes: not yet
-                MOVE    R0, @R1
-
-                SUB     2, SP                   ; buffer for SAVE_DEVSEL
-                MOVE    SP, R8
-                RSUB    SAVE_DEVSEL, 1
-                MOVE    M2M$RAMROM_DEV, R0
-                MOVE    DBG_DEV_ROM, @R0
-                MOVE    M2M$RAMROM_4KWIN, R0
-                MOVE    FLP_WIN, @R0
-                MOVE    M2M$RAMROM_DATA, R1
-                ADD     6, R1                   ; R1: register 6
-
-                MOVE    DBGM_STR_P1, R8
-                SYSCALL(puts, 1)
-                MOVE    @R1++, R8
-                SYSCALL(puthex, 1)
-                MOVE    DBGM_STR_P2, R8
-                SYSCALL(puts, 1)
-                MOVE    @R1++, R8
-                SYSCALL(puthex, 1)
-                MOVE    DBGM_STR_J, R8
-                SYSCALL(puts, 1)
-                MOVE    @R1++, R8
-                SYSCALL(puthex, 1)
-                MOVE    DBGM_STR_M, R8
-                SYSCALL(puts, 1)
-                MOVE    @R1, R8
-                SYSCALL(puthex, 1)
-                SYSCALL(crlf, 1)
-
-                MOVE    SP, R8
-                RSUB    RESTORE_DEVSEL, 1
-                ADD     2, SP
-_DBGM_RET       SYSCALL(leave, 1)
-                RET
-
 END_OF_ROM      .DW 0
 
 ; ----------------------------------------------------------------------------
@@ -494,8 +436,6 @@ END_OF_ROM      .DW 0
 ;
 ; add your own variables here
 ;
-DBGM_LAST       .BLOCK 1                        ; DIAG-MOUSE: last print time
-
 #include "flpdrv_vars.asm"
 
 ; M2M Shell variables (only include, if you included "shell.asm" above)
