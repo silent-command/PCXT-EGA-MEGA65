@@ -29,11 +29,25 @@ Files the core loads from here at startup:
 
 Disk images (mount them from the Help menu):
 
-  freedos.vhd   Hard disk image. Upstream ships one in games/PCXT/hd_image.zip
-                (FreeDOS with CTMOUSE, LTEMM (EMS), USE!UMBS, VGATSR and the
-                matching CONFIG.SYS). Extract it here as freedos.vhd.
+  freedos.vhd   Hard disk image. NOT INCLUDED. Upstream ships one in
+                games/PCXT/hd_image.zip of the MiSTer release:
+                https://github.com/MiSTer-devel/PCXT-EGA_MiSTer
+                Extract it here as freedos.vhd. It is FreeDOS
+                (https://www.freedos.org/) with the drivers this machine wants
+                - CTMOUSE, LTEMM for EMS, USE!UMBS, and the core's own
+                VGATSR.COM / XTEGACTL.COM - plus a DEMOS folder of PC
+                demoscene productions (8088 MPH, Area 5150, 8088 Feet, Big
+                Blue, CGADEMO and others). Those demos are separate
+                copyrighted works by their authors, redistributable only on
+                their own terms, which is why no disk image ships with this
+                core even though FreeDOS itself is free software. The demos
+                can be found through the usual scene archives, pouet.net and
+                scene.org, under their own names.
+
                 Any raw hard disk image with an MBR works; the core reads the
-                geometry from the partition table.
+                geometry from the partition table. If you build your own, a
+                plain FreeDOS installation plus LTEMM and USE!UMBS is enough;
+                add CTMOUSE for the mouse.
 
   *.img         Floppy images, raw sector dumps: 160/180/320/360/720 KB work
                 with the Turbo XT BIOS; 1.2 MB and 1.44 MB need the

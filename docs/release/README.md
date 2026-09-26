@@ -21,9 +21,11 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
    the "A: internal drive" line and the file must match its size, otherwise the
    core logs "corrupt config file" and stops saving settings (nothing else
    breaks).
-3. Put the two remaining files into `/pcxt` (they are not included, see
-   `pcxt/README.txt`): `ega_bios.rom` (required) and a hard disk image such
-   as `freedos.vhd`.
+3. Put the two remaining files into `/pcxt`. They are not included here and
+   cannot be, but both are free to obtain: `ega_bios.rom`, which is required,
+   and a hard disk image such as `freedos.vhd`. See
+   "What is not in this package, and where to get it" below, or
+   `pcxt/README.txt`.
 4. Start the core. Press **Space** on the welcome screen. Press **Help**,
    mount your hard disk image under "Hard Disk", close the menu, press
    **Ctrl+Alt+Del**. XTIDE lists the drive and boots it.
@@ -161,6 +163,44 @@ lacks:
   XTIDE is inside `pcxt.rom`. The startup log line "LOADING ROM #0002: FAILED"
   refers to it and is harmless.
 
+## What is not in this package, and where to get it
+
+Two things the core needs are missing here because they cannot be
+redistributed. Both are free to obtain.
+
+**The EGA BIOS** (`pcxt/ega_bios.rom`, required - without it the core stops at
+the boot splash). It is IBM's own option ROM for the EGA card, part 6277356,
+and it is still under copyright. Build your own from the published dump:
+
+1. Take the raw dump (IBM, EGA, U44, 27128) from
+   [minuszerodegrees.net](https://minuszerodegrees.net/rom/rom.htm).
+2. Run `SW/ROMs/EGA/make_ega_bios_rom.py` from
+   [PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer) on it.
+   The dump is stored byte-reversed and the script corrects that.
+3. Put the result in `/pcxt/ega_bios.rom`.
+
+**A hard disk image** (`pcxt/freedos.vhd`). The MiSTer release ships one in
+`games/PCXT/hd_image.zip`; extract it as `freedos.vhd`. It is
+[FreeDOS](https://www.freedos.org/) with the drivers this machine wants, plus a
+folder of PC demoscene productions - 8088 MPH, Area 5150 and others - which are
+separate copyrighted works and the reason no image is bundled here. They are
+findable through [pouet.net](https://www.pouet.net/) and
+[scene.org](https://www.scene.org/) under their own names. Any raw image with
+an MBR works, so your own FreeDOS installation is fine too.
+
 ## Source
 
-https://github.com/silent-command/PCXT-EGA-MEGA65 (docs/ has the port's design notes).
+This core: https://github.com/silent-command/PCXT-EGA-MEGA65 (`docs/` has the
+port's design notes). GPL v3, see LICENSE.
+
+It is built on, and ships binaries of, other people's free software. Source for
+each, as the GPL requires:
+
+| Shipped here | Source |
+|---|---|
+| the core itself | [PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer), [MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65), and this repository |
+| `pcxt/pcxt.rom` (Turbo XT BIOS v3.1) | [virtualxt/pcxtbios](https://github.com/virtualxt/pcxtbios) |
+| the XTIDE BIOS in it and `xtide.rom` | [xtideuniversalbios.org](https://www.xtideuniversalbios.org/) |
+| `pcxt/bios-hd-floppy/pcxt-xt.rom` (8088 BIOS) | [skiselev/8088_bios](https://github.com/skiselev/8088_bios); this build's change is `tools/8088_bios-patch/` in this repository |
+| mTCP on `pcxt/netdisk.img` | [brutman.com](https://www.brutman.com/mTCP/) |
+| the Crynwr packet driver on it | [fragglet/crynwr_mirror](https://github.com/fragglet/crynwr_mirror) |
