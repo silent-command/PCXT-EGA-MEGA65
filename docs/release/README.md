@@ -21,11 +21,10 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
    the "A: internal drive" line and the file must match its size, otherwise the
    core logs "corrupt config file" and stops saving settings (nothing else
    breaks).
-3. Put the two remaining files into `/pcxt`. They are not included here and
-   cannot be, but both are free to obtain: `ega_bios.rom`, which is required,
-   and a hard disk image such as `freedos.vhd`. See
-   "What is not in this package, and where to get it" below, or
-   `pcxt/README.txt`.
+3. Put **`ega_bios.rom`** into `/pcxt`. It is the one file this package cannot
+   include, the core will not start without it, and it is free to obtain: see
+   "The one file you have to supply" below. Everything else, including a
+   bootable FreeDOS hard disk and a system BIOS, is already here and in place.
 4. Start the core. Press **Space** on the welcome screen. Press **Help**,
    mount your hard disk image under "Hard Disk", close the menu, press
    **Ctrl+Alt+Del**. XTIDE lists the drive and boots it.
@@ -76,9 +75,10 @@ a standard 1.44 MB PC disk that any PC reads.
   recover by themselves on Retry; a failed write needs the reset button.
 * Drive B: and the hard disk are unaffected and keep using SD card images.
 
-**1.44 MB disks need the alternative BIOS.** The default `pcxt.rom` cannot do
-high-density floppies at all, so install `pcxt/bios-hd-floppy/` as described
-under "Known limitations" before using HD disks in the internal drive.
+**High-density disks need the BIOS this package ships as the default.** That is
+already in place, so the internal drive works out of the box. Only if you swap
+`pcxt.rom` for the Turbo XT BIOS in `pcxt/roms/` do 1.2 and 1.44 MB disks stop
+working, because that BIOS has no high-density floppy support at all.
 
 ## Network
 
@@ -134,17 +134,14 @@ lacks:
   "VGA: 15 kHz" settings are unaffected and still pass the core's own raster
   through for CRTs and SCART. See docs/analog-video.md.
 
-- The Turbo XT BIOS in `pcxt.rom` has no high-density floppy support: 1.44 MB
-  and 1.2 MB images mount but DOS reports "drive not ready" on them, and **the
-  internal drive needs it for 1.44 MB disks**. Either
-  use 360 KB or 720 KB images, or switch to the alternative BIOS shipped in
-  `pcxt/bios-hd-floppy/`: copy its `pcxt-xt.rom` over `/pcxt/pcxt.rom` and
-  its `xtide.rom` to `/pcxt/xtide.rom`. That is Sergey Kiselev's 8088 BIOS
-  (XT build) with the XTIDE Universal BIOS as a separate option ROM; it boots
-  DOS 3.30 and FreeDOS and reads 1.44 MB images.
+- Only one of the system BIOSes in `pcxt/roms/` does high-density floppies.
+  The default (Sergey Kiselev's 8088 BIOS, already installed as `pcxt.rom`
+  with `xtide.rom` beside it) reads 1.2 and 1.44 MB disks and drives the
+  internal drive. The Turbo XT BIOS alternative does not: with it, HD images
+  mount but DOS reports "drive not ready", so stay on 360 KB or 720 KB.
 
 - Joystick: verified with a digital stick (axes, centre, fire). The 8088 BIOS
-  shipped in `pcxt/bios-hd-floppy/` detects the game port at power-on and sets
+  shipped as the default `pcxt.rom` detects the game port at power-on and sets
   the BIOS "game adapter" bit, which games such as Alley Cat require; keep the
   stick centred while it boots. If another BIOS leaves the bit clear, mount
   `pcxt/joytest.img` in Drive A and run `A:\SETJOY` before the game.
@@ -163,14 +160,26 @@ lacks:
   XTIDE is inside `pcxt.rom`. The startup log line "LOADING ROM #0002: FAILED"
   refers to it and is harmless.
 
-## What is not in this package, and where to get it
+## What is already set up for you
 
-Two things the core needs are missing here because they cannot be
-redistributed. Both are free to obtain.
+The card is ready as shipped, apart from one file. In `/pcxt` you will find:
+
+* **`pcxt.rom`**, the system BIOS the core loads, already in place. It is
+  Sergey Kiselev's 8088 BIOS with **`xtide.rom`** beside it, so you get large
+  hard disks through XTIDE *and* 1.2 / 1.44 MB floppies, including the MEGA65's
+  own drive. `roms/` holds the alternatives with a README explaining how to
+  switch; you do not need to touch it.
+* **`freedos.vhd`**, a bootable FreeDOS hard disk with the drivers this machine
+  wants: CTMOUSE for the mouse, LTEMM for the 2 MB of EMS, USE!UMBS, and the
+  core's own `VGATSR.COM` and `XTEGACTL.COM`. Mount it under "Hard Disk".
+* **`netdisk.img`** for networking and **`joytest.img`** for the game port.
+
+## The one file you have to supply
 
 **The EGA BIOS** (`pcxt/ega_bios.rom`, required - without it the core stops at
 the boot splash). It is IBM's own option ROM for the EGA card, part 6277356,
-and it is still under copyright. Build your own from the published dump:
+and it is still under copyright, so no core can ship it. Build your own from
+the published dump:
 
 1. Take the raw dump (IBM, EGA, U44, 27128) from
    [minuszerodegrees.net](https://minuszerodegrees.net/rom/rom.htm).
@@ -179,14 +188,18 @@ and it is still under copyright. Build your own from the published dump:
    The dump is stored byte-reversed and the script corrects that.
 3. Put the result in `/pcxt/ega_bios.rom`.
 
-**A hard disk image** (`pcxt/freedos.vhd`). The MiSTer release ships one in
-`games/PCXT/hd_image.zip`; extract it as `freedos.vhd`. It is
-[FreeDOS](https://www.freedos.org/) with the drivers this machine wants, plus a
-folder of PC demoscene productions - 8088 MPH, Area 5150 and others - which are
-separate copyrighted works and the reason no image is bundled here. They are
-findable through [pouet.net](https://www.pouet.net/) and
-[scene.org](https://www.scene.org/) under their own names. Any raw image with
-an MBR works, so your own FreeDOS installation is fine too.
+### About the hard disk image
+
+`pcxt/freedos.vhd` is [FreeDOS](https://www.freedos.org/) and the drivers only.
+The MiSTer release ships a similar image in `games/PCXT/hd_image.zip` which also
+carries a folder of PC demoscene productions - 8088 MPH, Area 5150 and others.
+Those are separate copyrighted works by their authors, so they are not here;
+find them through [pouet.net](https://www.pouet.net/) and
+[scene.org](https://www.scene.org/) under their own names. They are worth
+seeing: this machine runs them as real hardware does.
+
+Any raw image with an MBR works, so your own FreeDOS installation is fine too.
+The core reads the geometry from the partition table.
 
 ## Source
 
@@ -199,8 +212,8 @@ each, as the GPL requires:
 | Shipped here | Source |
 |---|---|
 | the core itself | [PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer), [MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65), and this repository |
-| `pcxt/pcxt.rom` (Turbo XT BIOS v3.1) | [virtualxt/pcxtbios](https://github.com/virtualxt/pcxtbios) |
+| `pcxt/roms/turbo-xt-3.1-with-xtide.rom` | [virtualxt/pcxtbios](https://github.com/virtualxt/pcxtbios) |
 | the XTIDE BIOS in it and `xtide.rom` | [xtideuniversalbios.org](https://www.xtideuniversalbios.org/) |
-| `pcxt/bios-hd-floppy/pcxt-xt.rom` (8088 BIOS) | [skiselev/8088_bios](https://github.com/skiselev/8088_bios); this build's change is `tools/8088_bios-patch/` in this repository |
+| `pcxt/pcxt.rom` and `pcxt/roms/8088-bios-xt.rom` (8088 BIOS) | [skiselev/8088_bios](https://github.com/skiselev/8088_bios); this build's change is `tools/8088_bios-patch/` in this repository |
 | mTCP on `pcxt/netdisk.img` | [brutman.com](https://www.brutman.com/mTCP/) |
 | the Crynwr packet driver on it | [fragglet/crynwr_mirror](https://github.com/fragglet/crynwr_mirror) |

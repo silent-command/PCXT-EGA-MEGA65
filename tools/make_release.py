@@ -2,18 +2,18 @@
 """Build the PCXT-EGA for MEGA65 release folder and zip.
 
 Usage:  python3 tools/make_release.py [--version vX.Y] [--cor out/pcxt-ega-r6.cor]
-                                      [--with-hd-image] [--out release]
+                                      [--hd-image FILE] [--out release]
 
 Produces release/PCXT-EGA-MEGA65-<version>/ containing
   pcxt-ega-r6.cor          the core (flash into a MEGA65 R6 core slot)
   m2m/m2mcfg               settings file (OPTM_SIZE bytes of 0xFF = defaults)
-  pcxt/pcxt.rom            system BIOS (upstream SW/ROMs/pcxt_pcxt31.rom, GPL)
   pcxt/README.txt          what else goes into /pcxt and where to get it
-  pcxt/bios-hd-floppy/     8088_bios XT build + XTIDE: alternative BIOS with
-                           1.2 MB / 1.44 MB floppy support (GPL)
   pcxt/joytest.img         JOYTEST.COM + SETJOY.COM (game port test, BIOS bit)
   pcxt/netdisk.img         NE1000 packet driver + mTCP: NET.BAT, DHCP, FTP...
-  pcxt/freedos.vhd         only with --with-hd-image (from upstream hd_image.zip)
+  pcxt/roms/               every system BIOS option, with a README
+  pcxt/pcxt.rom            the default BIOS (8088 BIOS) already in place
+  pcxt/xtide.rom           the XTIDE option ROM that goes with it
+  pcxt/freedos.vhd         only with --hd-image FILE or --with-hd-image
   README.md                installation, menu, keyboard, limitations
   LICENSE, VERSION.txt
 and release/PCXT-EGA-MEGA65-<version>.zip.
@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--version", default=core_version())
     ap.add_argument("--cor", default=str(ROOT / "out" / "pcxt-ega-r6.cor"))
     ap.add_argument("--out", default=str(ROOT / "release"))
+    ap.add_argument("--hd-image", metavar="FILE",
+                    help="copy this hard disk image in as pcxt/freedos.vhd")
     ap.add_argument("--with-hd-image", action="store_true",
                     help="extract upstream games/PCXT/hd_image.zip into pcxt/freedos.vhd")
     a = ap.parse_args()
@@ -81,25 +83,62 @@ def main():
     shutil.copy2(cor, rel / "pcxt-ega-r6.cor")
     (rel / "m2m" / "m2mcfg").write_bytes(b"\xff" * optm_size())
 
-    bios = UPSTREAM / "SW" / "ROMs" / "pcxt_pcxt31.rom"
-    if bios.is_file():
-        shutil.copy2(bios, rel / "pcxt" / "pcxt.rom")
+    # Every system BIOS in one place, and the default already in position so the
+    # card works as shipped. The default is the 8088 BIOS with the XTIDE option
+    # ROM beside it: that pair gives both large hard disks (XTIDE) and 1.2 /
+    # 1.44 MB floppies, including the MEGA65's internal drive, which the Turbo XT
+    # BIOS cannot do. Swapping default is a file copy, see pcxt/roms/README.txt.
+    roms = rel / "pcxt" / "roms"
+    roms.mkdir()
+    shutil.copy2(ROOT / "sdcard" / "bios" / "pcxt-xt.rom", roms / "8088-bios-xt.rom")
+    shutil.copy2(ROOT / "sdcard" / "bios" / "xtide.rom", roms / "xtide.rom")
+    turbo = UPSTREAM / "SW" / "ROMs" / "pcxt_pcxt31.rom"
+    if turbo.is_file():
+        shutil.copy2(turbo, roms / "turbo-xt-3.1-with-xtide.rom")
     else:
         print("warning: upstream pcxt_pcxt31.rom not found (submodule not checked out?)")
 
-    # alternative system BIOS with high-density floppy support (GPL): the user
-    # copies both files over /pcxt/pcxt.rom and /pcxt/xtide.rom
-    hd = rel / "pcxt" / "bios-hd-floppy"
-    hd.mkdir()
-    for src in ("pcxt-xt.rom", "xtide.rom"):
-        shutil.copy2(ROOT / "sdcard" / "bios" / src, hd / src)
+    # the default the core loads at start-up
+    shutil.copy2(roms / "8088-bios-xt.rom", rel / "pcxt" / "pcxt.rom")
+    shutil.copy2(roms / "xtide.rom", rel / "pcxt" / "xtide.rom")
+
+    (roms / "README.txt").write_text(
+        "/pcxt/roms - the system BIOS options\n"
+        "====================================\n\n"
+        "The core loads /pcxt/pcxt.rom at start-up, and /pcxt/xtide.rom after it\n"
+        "if it is present. This release ships with the first option below already\n"
+        "in place, so you do not have to do anything.\n\n"
+        "  8088-bios-xt.rom  Sergey Kiselev's 8088 BIOS, XT build (GPL v3).\n"
+        "                    THE DEFAULT, copied to /pcxt/pcxt.rom. Needs\n"
+        "                    xtide.rom beside it, which is also already in place.\n"
+        "                    Large hard disks through XTIDE, and 1.2 / 1.44 MB\n"
+        "                    floppies - which the other BIOS cannot do, and which\n"
+        "                    the MEGA65's internal drive needs.\n"
+        "                    https://github.com/skiselev/8088_bios\n\n"
+        "  xtide.rom         XTIDE Universal BIOS (GPL v2), the hard disk option\n"
+        "                    ROM. Loaded from /pcxt/xtide.rom.\n"
+        "                    https://www.xtideuniversalbios.org/\n\n"
+        "  turbo-xt-3.1-with-xtide.rom\n"
+        "                    Super PC/Turbo XT BIOS v3.1 with XTIDE built in\n"
+        "                    (GPL). Large hard disks, but NO high-density floppy\n"
+        "                    support. To use it instead:\n"
+        "                      copy roms\\turbo-xt-3.1-with-xtide.rom  pcxt.rom\n"
+        "                      del  xtide.rom\n"
+        "                    https://github.com/virtualxt/pcxtbios\n\n"
+        "The EGA BIOS is a separate ROM and is not here: see ../README.txt.\n",
+        encoding="ascii")
 
     # joystick test / BIOS equipment-bit floppy (see README, joystick note)
     shutil.copy2(ROOT / "tools" / "joytest" / "joytest.img", rel / "pcxt" / "joytest.img")
     # networking kit: Crynwr NE1000 packet driver + mTCP (GPL), see README, Network
     shutil.copy2(ROOT / "tools" / "dosnet" / "netdisk.img", rel / "pcxt" / "netdisk.img")
 
-    if a.with_hd_image:
+    if a.hd_image:
+        src = Path(a.hd_image)
+        if not src.is_file():
+            sys.exit(f"hard disk image not found: {src}")
+        shutil.copy2(src, rel / "pcxt" / "freedos.vhd")
+    elif a.with_hd_image:
         z = UPSTREAM / "games" / "PCXT" / "hd_image.zip"
         if not z.is_file():
             sys.exit(f"hd_image.zip not found: {z}")
