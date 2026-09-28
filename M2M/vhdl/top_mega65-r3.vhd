@@ -454,23 +454,11 @@ begin
    audio_sdti_o  <= '0';
    audio_lrclk_o <= '0';
    audio_pdn_n_o <= '0';
-   eth_clock_o   <= '0';
-   eth_led2_o    <= '0';
-   eth_mdc_o     <= '0';
-   eth_mdio_io   <= 'Z';
-   eth_reset_o   <= '1';
-   eth_txd_o     <= (others => '0');
-   eth_txen_o    <= '0';
-   f_density_o   <= '1';
-   f_motora_o    <= '1';
+   -- PCXT-EGA: the Ethernet PHY and drive A of the internal floppy are driven by
+   -- the core now (see the CORE instance below), so they are no longer tied off.
+   -- Drive B has no engine behind it and stays inactive.
    f_motorb_o    <= '1';
-   f_selecta_o   <= '1';
    f_selectb_o   <= '1';
-   f_side1_o     <= '1';
-   f_stepdir_o   <= '1';
-   f_step_o      <= '1';
-   f_wdata_o     <= '1';
-   f_wgate_o     <= '1';
    led_o         <= '0'; -- Off
    p1lo_io       <= (others => 'Z');
    p1hi_io       <= (others => 'Z');
@@ -486,7 +474,14 @@ begin
 
    i_framework : entity work.framework
    generic map (
-      G_BOARD => "MEGA65_R3"
+      G_BOARD               => "MEGA65_R3",
+      -- PCXT-EGA 350-line analog line doubler (docs/analog-video.md). Superseded by
+      -- G_ANALOG_FROM_SCALER below and left off, as on the R6.
+      G_ANALOG_LINE_DOUBLER => false,
+      -- PCXT-EGA: drive the VGA connector from ascal's scaled output, so it carries the
+      -- standard VESA timing of the selected HDMI mode instead of the core's 21.8 kHz
+      -- EGA raster (docs/analog-video.md section 10). VGA and HDMI share one mode.
+      G_ANALOG_FROM_SCALER  => true
    )
    port map (
       -- Connect to I/O ports
@@ -788,6 +783,33 @@ begin
          main_pot2_x_i           => main_pot2_x,
          main_pot2_y_i           => main_pot2_y,
          main_rtc_i              => main_rtc,
+
+         -- PCXT-EGA addition: Ethernet PHY pins straight to the core (CORE/vhdl/eth_phy_spike.vhd)
+         eth_clock_o             => eth_clock_o,
+         eth_led2_o              => eth_led2_o,
+         eth_mdc_o               => eth_mdc_o,
+         eth_mdio_io             => eth_mdio_io,
+         eth_reset_o             => eth_reset_o,
+         eth_rxd_i               => eth_rxd_i,
+         eth_rxdv_i              => eth_rxdv_i,
+         eth_rxer_i              => eth_rxer_i,
+         eth_txd_o               => eth_txd_o,
+         eth_txen_o              => eth_txen_o,
+
+         -- PCXT-EGA addition: internal floppy drive, drive A lines (CORE/vhdl/floppy_phy_spike.vhd)
+         f_density_o             => f_density_o,
+         f_motora_o              => f_motora_o,
+         f_selecta_o             => f_selecta_o,
+         f_side1_o               => f_side1_o,
+         f_stepdir_o             => f_stepdir_o,
+         f_step_o                => f_step_o,
+         f_wdata_o               => f_wdata_o,
+         f_wgate_o               => f_wgate_o,
+         f_index_i               => f_index_i,
+         f_track0_i              => f_track0_i,
+         f_writeprotect_i        => f_writeprotect_i,
+         f_rdata_i               => f_rdata_i,
+         f_diskchanged_i         => f_diskchanged_i,
 
          --------------------------------------------------------------------------------------------------------
          -- Provide support for external memory (Avalon Memory Map)

@@ -51,3 +51,7 @@ tools/vdrive-latency-bench/*.lis
 tools/vdrive-latency-bench/*.txt
 CORE/rebuild-impl.*
 CORE/retry-impl.*
+CORE/build-r3.log
+CORE/build-r3.jou
+CORE/build-r3-*.rpt
+CORE/r3-impl.*
