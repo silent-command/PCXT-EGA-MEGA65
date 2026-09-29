@@ -5,7 +5,8 @@ Usage:  python3 tools/make_release.py [--version vX.Y] [--cor out/pcxt-ega-r6.co
                                       [--hd-image FILE] [--out release]
 
 Produces release/PCXT-EGA-MEGA65-<version>/ containing
-  pcxt-ega-r6.cor          the core (flash into a MEGA65 R6 core slot)
+  pcxt-ega-r6.cor          the core for a MEGA65 R6 (tested)
+  pcxt-ega-r3.cor          the same core for an R3 (untested, see the README)
   m2m/m2mcfg               settings file (OPTM_SIZE bytes of 0xFF = defaults)
   pcxt/README.txt          what else goes into /pcxt and where to get it
   pcxt/joytest.img         JOYTEST.COM + SETJOY.COM (game port test, BIOS bit)
@@ -62,7 +63,10 @@ def git_describe():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default=core_version())
-    ap.add_argument("--cor", default=str(ROOT / "out" / "pcxt-ega-r6.cor"))
+    ap.add_argument("--cor", default=str(ROOT / "out" / "pcxt-ega-r6.cor"),
+                    help="the R6 core, the one that is tested")
+    ap.add_argument("--cor-r3", default=str(ROOT / "out" / "pcxt-ega-r3.cor"),
+                    help="the R3 core; omitted from the package if absent")
     ap.add_argument("--out", default=str(ROOT / "release"))
     ap.add_argument("--hd-image", metavar="FILE",
                     help="copy this hard disk image in as pcxt/freedos.vhd")
@@ -81,6 +85,11 @@ def main():
     (rel / "pcxt").mkdir()
 
     shutil.copy2(cor, rel / "pcxt-ega-r6.cor")
+    cor_r3 = Path(a.cor_r3)
+    if cor_r3.is_file():
+        shutil.copy2(cor_r3, rel / "pcxt-ega-r3.cor")
+    else:
+        print(f"note: no R3 core at {cor_r3}, packaging R6 only")
     (rel / "m2m" / "m2mcfg").write_bytes(b"\xff" * optm_size())
 
     # Every system BIOS in one place, and the default already in position so the

@@ -1,6 +1,6 @@
 # PCXT-EGA for MEGA65
 
-An IBM PC/XT with an EGA card on the MEGA65 R6: 8088 or 8086 CPU at 4.77,
+An IBM PC/XT with an EGA card on the MEGA65: 8088 or 8086 CPU at 4.77,
 7.16, 9.54 MHz or unthrottled, 640 KB of RAM plus upper memory and 2 MB of
 EMS, floppy and hard disk images from the SD card, **the MEGA65's own 3.5"
 floppy drive as A: - real disks, read, write and `FORMAT`**, Adlib, Sound
@@ -13,8 +13,15 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
 
 ## Install
 
-1. Flash `pcxt-ega-r6.cor` into a core slot: hold **No Scroll** while
-   powering on, pick an empty slot, choose the file from the SD card.
+1. Flash the core file for your machine into a core slot: hold **No Scroll**
+   while powering on, pick an empty slot, choose the file from the SD card.
+   * **`pcxt-ega-r6.cor`** for a MEGA65 R6. This is the one that is developed
+     and tested on real hardware.
+   * **`pcxt-ega-r3.cor`** for an R3. Identical design, built for that board,
+     but **never run on one** - see "The R3 core" below before you try it.
+
+   The files are stamped for their board, so the MEGA65 will refuse the wrong
+   one rather than flash it.
 2. Copy the `m2m` and `pcxt` folders to the **root** of the SD card, next to
    each other. `m2m/m2mcfg` makes the menu remember your settings. **Replace
    an existing `m2m/m2mcfg` with this release's copy**: the menu grew with
@@ -173,6 +180,23 @@ The card is ready as shipped, apart from one file. In `/pcxt` you will find:
   wants: CTMOUSE for the mouse, LTEMM for the 2 MB of EMS, USE!UMBS, and the
   core's own `VGATSR.COM` and `XTEGACTL.COM`. Mount it under "Hard Disk".
 * **`netdisk.img`** for networking and **`joytest.img`** for the game port.
+
+## The R3 core
+
+`pcxt-ega-r3.cor` is the same design built for the MEGA65 R3. It compiles and
+meets timing, and that is all anyone can honestly say about it: **it has never
+been run on an R3.** All development and testing happens on an R6.
+
+There is reason for optimism. Every MEGA65 revision uses the same FPGA, and the
+R3 already maps every pin this core needs, so nothing had to be invented. What
+differs is the board around it, so the parts most likely to misbehave are the
+ones touching real hardware: the internal floppy drive, the Ethernet port and
+the analog VGA output. The CPU, memory, video and sound all live inside the
+FPGA and should behave exactly as on an R6.
+
+If you try it, reports are welcome either way, and especially on those three.
+Nothing it does can harm the machine: a core slot is rewritable and the MEGA65
+boots from slot 0 regardless.
 
 ## The one file you have to supply
 
