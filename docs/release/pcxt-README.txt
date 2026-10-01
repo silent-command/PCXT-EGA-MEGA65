@@ -42,6 +42,11 @@ Disk images (mount them from the Help menu):
                 Mount it under "Hard Disk", close the menu and press
                 Ctrl+Alt+Del.
 
+                FDAUTO.BAT runs FASTFREE.COM at boot: it counts the free
+                clusters in under a second so the first DIR does not stall
+                while FreeDOS does that one cluster at a time (about 40 s on
+                this image at 4.77 MHz). Harmless to copy to your own images.
+
                 The MiSTer release ships a similar image in
                 games/PCXT/hd_image.zip that also carries a DEMOS folder of PC
                 demoscene productions (8088 MPH, Area 5150, 8088 Feet and
