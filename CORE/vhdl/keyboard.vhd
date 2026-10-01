@@ -27,6 +27,13 @@
 --   Insert   <- shift+INS/DEL   Delete <- MEGA+INS/DEL   Home <- CLR/HOME
 --   Alt      <- MEGA            AltGr  <- ALT   ScrollLock <- NO SCROLL
 --
+-- Typematic repeat is generated here, as a PC keyboard does it (MiSTer gets
+-- it from Linux): a held key re-sends its make after G_REPEAT_DELAY and then
+-- every G_REPEAT_PERIOD (500 ms, 10.9/s). The make is re-sent exactly as it
+-- was first sent, with no new LOOKUP, so a forced shift state stays as it is.
+-- Modifiers never repeat (a repeated Shift make would undo a forced
+-- shift-off). Any other key event ends the repeat; a new make starts its own.
+--
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 ---------------------------------------------------------------------------------------------------------
 
@@ -35,6 +42,13 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity keyboard is
+   generic (
+      -- typematic repeat, in clk_main_i cycles: a held key repeats its make
+      -- code after G_REPEAT_DELAY and then every G_REPEAT_PERIOD (the PC/XT
+      -- keyboard default is 500 ms, then 10.9 per second; 50 MHz clock)
+      G_REPEAT_DELAY       : natural := 25_000_000;
+      G_REPEAT_PERIOD      : natural := 4_600_000
+   );
    port (
       clk_main_i           : in  std_logic;               -- core clock (chipset, 50 MHz)
       rst_i                : in  std_logic;
@@ -312,6 +326,22 @@ architecture beh of keyboard is
    signal override_key   : integer range 0 to 79 := 0;
    signal override_on    : boolean := false;
 
+   -- typematic repeat: the last non-modifier key made, while it stays held
+   signal rep_key        : integer range 0 to 79 := 0;
+   signal rep_armed      : boolean := false;
+   signal rep_cnt        : natural range 0 to G_REPEAT_DELAY := 0;
+   signal ev_repeat      : boolean := false;
+
+   -- modifiers do not repeat: a repeated Shift make would undo a forced
+   -- shift-off, and the PC ignores repeated Ctrl/Alt anyway
+   function repeatable(e : entry_t) return boolean is
+   begin
+      if e = NONE then return false; end if;
+      if e.ext then return e.code /= K_RALT; end if;
+      return e.code /= K_LSHIFT and e.code /= K_RSHIFT and e.code /= K_LCTRL and
+             e.code /= K_LALT and e.code /= K_CAPS and e.code /= K_SCRL;
+   end function;
+
    -- transmitter queue
    signal tx_data        : std_logic_vector(7 downto 0);
    signal tx_we          : std_logic := '0';
@@ -344,9 +374,26 @@ begin
                now_pressed := key_pressed_q;
                if now_pressed /= pressed(key_num_q) then
                   pressed(key_num_q) <= now_pressed;
-                  ev_key   <= key_num_q;
-                  ev_make  <= now_pressed;
-                  ev_state <= LOOKUP;
+                  ev_key    <= key_num_q;
+                  ev_make   <= now_pressed;
+                  ev_repeat <= false;
+                  rep_armed <= false;            -- any new key event ends the repeat
+                  ev_state  <= LOOKUP;
+               elsif rep_armed then
+                  if pressed(rep_key) = '0' then
+                     rep_armed <= false;
+                  elsif rep_cnt = 0 then
+                     -- re-send the make exactly as it was sent: the forced
+                     -- shift state (if any) is still in effect, so no LOOKUP
+                     ev_key    <= rep_key;
+                     ev_make   <= '1';
+                     ev_entry  <= sent_entry(rep_key);
+                     ev_repeat <= true;
+                     rep_cnt   <= G_REPEAT_PERIOD;
+                     ev_state  <= PREFIX;
+                  else
+                     rep_cnt <= rep_cnt - 1;
+                  end if;
                end if;
 
             when LOOKUP =>
@@ -445,6 +492,12 @@ begin
                      key_word <= (not key_toggle) & ev_make & '0' & ev_entry.code;
                   end if;
                end if;
+               -- a fresh make of a repeatable key starts the typematic timer
+               if ev_make = '1' and not ev_repeat and repeatable(ev_entry) then
+                  rep_key   <= ev_key;
+                  rep_armed <= true;
+                  rep_cnt   <= G_REPEAT_DELAY;
+               end if;
                -- a release of the key that forced a shift state: put the PC's
                -- shift keys back to the physical ones
                if ev_make = '0' and override_on and ev_key = override_key then
@@ -471,6 +524,7 @@ begin
             pc_rshift     <= false;
             override_on   <= false;
             tx_we         <= '0';
+            rep_armed     <= false;
             key_toggle    <= '0';
             key_word      <= (others => '0');
          end if;

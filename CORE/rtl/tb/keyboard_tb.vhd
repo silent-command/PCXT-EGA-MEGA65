@@ -13,6 +13,9 @@
 -- device to clock 11 pulses and reply FA, AA. Finally the host inhibits the
 -- clock in the middle of a frame (the byte must be sent again once the line
 -- is released) and right after a frame's stop bit (it must not be repeated).
+-- Typematic: a held letter repeats (generics shortened to 15 ms / 1 ms), a
+-- held Shift does not, a held forced-shift key repeats its code with the
+-- shift kept on, and a second key takes the repeat over.
 -- Run with run_keyboard_tb.sh (GHDL).
 
 library ieee;
@@ -35,7 +38,7 @@ architecture sim of keyboard_tb is
    signal ps2_key    : std_logic_vector(10 downto 0);
 
    -- decoded bytes
-   type byte_arr is array (0 to 127) of std_logic_vector(7 downto 0);
+   type byte_arr is array (0 to 1023) of std_logic_vector(7 downto 0);
    signal rx_bytes   : byte_arr := (others => x"00");
    signal rx_count   : natural := 0;
    signal errors     : natural := 0;
@@ -48,6 +51,7 @@ begin
    clk <= not clk after 10 ns when not done;      -- 50 MHz
 
    dut : entity work.keyboard
+      generic map (G_REPEAT_DELAY => 750_000, G_REPEAT_PERIOD => 50_000)   -- 15 ms, then 1 ms
       port map (
          clk_main_i => clk, rst_i => rst,
          key_num_i => key_num, key_pressed_n_i => key_pressed_n,
@@ -114,6 +118,7 @@ begin
    p_stim : process
       variable pulses0 : natural := 0;
       variable n       : natural := 0;             -- next byte index to check
+      variable reps    : natural := 0;             -- repeated makes seen
       procedure press(k : integer)   is begin pressed(k) <= '1'; wait for 3 ms; end;
       procedure unpress(k : integer) is begin pressed(k) <= '0'; wait for 3 ms; end;
       procedure expect(idx : natural; b : std_logic_vector(7 downto 0); what : string) is
@@ -221,6 +226,56 @@ begin
       nx(x"F0", "] break");     nx(x"5B", "] break code");   nx(x"59", "] reshift");
       nx(x"F0", "rshift brk");  nx(x"59", "rshift brk code");
       count_is("after the shift sequences");
+
+      -- typematic repeat (generics: 15 ms delay, then every 1 ms). A held
+      -- letter repeats its make and the release is one break; a held Shift
+      -- never repeats; a held forced-shift key repeats its code only, with the
+      -- forced shift kept on; a second key takes the repeat over.
+      pressed(10) <= '1'; wait for 45 ms; pressed(10) <= '0'; wait for 10 ms;
+      nx(x"1C", "held a: make");
+      reps := 0;
+      while n < rx_count and rx_bytes(n) = x"1C" loop n := n + 1; reps := reps + 1; end loop;
+      if reps < 15 or reps > 35 then
+         report "held a: " & integer'image(reps) & " repeats, expected about 30" severity error;
+         errors <= errors + 1; wait for 1 ns;
+      end if;
+      nx(x"F0", "held a: break"); nx(x"1C", "held a: break code");
+      count_is("after the held a");
+
+      pressed(15) <= '1'; wait for 45 ms; pressed(15) <= '0'; wait for 10 ms;
+      nx(x"12", "held shift: make"); nx(x"F0", "held shift: break"); nx(x"12", "held shift: break code");
+      count_is("after the held shift (must not repeat)");
+
+      pressed(45) <= '1'; wait for 45 ms; pressed(45) <= '0'; wait for 10 ms;
+      nx(x"12", "held :: shift on"); nx(x"4C", "held :: code");
+      reps := 0;
+      while n < rx_count and rx_bytes(n) = x"4C" loop n := n + 1; reps := reps + 1; end loop;
+      if reps < 15 or reps > 35 then
+         report "held :: " & integer'image(reps) & " repeats, expected about 30" severity error;
+         errors <= errors + 1; wait for 1 ns;
+      end if;
+      nx(x"F0", "held :: break"); nx(x"4C", "held :: break code"); nx(x"F0", "held :: shift off"); nx(x"12", "held :: shift off code");
+      count_is("after the held :");
+
+      pressed(10) <= '1'; wait for 25 ms;                 -- a, repeating by now
+      pressed(60) <= '1'; wait for 25 ms;                 -- space takes the repeat over
+      pressed(60) <= '0'; wait for 3 ms; pressed(10) <= '0'; wait for 10 ms;
+      nx(x"1C", "a then space: a make");
+      reps := 0;
+      while n < rx_count and rx_bytes(n) = x"1C" loop n := n + 1; reps := reps + 1; end loop;
+      if reps < 5 then
+         report "a then space: a repeated " & integer'image(reps) & " times before space, expected about 10" severity error;
+         errors <= errors + 1; wait for 1 ns;
+      end if;
+      nx(x"29", "a then space: space make");
+      reps := 0;
+      while n < rx_count and rx_bytes(n) = x"29" loop n := n + 1; reps := reps + 1; end loop;
+      if reps < 5 then
+         report "a then space: space repeated " & integer'image(reps) & " times, expected about 10" severity error;
+         errors <= errors + 1; wait for 1 ns;
+      end if;
+      nx(x"F0", "space break"); nx(x"29", "space break code"); nx(x"F0", "a break (no repeat resumed)"); nx(x"1C", "a break code");
+      count_is("after the take-over");
 
       -- keyboard reset from the host, then a key
       pulses0 := dev_pulses;
