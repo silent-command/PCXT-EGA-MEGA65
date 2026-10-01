@@ -209,12 +209,24 @@ the boot splash). It is IBM's own option ROM for the EGA card, part 6277356,
 and it is still under copyright, so no core can ship it. Build your own from
 the published dump:
 
-1. Take the raw dump (IBM, EGA, U44, 27128) from
-   [minuszerodegrees.net](https://minuszerodegrees.net/rom/rom.htm).
-2. Run `SW/ROMs/EGA/make_ega_bios_rom.py` from
-   [PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer) on it.
-   The dump is stored byte-reversed and the script corrects that.
-3. Put the result in `/pcxt/ega_bios.rom`.
+1. Download the raw dump, **[ibm_6277356_ega_card_u44_27128.bin](https://minuszerodegrees.net/rom/bin/ibm_6277356_ega_card_u44_27128.bin)**
+   (16,384 bytes), from the ROM archive at
+   [minuszerodegrees.net](https://minuszerodegrees.net/rom/rom.htm) - the row
+   "IBM / EGA / U44". Open the link in a browser: the site turns away download
+   tools that do not look like one.
+2. Reverse the byte order. The card feeds the EPROM inverted address lines, so
+   the dump is back to front: the last byte of the file is the first byte of
+   the ROM. Any one of these does it:
+   * `python3 -c "open('ega_bios.rom','wb').write(open('ibm_6277356_ega_card_u44_27128.bin','rb').read()[::-1])"`
+   * PowerShell: `$b=[IO.File]::ReadAllBytes("$pwd\ibm_6277356_ega_card_u44_27128.bin"); [array]::Reverse($b); [IO.File]::WriteAllBytes("$pwd\ega_bios.rom",$b)`
+   * the upstream script `SW/ROMs/EGA/make_ega_bios_rom.py` from
+     [PCXT-EGA_MiSTer](https://github.com/MiSTer-devel/PCXT-EGA_MiSTer), which
+     downloads and reverses in one go (Python with the `requests` module).
+3. Check it: `ega_bios.rom` is 16,384 bytes, begins with the bytes `55 AA 20`
+   (option ROM signature, 16 KB), and its MD5 is
+   `528455ed0b701722c166c6536ba4ff46`. The raw download's MD5 is
+   `0636f46316f3e15cb287ce3da6ba43a1`.
+4. Put it in `/pcxt/ega_bios.rom`.
 
 ### About the hard disk image
 

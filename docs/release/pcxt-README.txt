@@ -21,13 +21,18 @@ Files the core loads from here at startup:
 
   ega_bios.rom  EGA card BIOS, 16 KB. REQUIRED, NOT INCLUDED: it is a dump
                 of the IBM EGA card's ROM (U44, 27128), part 6277356, still
-                under copyright, so no core can ship it. Build it from the
-                published dump at
-                https://minuszerodegrees.net/rom/rom.htm
-                with the upstream script
-                SW/ROMs/EGA/make_ega_bios_rom.py from
-                https://github.com/MiSTer-devel/PCXT-EGA_MiSTer
-                (the dump is stored byte-reversed; the script handles that).
+                under copyright, so no core can ship it. Make it yourself:
+                1. Download the raw dump (16,384 bytes) in a browser:
+                   https://minuszerodegrees.net/rom/bin/ibm_6277356_ega_card_u44_27128.bin
+                   (listed at https://minuszerodegrees.net/rom/rom.htm as
+                   IBM / EGA / U44).
+                2. Reverse its byte order - the dump is stored back to front.
+                   python3 -c "open('ega_bios.rom','wb').write(open('ibm_6277356_ega_card_u44_27128.bin','rb').read()[::-1])"
+                   or the upstream script SW/ROMs/EGA/make_ega_bios_rom.py
+                   from https://github.com/MiSTer-devel/PCXT-EGA_MiSTer,
+                   which downloads and reverses in one step.
+                3. The result begins with bytes 55 AA 20 and has MD5
+                   528455ed0b701722c166c6536ba4ff46. Put it here.
                 Without it the core stops at the boot splash and says so.
 
   roms/         Every system BIOS option, with its own README. Nothing here is
