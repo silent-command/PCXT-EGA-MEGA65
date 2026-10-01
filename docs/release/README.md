@@ -179,6 +179,10 @@ The card is ready as shipped, apart from one file. In `/pcxt` you will find:
 * **`freedos.vhd`**, a bootable FreeDOS hard disk with the drivers this machine
   wants: CTMOUSE for the mouse, LTEMM for the 2 MB of EMS, USE!UMBS, and the
   core's own `VGATSR.COM` and `XTEGACTL.COM`. Mount it under "Hard Disk".
+  It also runs `FASTFREE.COM` at boot, which counts the free clusters in
+  well under a second; without it FreeDOS does that count itself the first
+  time anything asks for "bytes free", one cluster at a time, and the first
+  `dir` after boot stalls for about 40 seconds at 4.77 MHz.
 * **`netdisk.img`** for networking and **`joytest.img`** for the game port.
 
 ## The R3 core
@@ -221,6 +225,16 @@ Those are separate copyrighted works by their authors, so they are not here;
 find them through [pouet.net](https://www.pouet.net/) and
 [scene.org](https://www.scene.org/) under their own names. They are worth
 seeing: this machine runs them as real hardware does.
+
+The one addition is `C:\FASTFREE.COM` (source in `tools/fastfree/` of the
+repository), run from `FDAUTO.BAT`. FreeDOS kernel 2043 computes "bytes free"
+the first time it is asked by walking the FAT one cluster at a time through
+its generic cluster code - two 32-bit divisions per entry - which on a 4.77 MHz
+8088 is about 38 seconds for this image's 21,722 clusters. FASTFREE does the
+same count in a tight loop and stores it where the kernel keeps it, so the
+first `dir` is as quick as every later one. If you build your own image, copy
+it over and add `C:\FASTFREE.COM C:` to your `FDAUTO.BAT`; it only acts on
+FAT16 drives whose count is not yet known, and does nothing otherwise.
 
 Any raw image with an MBR works, so your own FreeDOS installation is fine too.
 The core reads the geometry from the partition table.

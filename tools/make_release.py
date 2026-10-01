@@ -14,7 +14,10 @@ Produces release/PCXT-EGA-MEGA65-<version>/ containing
   pcxt/roms/               every system BIOS option, with a README
   pcxt/pcxt.rom            the default BIOS (8088 BIOS) already in place
   pcxt/xtide.rom           the XTIDE option ROM that goes with it
-  pcxt/freedos.vhd         only with --hd-image FILE or --with-hd-image
+  pcxt/freedos.vhd         only with --hd-image FILE (the master is
+                           ../freedos-clean.vhd: upstream image cleaned with
+                           clean-hd-image.py plus FASTFREE.COM, see
+                           tools/fastfree) or --with-hd-image
   README.md                installation, menu, keyboard, limitations
   LICENSE, VERSION.txt
 and release/PCXT-EGA-MEGA65-<version>.zip.

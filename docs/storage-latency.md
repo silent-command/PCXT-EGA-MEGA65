@@ -749,3 +749,42 @@ first written compared blocks 4 and 6 of the test image, which are
 byte-identical (the generator patterns the first eight sectors the same way),
 so it passed with the protection removed. It now compares the `MARK20000`
 sector against the `00..FF` patterned one.
+
+## The first `dir`, fixed - 2026-09-30
+
+"What it actually was" above left one number unexplained: a first `dir`
+costs ~40 s but only reads ~87 sectors. Reading the kernel source settles it.
+FreeDOS kernel 2043 (the build in `freedos.vhd` is the FAT32-capable one, so
+`CLUSTER` is 32 bits) computes "bytes free" in `dos_free()`
+(`kernel/fatfs.c`) only when `dpb_nfreeclst` is still `UNKNCLSTFREE`, by
+calling `is_free_cluster()` once per cluster, 2..`dpb_size`. That is
+`link_fat()` in `kernel/fattab.c`: range checks, a 32-bit `%` and a 32-bit
+`/` by the entries-per-sector (software routines on an 8088), then
+`getFATblock()` -> `getblock()` -> `searchblock()`, a far-pointer walk of the
+buffer chain that hits at the head. Roughly 8,000 cycles per entry; the image
+has 21,722 clusters of 2 KB; 21,722 x 8,000 = 174 M cycles = 36 s at
+4.77 MHz. That is the whole stall, and it halves at "Max" exactly as the boot
+time does. The core is not involved: a real XT running this kernel on this
+image would behave the same. Larger clusters would help only in proportion,
+and FAT16 cannot have fewer than 4,085 of them.
+
+The fix is `tools/fastfree/` - `FASTFREE.COM`, 614 bytes, GNU `as` with
+`.code16` (there is no nasm on this machine; `build.sh`). It gets the DPB with
+INT 21h/32h, refuses anything that is not FAT16 by the kernel's own test
+(highest cluster in 4086..65525) or whose count is already known, reads the
+FAT with INT 25h in the packet form 8 sectors at a time, counts zero words
+for clusters 2..`dpb_size`, and stores the count at `DPB+1Fh`
+(`dpb_nfreeclst`) and the first free cluster at `DPB+1Dh` (`dpb_cluster`),
+exactly what `dos_free()` would have stored. `FDAUTO.BAT` runs it before
+`MEM`. `tools/fat16-put.py` puts files into the root directory of the image
+(both FAT copies, replace-in-place); the master image `freedos-clean.vhd`
+carries both now.
+
+Hardware, 2026-09-30: boot prints `FASTFREE: 21196 free clusters cached for
+C:`, the first `dir` returns immediately with 43,409,408 bytes free
+(21,196 x 2,048), and a `copy` drops it to 43,407,360, i.e. the kernel keeps
+maintaining the seeded count. Two things to remember from getting there: GNU
+`as` silently emits 386 `0F 8x` near conditional jumps when a target is out of
+short range - `.arch i8086` makes that an error, and the fix is a `jmp`
+trampoline - and a `.data` section linked with `--oformat binary` lands at the
+start of the file unless everything is kept in one section.
