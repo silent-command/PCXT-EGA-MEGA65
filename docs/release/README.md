@@ -163,9 +163,11 @@ lacks:
   moves opposite to your hand, your adapter counts the other way round from a
   real 1351 and `G_POT_INVERTED` in main.vhd flips it. See docs/mouse.md.
 - One hard disk image at a time; the second SD card slot is not used.
-- With the default `pcxt.rom` the optional `/pcxt/xtide.rom` is not needed:
-  XTIDE is inside `pcxt.rom`. The startup log line "LOADING ROM #0002: FAILED"
-  refers to it and is harmless.
+- Keep `/pcxt/xtide.rom` next to the default `pcxt.rom`: the 8088 BIOS has no
+  hard disk support of its own and gets it from that file. Only if you switch
+  to the Turbo XT BIOS (`pcxt/roms/README.txt`), which has XTIDE built in, is
+  `xtide.rom` unnecessary; delete it then, and the startup log line
+  "LOADING ROM #0002: FAILED" that follows is harmless.
 
 ## What is already set up for you
 
