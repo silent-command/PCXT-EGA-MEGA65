@@ -5,7 +5,7 @@
 
 The image is an MBR disk whose first partition is FAT16 (the layout of
 pcxt/freedos.vhd). An existing entry of the same name is replaced: its
-cluster chain is freed and the new data is written to free clusters. Both
+cluster chain is freed and zeroed and the new data is written to free clusters. Both
 FAT copies are updated. Names are 8.3, upper case, no long names.
 """
 import struct
@@ -77,6 +77,10 @@ def main():
                 while 2 <= c < 0xFFF8:
                     nxt = get(c)
                     put(c, 0)
+                    # deleting in FAT leaves the bytes behind: wipe them, the
+                    # image is going to be redistributed
+                    f.seek((data + (c - 2) * spc) * bps)
+                    f.write(b"\0" * csize)
                     freed += 1
                     c = nxt
                 print("%s: replaced (%d clusters freed)" % (name, freed))
