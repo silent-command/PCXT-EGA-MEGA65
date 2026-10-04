@@ -25,7 +25,12 @@
 #                time, assert the framework's hr_rst and the CPU reset together (as the button does; RAM.sv/
 #                KFSDRAM are not reset), release, and require the BIOS to POST again. Prints "BUTTON RESULT".
 #                e.g. -Button 2500000 (during the low RAM test). Ends the run right after the verdict.
-param([string]$Bios = "", [int]$Speed = 3, [int]$RamKB = 64, [switch]$Repro, [switch]$NoPatch, [switch]$NoCompile, [int]$Ring = 512, [switch]$FullLowTest, [switch]$Trace, [switch]$Model, [int]$CycFrom = 0, [int]$CycTo = 0, [string]$Work = 'ramtest_sys_tb', [int]$Button = 0)
+#   -ButtonFull  with -Button: do not stop when POST comes back, run on until the RAM test of that second POST has
+#                its verdict and require it to pass with no read mismatch and no dropped write (the R3 report:
+#                "faulty memory detected" after a reset).
+#   -ButtonMode  0 = press with a HyperRAM read in flight (default), 1 = right after a write was accepted,
+#                2 = exactly at the given time.
+param([string]$Bios = "", [int]$Speed = 3, [int]$RamKB = 64, [switch]$Repro, [switch]$NoPatch, [switch]$NoCompile, [int]$Ring = 512, [switch]$FullLowTest, [switch]$Trace, [switch]$Model, [int]$CycFrom = 0, [int]$CycTo = 0, [string]$Work = 'ramtest_sys_tb', [int]$Button = 0, [int]$ButtonMode = 0, [switch]$ButtonFull)
 $ErrorActionPreference = 'Continue'
 $vivado = 'C:\AMDDesignTools\2026.1\Vivado'
 $bin    = "$vivado\bin"
@@ -122,6 +127,8 @@ if ($FullLowTest) { $plus += @('-testplusarg', 'FULLLOWTEST') }
 if ($Trace)       { $plus += @('-testplusarg', 'TRACE') }
 if ($CycTo -gt 0) { $plus += @('-testplusarg', "`"CYCFROM=$CycFrom`"", '-testplusarg', "`"CYCTO=$CycTo`"") }
 if ($Button -gt 0) { $plus += @('-testplusarg', "`"BUTTON=$Button`"") }
+if ($Button -gt 0 -and $ButtonMode -gt 0) { $plus += @('-testplusarg', "`"BUTTONMODE=$ButtonMode`"") }
+if ($ButtonFull) { $plus += @('-testplusarg', 'BUTTONFULL') }
 $log = "run_$Speed" + $(if ($Repro) { '_repro' } else { '' }) + '.log'
 & "$bin\xsim.bat" ramtest_sys_sim -R @plus 2>&1 | Tee-Object -FilePath $log |
-    Select-String -Pattern 'RESULT|---|CYC |\*\*\*|CHECK FAILED|observations|running|patch|loaded|reset|OUT 80h|memory_size|started|VERDICT|MISMATCH|^\s+\d+:' | ForEach-Object { $_.Line }
+    Select-String -Pattern 'RESULT|---|BUTTON|CYC |\*\*\*|CHECK FAILED|observations|running|patch|loaded|reset|OUT 80h|memory_size|started|VERDICT|MISMATCH|^\s+\d+:' | ForEach-Object { $_.Line }

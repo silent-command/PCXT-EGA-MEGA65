@@ -17,7 +17,8 @@ use ieee.numeric_std.all;
 entity ramtest_mem_model is
    generic (
       G_SEED : positive := 1;
-      G_REAL : integer  := 1
+      G_REAL : integer  := 1;
+      G_BIST : integer  := 0     -- 1: the self test of mem_backend after every reset, as on the core (mem_reset_stress_tb)
    );
    port (
       clk_i               : in  std_logic;
@@ -96,7 +97,7 @@ begin
          G_HR_BASE    => to_unsigned(C_HR_BASE, 32),
          G_CACHE      => false,
          G_CACHE_SIZE => 8,
-         G_BIST       => false
+         G_BIST       => G_BIST /= 0
       )
       port map (
          clk_i               => clk_i,

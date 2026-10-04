@@ -505,7 +505,13 @@ begin
    begin
       if rising_edge(clk_i) then
          v_push  := (hyper_accept and avm_read_i) = '1';          -- never while rst_all
-         v_real  := s_readdatavalid = '1' and bist_active = '0';
+         -- An answer that arrives while rst_all is high belongs to a read the reset killed:
+         -- it was on its way through the FIFO when the reset came. That read is drained by
+         -- v_flush, so the late answer must not be counted as well - it took out_count below
+         -- zero, and the drain then ran on for as long as the reset lasted (mem_reset_stress_tb,
+         -- G_BIST = false). With G_BIST the self test goes active with the reset and masked
+         -- such answers already; this makes it independent of the self test.
+         v_real  := s_readdatavalid = '1' and bist_active = '0' and rst_all = '0';
          -- reset with reads outstanding: answer them with dummy beats, one per clock
          v_flush := rst_all = '1' and out_count /= 0 and not v_real;
          v_pop   := v_real or v_flush;
@@ -544,7 +550,7 @@ begin
    dbg_hwr_o <= bist_fadr;                                -- first mismatch: byte address (15..0)
 
    -- the oldest outstanding read is at index out_count-1 (shift register)
-   avm_readdatavalid_o <= rom_valid_q or none_q or flush_valid or (s_readdatavalid and not bist_active);
+   avm_readdatavalid_o <= rom_valid_q or none_q or flush_valid or (s_readdatavalid and not bist_active and not rst_all);
    avm_readdata_o <= q_ega   when rom_valid_q = '1' and sel_q(0) = '1' else
                      q_xtide when rom_valid_q = '1' and sel_q(1) = '1' else
                      q_bios  when rom_valid_q = '1' and sel_q(2) = '1' and bios_ok_q = '1' else

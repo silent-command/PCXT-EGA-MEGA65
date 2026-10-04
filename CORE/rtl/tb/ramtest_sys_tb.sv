@@ -57,10 +57,14 @@ module ramtest_sys_tb;
     integer     speed_arg  = 0;
     integer     ram_kb     = 64;
     integer     button_at  = 0;
+    integer     button_mode = 0;      // BUTTONMODE: 0 = with a HyperRAM read in flight, 1 = right after a write was accepted, 2 = at the given time, whatever is going on
+    logic       button_full = 1'b0;   // BUTTONFULL: keep running after the button until the RAM test of the second POST has its verdict
     initial begin
         if ($value$plusargs("SPEED=%d", speed_arg)) clk_select = speed_arg[1:0];
         if (!$value$plusargs("RAMKB=%d", ram_kb)) ram_kb = 64;
         if (!$value$plusargs("BUTTON=%d", button_at)) button_at = 0;
+        if (!$value$plusargs("BUTTONMODE=%d", button_mode)) button_mode = 0;
+        button_full = $test$plusargs("BUTTONFULL");
     end
     wire [21:0] ram_limit = ram_kb * 1024;
 
@@ -714,6 +718,7 @@ module ramtest_sys_tb;
         #3000; reset = 1'b0;
         $display("  [%0t] reset released", $time);
 
+        if (button_full) wait (0);                 // the button scenario ends the run
         fork
             wait (verdict_fail || verdict_pass || verdict_lowfail);
             #3000ms;
@@ -742,22 +747,37 @@ module ramtest_sys_tb;
     // pcxt_core `reset` arrive within ~100 ns of each other; both stay for the press + 50 ms, the
     // CPU comes back 1.31 ms (the `reset` stretch) after the backend. Here: 100 us / 10 us.
     integer post_before = 0;
+    integer mism_before = 0, drop_before = 0;
     initial begin
         if (button_at > 0) begin
             #(button_at * 1ns);
             // press at a moment with a HyperRAM read accepted and not yet answered (ROM reads answer
             // in one clock, so "outstanding for 4 clocks" means a HyperRAM read is in flight)
-            forever begin
-                @(posedge clk);
-                if (hr_outstanding > 0) begin
-                    repeat (3) @(posedge clk);
-                    if (hr_outstanding > 0) break;
+            if (button_mode == 0)
+                forever begin
+                    @(posedge clk);
+                    if (hr_outstanding > 0) begin
+                        repeat (3) @(posedge clk);
+                        if (hr_outstanding > 0) break;
+                    end
                 end
-            end
+            else if (button_mode == 1)
+                // right after the backend accepted a write: it is on its way through the FIFO,
+                // the cache and the HyperRAM controller when the reset arrives
+                forever begin
+                    @(posedge clk);
+                    if (avm_write & ~hole & ~m_waitrequest) break;
+                end
+            // button_mode 2: now
             $display("  [%0t] RESET BUTTON pressed: hr_rst_i + CPU reset (KFSDRAM state %0d, reads outstanding %0d, POST codes so far %0d, last %02x)",
                      $time, u_RAM.u_KFSDRAM.state, hr_outstanding, post_codes, last_post);
             hr_button = 1'b1;
             reset     = 1'b1;
+            if (button_full) begin
+                for (int i = 0; i < 1048576; i++) written[i] = 1'b0;
+                in_test = 1'b0; verdict_fail = 1'b0; verdict_pass = 1'b0; verdict_lowfail = 1'b0;
+                mism_before = mismatches; drop_before = dropped_writes;
+            end
             #100us;
             hr_button = 1'b0;
             $display("  [%0t] RESET BUTTON released: hr_rst_i low (KFSDRAM state %0d, reads outstanding %0d)",
@@ -773,10 +793,39 @@ module ramtest_sys_tb;
             disable fork;
             $display("  [%0t] after the button: KFSDRAM state %0d (1=IDLE 4=READ_ISSUE), RAM.sv state %0d, reads outstanding %0d, POST codes since %0d (last %02x)",
                      $time, u_RAM.u_KFSDRAM.state, u_RAM.state, hr_outstanding, post_codes - post_before, last_post);
-            if (post_codes >= post_before + 2)
-                $display("BUTTON RESULT: PASS (the BIOS POSTs again after the reset button)");
-            else
+            if (!button_full) begin
+                if (post_codes >= post_before + 2)
+                    $display("BUTTON RESULT: PASS (the BIOS POSTs again after the reset button)");
+                else
+                    $display("BUTTON RESULT: FAIL (no POST after the reset button: the CPU is hung on its first RAM access)");
+                $finish;
+            end
+            // BUTTONFULL: the second POST must get through its whole RAM test. This is the R3 field
+            // report ("faulty memory detected at 592" after a reset): POST comes back, but a read during
+            // the test returns something else than what was written. The verdict flags were cleared
+            // at the press (below), so they now describe the second POST only, and `written` was
+            // cleared too: a write that RAM.sv accepted and the reset then threw away must not count
+            // against a later read, only what is written after the button does.
+            if (post_codes < post_before + 2) begin
                 $display("BUTTON RESULT: FAIL (no POST after the reset button: the CPU is hung on its first RAM access)");
+                $finish;
+            end
+            fork
+                wait (verdict_fail || verdict_pass || verdict_lowfail);
+                #3000ms;
+            join_any
+            disable fork;
+            #200us;
+            $display("--- after the button: read mismatches=%0d dropped writes=%0d (before the button %0d / %0d) POST codes=%0d last=%02x in_test=%0d",
+                     mismatches - mism_before, dropped_writes - drop_before, mism_before, drop_before, post_codes - post_before, last_post, in_test);
+            if (verdict_fail || verdict_lowfail || mismatches != mism_before) ring_dump("state at the verdict after the button");
+            if (verdict_pass && !verdict_fail && !verdict_lowfail && mismatches == mism_before && dropped_writes == drop_before)
+                $display("BUTTON RESULT: PASS (POST again and the RAM test after the button passed: no read mismatch, no dropped write)");
+            else if (!(verdict_pass || verdict_fail || verdict_lowfail))
+                $display("BUTTON RESULT: FAIL (no RAM test verdict within 3 s after the reset button)");
+            else
+                $display("BUTTON RESULT: FAIL (RAM test after the button: pass=%0d faulty=%0d lowfail=%0d, %0d read mismatches, %0d dropped writes)",
+                         verdict_pass, verdict_fail, verdict_lowfail, mismatches - mism_before, dropped_writes - drop_before);
             $finish;
         end
     end
