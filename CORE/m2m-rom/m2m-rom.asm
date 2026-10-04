@@ -37,6 +37,9 @@
 ; PCXT-EGA: the MEGA65's internal 3.5" floppy drive as A: (docs/floppy.md)
 #include "flpdrv.asm"
 
+; PCXT-EGA: remember the hard disk image across restarts (/m2m/hdmount)
+#include "hdmount.asm"
+
 ; ----------------------------------------------------------------------------
 ; Firmware: Main Code
 ; ----------------------------------------------------------------------------
@@ -124,6 +127,7 @@ PREP_START      INCRB
                 RSUB    DBG_CORE_STATUS, 1
                 RSUB    ETH_SET_MAC, 1          ; station address for the NE1000
                 RSUB    FLP_INIT, 1             ; internal floppy drive, if the toggle is on
+                RSUB    HDM_INIT, 1             ; mount the remembered hard disk image (hdmount.asm)
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
@@ -437,6 +441,7 @@ END_OF_ROM      .DW 0
 ; add your own variables here
 ;
 #include "flpdrv_vars.asm"
+#include "hdmount_vars.asm"
 
 ; M2M Shell variables (only include, if you included "shell.asm" above)
 #include "../../M2M/rom/shell_vars.asm"

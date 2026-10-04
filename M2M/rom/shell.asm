@@ -585,6 +585,9 @@ _HM_SDMOUNTED6A MOVE    R9, R6                  ; R6: disk image type
                 MOVE    R7, R8
                 SYSCALL(puthex, 1)
                 SYSCALL(crlf, 1)
+                MOVE    R7, R8                  ; PCXT-EGA: hdmount.asm: remember..
+                MOVE    R2, R9                  ; ..the hard disk image (R2: name)
+                RSUB    HDM_MOUNTED, 1
                 RBRA    _HM_SDMOUNTED7, 1
 
                 ; We successfully loaded a manually loadable CRT/ROM and need
@@ -640,6 +643,7 @@ _HM_MOUNTED_C   CMP     OPTM_KEY_SELALT, R6
                 XOR     R11, R11                ; 0=read/write disk
                 XOR     R12, R12
                 RSUB    VD_STROBE_IM, 1
+                RSUB    HDM_UNMOUNTED, 1        ; PCXT-EGA: hdmount.asm (R8: drive)
                 RBRA    _HM_SDMOUNTED7, 1       ; redraw menu and exit
 
                 ; Make sure the current drive stays selected in M2M$CFM_DATA.
@@ -964,6 +968,9 @@ HANDLE_IO       SYSCALL(enter, 1)
                 ; PCXT-EGA: the internal floppy drive's background work
                 ; (disk probing / detection, CORE/m2m-rom/flpdrv.asm)
                 RSUB    FLP_POLL, 1
+
+                ; PCXT-EGA: hdmount.asm: write /m2m/hdmount when a change is due
+                RSUB    HDM_POLL, 1
 
                 ; Ensure data integrity by preventing random writes to random
                 ; SD cards when remembering on-screen-menu settings

@@ -64,7 +64,8 @@ _S_START        MOVE    M2M$RAMROM_DEV, R9
 
                 ; load sorted directory list into memory
                 MOVE    HANDLE_DEV, R8
-_S_CD_AND_READ  MOVE    FB_HEAP, R10            ; start address of heap
+_S_CD_AND_READ  RSUB    HDM_CD, 1               ; PCXT-EGA: hdmount.asm tracks R9
+                MOVE    FB_HEAP, R10            ; start address of heap
                 MOVE    @R10, R10
                 MOVE    HEAP_SIZE, R11          ; maximum memory available
                                                 ; for storing the linked list
@@ -81,6 +82,7 @@ _S_CD_AND_READ  MOVE    FB_HEAP, R10            ; start address of heap
                 ; default path not found, try root instead
 _S_ERR_PNF      ADD     1, SP                   ; see comment in shell.asm
                 MOVE    FN_ROOT_DIR, R9         ; try root
+                RSUB    HDM_CD, 1               ; PCXT-EGA: hdmount.asm tracks R9
                 MOVE    FB_HEAP, R10
                 MOVE    @R10, R10
                 MOVE    HEAP_SIZE, R11

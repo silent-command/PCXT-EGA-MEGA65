@@ -140,6 +140,39 @@ for k in range(NFAT):                       # re-write the FATs, link() above
 mkent(128, 'TESTROM', 'BIN', 0x20, ROM_RUNS[0][0], ROM_BYTES)
 mkent(160, 'SMALL', 'BIN', 0x20, SMALL_RUNS[0][0], SMALL_BYTES)
 mkent(192, 'EXACT', 'BIN', 0x20, EXACT_RUNS[0][0], EXACT_BYTES)
+# ---- /M2M/HDMOUNT and /PCXT/FREEDOS.VHD for the hdmount bench
+#      (CORE/m2m-rom/hdmount.asm): two subdirectories, the 128-byte file the
+#      firmware rewrites, and the big image again under a nested path (same
+#      clusters as /FREEDOS.VHD, which is fine for a card that is only read)
+DIR_M2M, DIR_PCXT, HDM_CL = 1990, 1991, 1992
+HDM_BYTES = 128
+assert HDM_CL <= N+1
+for c in (DIR_M2M, DIR_PCXT, HDM_CL):
+    setf(c, 0x0FFFFFFF)
+for k in range(NFAT):
+    f.seek((PSTART+RSVD+k*FATSZ)*BPS); f.write(fat)
+def dirent(name, ext, attr, clus, size):
+    e = bytearray(32)
+    e[0:8] = name.ljust(8).encode()
+    e[8:11] = ext.ljust(3).encode()
+    e[11] = attr
+    struct.pack_into('<H', e, 20, (clus>>16)&0xFFFF)
+    struct.pack_into('<H', e, 26, clus & 0xFFFF)
+    struct.pack_into('<I', e, 28, size)
+    return e
+def subdir(clus, entries):
+    d = bytearray(SPC*BPS)
+    d[0:32]  = dirent('.',  '', 0x10, clus, 0)
+    d[32:64] = dirent('..', '', 0x10, 0, 0)
+    for i, e in enumerate(entries):
+        d[64+32*i:96+32*i] = e
+    f.seek((datalba + (clus-2)*SPC)*BPS); f.write(d)
+subdir(DIR_M2M,  [dirent('HDMOUNT', '', 0x20, HDM_CL, HDM_BYTES)])
+subdir(DIR_PCXT, [dirent('FREEDOS', 'VHD', 0x20, 3, FILE_BYTES)])
+f.seek((datalba + (HDM_CL-2)*SPC)*BPS); f.write(bytes(SPC*BPS))
+mkent(224, 'M2M',  '', 0x10, DIR_M2M,  0)
+mkent(256, 'PCXT', '', 0x10, DIR_PCXT, 0)
+print("hdmount file at abs LBA", datalba + (HDM_CL-2)*SPC)
 f.seek(datalba*BPS); f.write(rd)
 
 # ---- file content: byte i = i & 0xFF, only first few sectors + markers

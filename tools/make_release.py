@@ -8,6 +8,8 @@ Produces release/PCXT-EGA-MEGA65-<version>/ containing
   pcxt-ega-r6.cor          the core for a MEGA65 R6 (tested)
   pcxt-ega-r3.cor          the same core for an R3 (untested, see the README)
   m2m/m2mcfg               settings file (OPTM_SIZE bytes of 0xFF = defaults)
+  m2m/hdmount              where the core remembers the hard disk image (128
+                           zero bytes = nothing remembered, docs/hd-mount-memory.md)
   pcxt/README.txt          what else goes into /pcxt and where to get it
   pcxt/joytest.img         JOYTEST.COM + SETJOY.COM (game port test, BIOS bit)
   pcxt/netdisk.img         NE1000 packet driver + mTCP: NET.BAT, DHCP, FTP...
@@ -94,6 +96,8 @@ def main():
     else:
         print(f"note: no R3 core at {cor_r3}, packaging R6 only")
     (rel / "m2m" / "m2mcfg").write_bytes(b"\xff" * optm_size())
+    # the firmware can rewrite this file but not create it (hdmount.asm)
+    (rel / "m2m" / "hdmount").write_bytes(bytes(128))
 
     # Every system BIOS in one place, and the default already in position so the
     # card works as shipped. The default is the 8088 BIOS with the XTIDE option

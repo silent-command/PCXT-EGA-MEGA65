@@ -39,6 +39,9 @@ tools/vdrive-latency-bench/*.img
 tools/vdrive-latency-bench/qasm
 tools/vdrive-latency-bench/qnice
 tools/vdrive-latency-bench/_pp.asm
+tools/vdrive-latency-bench/_pp_hdm.asm
+tools/vdrive-latency-bench/sd.layout
+tools/vdrive-latency-bench/hdmount_bench.txt
 tools/vdrive-latency-bench/*.out
 tools/vdrive-latency-bench/*.rom
 xvhdl.pb

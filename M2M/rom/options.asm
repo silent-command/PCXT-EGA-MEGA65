@@ -199,6 +199,7 @@ _HLP_HEAP1_OK   MOVE    MENU_HEAP_SIZE, R8
 
                 ; run the menu
 _HLP_HEAP2_OK   RSUB    ROSM_REM_OLD, 1         ; remember current settings
+                RSUB    HDM_MENU_OPEN, 1        ; PCXT-EGA: hdmount.asm: name of an auto-mounted image
                 RSUB    OPTM_SHOW, 1            ; fill VRAM
                 RSUB    SCR$OSM_O_ON, 1         ; make overlay visible
                 MOVE    OPTM_SELECTED, R9       ; use recently selected line
@@ -358,6 +359,8 @@ _HLP_CA_1       MOVE    LOG_STR_CFG_ON, R8
 
                 MOVE    LOG_STR_CFG_E1, R8      ; cannot mount
                 SYSCALL(puts, 1)
+                MOVE    CONFIG_DEVH, R8         ; PCXT-EGA: an unmounted handle reads as 0,..
+                MOVE    0, @R8                  ; ..like HANDLE_DEV (hdmount.asm, SDB_ORPHAN)
                 RBRA    _HLP_STDSEL, 1          ; use factory defaults
 
                 ; Open config file

@@ -28,6 +28,10 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
    the "A: internal drive" line and the file must match its size, otherwise the
    core logs "corrupt config file" and stops saving settings (nothing else
    breaks).
+   `m2m/hdmount` is where the core remembers your hard disk image (step 4).
+   Copy it once; without it the core works as before and simply does not
+   remember. Copying a release's fresh `hdmount` over yours later only makes
+   the core forget the image until you mount it again.
 3. Put **`ega_bios.rom`** into `/pcxt`. It is the one file this package cannot
    include, the core will not start without it, and it is free to obtain: see
    "The one file you have to supply" below. Everything else, including a
@@ -35,6 +39,12 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
 4. Start the core. Press **Space** on the welcome screen. Press **Help**,
    mount your hard disk image under "Hard Disk", close the menu, press
    **Ctrl+Alt+Del**. XTIDE lists the drive and boots it.
+
+   You do this once. The core remembers the image, and from the next start it
+   mounts it by itself and the PC boots from it as soon as you leave the
+   welcome screen. Ejecting the hard disk in the menu makes it forget. Floppy
+   images are not remembered, on purpose: a PC tries A: first, and a boot
+   floppy left mounted would win over the hard disk on every start.
 
 Floppy images (`.img` or `.ima`, 160 KB to 1.44 MB raw) mount under "Drive A"
 and "Drive B" at any time, also while DOS is running. A bootable floppy image
@@ -54,7 +64,8 @@ XTIDE boot menu (F2) otherwise.
 | Network | NE1000 Ethernet card at port 320h: Off / IRQ 5 (default) / IRQ 7 |
 | HDMI: CRT emulation, Zoom-in, Audio improvements | framework video and audio options |
 
-Settings are saved when the menu closes, if `/m2m/m2mcfg` exists.
+Settings are saved when the menu closes, if `/m2m/m2mcfg` exists. The hard
+disk image is remembered separately, in `/m2m/hdmount`.
 
 ## The internal floppy drive
 
