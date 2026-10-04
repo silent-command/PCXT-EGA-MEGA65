@@ -17,8 +17,9 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
    while powering on, pick an empty slot, choose the file from the SD card.
    * **`pcxt-ega-r6.cor`** for a MEGA65 R6. This is the one that is developed
      and tested on real hardware.
-   * **`pcxt-ega-r3.cor`** for an R3. Identical design, built for that board,
-     but **never run on one** - see "The R3 core" below before you try it.
+   * **`pcxt-ega-r3.cor`** for an R3. Identical design, built for that board.
+     One R3 owner reports that it boots and runs, with one open issue - see
+     "The R3 core" below.
 
    The files are stamped for their board, so the MEGA65 will refuse the wrong
    one rather than flash it.
@@ -200,20 +201,27 @@ The card is ready as shipped, apart from one file. In `/pcxt` you will find:
 
 ## The R3 core
 
-`pcxt-ega-r3.cor` is the same design built for the MEGA65 R3. It compiles and
-meets timing, and that is all anyone can honestly say about it: **it has never
-been run on an R3.** All development and testing happens on an R6.
+`pcxt-ega-r3.cor` is the same design built for the MEGA65 R3. All development
+and testing happens on an R6. What is known about the R3 comes from **one
+owner's report** (of v0.13): the core starts, the PC boots and DOS runs from
+the hard disk image. So video, keyboard, SD card and memory work on that board.
 
-There is reason for optimism. Every MEGA65 revision uses the same FPGA, and the
-R3 already maps every pin this core needs, so nothing had to be invented. What
-differs is the board around it, so the parts most likely to misbehave are the
-ones touching real hardware: the internal floppy drive, the Ethernet port and
-the analog VGA output. The CPU, memory, video and sound all live inside the
-FPGA and should behave exactly as on an R6.
+The same report has one problem that an R6 does not show. After mounting the
+hard disk and pressing Ctrl+Alt+Del, the first DOS boot stopped right after the
+FreeCom banner; a second Ctrl+Alt+Del then booted normally. It is not
+understood yet. This release changes the path it happened on - the hard disk is
+now mounted before the PC first starts, and the DOSMAX driver is no longer
+loaded - but whether that cures it is not known. If you see it, a second
+Ctrl+Alt+Del gets you going.
 
-If you try it, reports are welcome either way, and especially on those three.
-Nothing it does can harm the machine: a core slot is rewritable and the MEGA65
-boots from slot 0 regardless.
+Still untested on an R3 are the parts that touch the board around the FPGA: the
+internal floppy drive, the Ethernet port and the analog VGA output. Every
+MEGA65 revision uses the same FPGA, and the R3 already maps every pin this core
+needs, so nothing had to be invented for it.
+
+Reports are welcome either way, and especially on those three and on the hang
+above. Nothing the core does can harm the machine: a core slot is rewritable
+and the MEGA65 boots from slot 0 regardless.
 
 ## The one file you have to supply
 
@@ -260,6 +268,14 @@ same count in a tight loop and stores it where the kernel keeps it, so the
 first `dir` is as quick as every later one. If you build your own image, copy
 it over and add `C:\FASTFREE.COM C:` to your `FDAUTO.BAT`; it only acts on
 FAT16 drives whose count is not yet known, and does nothing otherwise.
+
+Two lines of its `FDCONFIG.SYS` differ from the MiSTer image as well. It says
+`DOS=UMB` instead of `DOS=HIGH,UMB`: an 8088 cannot reach the high memory area,
+and the kernel said so with "HMA not enabled" on every boot. And it no longer
+loads DOSMAX, a utility for MS-DOS and DR-DOS that can do nothing with the
+FreeDOS kernel and only printed a warning; FreeDOS moves its data into upper
+memory by itself (`DOSDATA=UMB`). Free memory is unchanged, 516K conventional
+and 38K upper.
 
 Any raw image with an MBR works, so your own FreeDOS installation is fine too.
 The core reads the geometry from the partition table.

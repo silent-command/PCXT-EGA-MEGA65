@@ -6,7 +6,7 @@ Usage:  python3 tools/make_release.py [--version vX.Y] [--cor out/pcxt-ega-r6.co
 
 Produces release/PCXT-EGA-MEGA65-<version>/ containing
   pcxt-ega-r6.cor          the core for a MEGA65 R6 (tested)
-  pcxt-ega-r3.cor          the same core for an R3 (untested, see the README)
+  pcxt-ega-r3.cor          the same core for an R3 (one field report, see the README)
   m2m/m2mcfg               settings file (OPTM_SIZE bytes of 0xFF = defaults)
   m2m/hdmount              where the core remembers the hard disk image (128
                            zero bytes = nothing remembered, docs/hd-mount-memory.md)
