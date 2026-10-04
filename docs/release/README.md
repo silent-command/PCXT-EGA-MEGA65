@@ -18,7 +18,7 @@ MEGA65 port by silent-command. GPL v3, see LICENSE.
    * **`pcxt-ega-r6.cor`** for a MEGA65 R6. This is the one that is developed
      and tested on real hardware.
    * **`pcxt-ega-r3.cor`** for an R3. Identical design, built for that board.
-     One R3 owner reports that it boots and runs, with one open issue - see
+     One R3 owner reports that it boots and runs, with two open issues - see
      "The R3 core" below.
 
    The files are stamped for their board, so the MEGA65 will refuse the wrong
@@ -206,21 +206,25 @@ and testing happens on an R6. What is known about the R3 comes from **one
 owner's report** (of v0.13): the core starts, the PC boots and DOS runs from
 the hard disk image. So video, keyboard, SD card and memory work on that board.
 
-The same report has one problem that an R6 does not show. After mounting the
-hard disk and pressing Ctrl+Alt+Del, the first DOS boot stopped right after the
-FreeCom banner; a second Ctrl+Alt+Del then booted normally. It is not
-understood yet. This release changes the path it happened on - the hard disk is
-now mounted before the PC first starts, and the DOSMAX driver is no longer
-loaded - but whether that cures it is not known. If you see it, a second
-Ctrl+Alt+Del gets you going.
+The same owner reports two problems that an R6 does not show (both with
+v0.13.1). After mounting the hard disk and pressing Ctrl+Alt+Del, the first DOS
+boot stopped right after the FreeCom banner; a second Ctrl+Alt+Del then booted
+normally. And sometimes, after a soft reset but not after a clean start, the
+BIOS memory test stops with "faulty memory detected". Neither is understood
+yet. The reset logic has since been put through thousands of simulated resets
+without finding a fault that would explain it, and the timing constraints were
+checked against the R3's memory chip, so the suspicion is on that one board's
+hardware; more reports would settle it. Since v0.14 the hard disk is mounted
+before the PC first starts and DOSMAX is no longer loaded, which changes the
+path of the first problem. If you see either, reset again.
 
 Still untested on an R3 are the parts that touch the board around the FPGA: the
 internal floppy drive, the Ethernet port and the analog VGA output. Every
 MEGA65 revision uses the same FPGA, and the R3 already maps every pin this core
 needs, so nothing had to be invented for it.
 
-Reports are welcome either way, and especially on those three and on the hang
-above. Nothing the core does can harm the machine: a core slot is rewritable
+Reports are welcome either way, and especially on those three and on the two
+problems above. Nothing the core does can harm the machine: a core slot is rewritable
 and the MEGA65 boots from slot 0 regardless.
 
 ## The one file you have to supply
@@ -276,6 +280,14 @@ loads DOSMAX, a utility for MS-DOS and DR-DOS that can do nothing with the
 FreeDOS kernel and only printed a warning; FreeDOS moves its data into upper
 memory by itself (`DOSDATA=UMB`). Free memory is unchanged, 516K conventional
 and 38K upper.
+
+Its start-up files were tidied as well. `FDAUTO.BAT` no longer prints the
+memory report on every start (the line is still there as `REM MEM /C /N`;
+remove the `REM` to get it back), and it lost three aliases (`reboot`, `halt`,
+`shutdown`) that called a program which is not on the disk and a line that
+belonged to a boot menu which does not exist. `TEMP` and `TMP` pointed at a
+folder that was missing; `C:\FREEDOS\TEMP` is there now. The DOSMAX files,
+a stray logo file and leftovers from a Mac are gone from the disk.
 
 Any raw image with an MBR works, so your own FreeDOS installation is fine too.
 The core reads the geometry from the partition table.

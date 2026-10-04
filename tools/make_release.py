@@ -75,6 +75,8 @@ def main():
     ap.add_argument("--out", default=str(ROOT / "release"))
     ap.add_argument("--hd-image", metavar="FILE",
                     help="copy this hard disk image in as pcxt/freedos.vhd")
+    ap.add_argument("--cores-from", metavar="TAG",
+                    help="the .cor files were built at this tag, not at HEAD: say so in VERSION.txt")
     ap.add_argument("--with-hd-image", action="store_true",
                     help="extract upstream games/PCXT/hd_image.zip into pcxt/freedos.vhd")
     a = ap.parse_args()
@@ -170,7 +172,9 @@ def main():
     shutil.copy2(ROOT / "LICENSE", rel / "LICENSE")
     (rel / "VERSION.txt").write_text(
         f"PCXT-EGA for MEGA65 {a.version}\nbuild: {git_describe()}\ncore: {cor.name}\n"
-        f"settings file: {optm_size()} bytes\n")
+        f"settings file: {optm_size()} bytes\n"
+        + (f"cores built from: {a.cores_from} (unchanged; later source changes are not in them)\n"
+           if a.cores_from else ""))
 
     zpath = Path(a.out) / f"{name}.zip"
     if zpath.exists():
